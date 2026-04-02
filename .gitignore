@@ -1,0 +1,25 @@
+.env
+.venv/
+.vscode/
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+*.log
+nohup.out
+
+# Local runtime data
+.theses.json
+manual_holdings.json
+watchlist_notes.json
+paper_trades.json
+trade_journal.json
+daily_snapshots.json
+real_trading_config.json
+
+# Local archives and temp outputs
+archive/*.log

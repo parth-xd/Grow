@@ -1,0 +1,13 @@
+growwapi
+flask
+flask-cors
+python-dotenv
+numpy
+pandas
+scikit-learn
+feedparser
+textblob
+requests
+psycopg2-binary
+sqlalchemy
+alembic
