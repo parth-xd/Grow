@@ -12,3 +12,8 @@ psycopg2-binary
 sqlalchemy
 alembic
 gunicorn
+PyJWT
+cryptography
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
