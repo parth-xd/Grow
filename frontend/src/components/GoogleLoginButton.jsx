@@ -1,64 +1,79 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 function GoogleLoginButton({ onSuccess, loading }) {
+  const [error, setError] = useState(null);
+
   useEffect(() => {
     // DEBUG: Log environment variables
     console.log('=== OAUTH DEBUG ===');
     console.log('Client ID:', GOOGLE_CLIENT_ID);
     console.log('API URL:', API_URL);
     console.log('Client ID length:', GOOGLE_CLIENT_ID.length);
-    console.log('Expected ID: 909946700089-5fr10qa7c51cl88ofmft1gp9f6eldsv1.apps.googleusercontent.com');
-    console.log('Match:', GOOGLE_CLIENT_ID === '909946700089-5fr10qa7c51cl88ofmft1gp9f6eldsv1.apps.googleusercontent.com');
+    console.log('Google API available:', !!window.google?.accounts?.id);
     
-    // Initialize Google Sign-In button
-    if (window.google?.accounts?.id) {
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: handleCredentialResponse,
-        ux_mode: 'popup',
-      });
+    // Wait for Google API to load
+    const initGoogle = () => {
+      if (!window.google?.accounts?.id) {
+        console.log('Google API not ready, retrying...');
+        setTimeout(initGoogle, 100);
+        return;
+      }
 
-      window.google.accounts.id.renderButton(
-        document.getElementById('google-signin-button'),
-        {
-          theme: 'outline',
-          size: 'large',
-          width: '100%',
-          text: 'signin_with',
-        }
-      );
+      try {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: handleCredentialResponse,
+          ux_mode: 'popup',
+        });
 
-      // Apply custom styling to match minimalist design
-      setTimeout(() => {
-        const button = document.getElementById('google-signin-button')?.querySelector('button');
+        const button = document.getElementById('google-signin-button');
         if (button) {
-          button.style.background = '#ffffff';
-          button.style.color = '#1f2937';
-          button.style.borderRadius = '8px';
-          button.style.height = '48px';
-          button.style.fontWeight = '500';
-          button.style.fontSize = '14px';
-          button.style.width = '100%';
-          button.style.border = '1px solid #e5e7eb';
-          button.style.boxShadow = 'none';
-          button.style.transition = 'all 0.3s ease';
-          
-          button.onmouseover = () => {
-            button.style.background = '#f9fafb';
-            button.style.borderColor = '#d1d5db';
-            button.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
-          };
-          button.onmouseout = () => {
-            button.style.background = '#ffffff';
-            button.style.borderColor = '#e5e7eb';
-            button.style.boxShadow = 'none';
-          };
+          window.google.accounts.id.renderButton(button, {
+            theme: 'outline',
+            size: 'large',
+            width: '100%',
+            text: 'signin_with',
+          });
+
+          // Apply custom styling to match minimalist design
+          setTimeout(() => {
+            const btn = button.querySelector('button');
+            if (btn) {
+              btn.style.background = '#ffffff';
+              btn.style.color = '#1f2937';
+              btn.style.borderRadius = '8px';
+              btn.style.height = '48px';
+              btn.style.fontWeight = '500';
+              btn.style.fontSize = '14px';
+              btn.style.width = '100%';
+              btn.style.border = '1px solid #e5e7eb';
+              btn.style.boxShadow = 'none';
+              btn.style.transition = 'all 0.3s ease';
+              
+              btn.onmouseover = () => {
+                btn.style.background = '#f9fafb';
+                btn.style.borderColor = '#d1d5db';
+                btn.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
+              };
+              btn.onmouseout = () => {
+                btn.style.background = '#ffffff';
+                btn.style.borderColor = '#e5e7eb';
+                btn.style.boxShadow = 'none';
+              };
+            }
+          }, 100);
         }
-      }, 500);
-    }
+      } catch (err) {
+        console.error('Failed to initialize Google Sign-In:', err);
+        setError('Failed to load Google Sign-In. Please refresh the page.');
+      }
+    };
+
+    // Start initialization
+    initGoogle();
   }, []);
 
   const handleCredentialResponse = async (response) => {
@@ -71,22 +86,33 @@ function GoogleLoginButton({ onSuccess, loading }) {
       });
 
       if (!result.ok) {
-        const error = await result.json();
-        console.error('Auth error:', error);
+        const errorData = await result.json();
+        console.error('Auth error:', errorData);
+        setError(errorData.error || 'Authentication failed');
         return;
       }
 
       const data = await result.json();
+      setError(null);
       onSuccess(data);
-    } catch (error) {
-      console.error('Login failed:', error);
+    } catch (err) {
+      console.error('Login failed:', err);
+      setError('Login failed. Please try again.');
     }
   };
 
   if (!GOOGLE_CLIENT_ID) {
     return (
-      <div className="bg-red-900/30 border border-red-800/50 text-red-300 px-4 py-3 rounded-lg text-sm">
-        Google Client ID not configured
+      <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+        ⚠️ Google Client ID not configured
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm mb-4">
+        {error}
       </div>
     );
   }

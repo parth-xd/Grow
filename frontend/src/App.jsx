@@ -18,23 +18,34 @@ import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
 
 // Store
-import { useAuthStore } from './store/authStore';
+import useAuthStore from './store/authStore';
 
 function App() {
   const { isAuthenticated, user, checkAuth } = useAuthStore();
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     // Check if user is already authenticated on mount
-    checkAuth();
-    setLoading(false);
+    const initAuth = async () => {
+      try {
+        await checkAuth();
+      } catch (err) {
+        console.error('Auth check failed:', err);
+        setAuthError('Authentication check failed');
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    initAuth();
   }, [checkAuth]);
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-300 border-t-gray-900 mx-auto mb-4"></div>
           <p className="text-gray-700 mt-4 font-medium">Loading...</p>
         </div>
       </div>
