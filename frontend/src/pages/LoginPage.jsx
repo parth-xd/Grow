@@ -54,7 +54,6 @@ function LoginPage() {
             onSuccess={handleGoogleSuccess}
             loading={loading}
           />
-          />
 
           {/* Or Divider */}
           <div className="relative my-6">
