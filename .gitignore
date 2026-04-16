@@ -23,3 +23,15 @@ real_trading_config.json
 
 # Local archives and temp outputs
 archive/*.log
+
+# SENSITIVE: Database migration files (contain secrets)
+*.sql
+supabase_migration.sql
+supabase_migration_clean.sql
+migration_chunks/
+*_migration.sql
+*_migration_*.sql
+import_*.sh
+migrate_*.sh
+run_migration.sh
+*_split.py
