@@ -20,7 +20,7 @@ import pytz
 ist = pytz.timezone('Asia/Kolkata')
 
 # Manual holdings tracking file
-MANUAL_HOLDINGS_FILE = '/Users/parthsharma/Desktop/Grow/manual_holdings.json'
+MANUAL_HOLDINGS_FILE = os.path.join(PROJECT_ROOT, 'manual_holdings.json')
 TRADE_ORIGINS_FILE = '/Users/parthsharma/Desktop/Grow/trade_origins.json'
 
 def register_manual_holding(symbol, quantity, entry_price, entry_date=None):

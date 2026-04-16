@@ -940,7 +940,7 @@ def _task_build_daily_snapshots():
         
         # Check if already built today (prevent re-running)
         import json
-        snapshots_path = '/Users/parthsharma/Desktop/Grow/daily_snapshots.json'
+        snapshots_path = os.path.join(PROJECT_ROOT, 'daily_snapshots.json')
         if os.path.exists(snapshots_path):
             try:
                 with open(snapshots_path, 'r') as f:
