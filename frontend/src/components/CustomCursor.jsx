@@ -19,18 +19,18 @@ function CustomCursor() {
       bill.style.position = 'fixed';
       bill.style.top = '0';
       bill.style.left = '0';
-      bill.style.width = '40px';
-      bill.style.height = '50px';
-      bill.style.fontSize = '36px';
+      bill.style.width = '25px';
+      bill.style.height = '30px';
+      bill.style.fontSize = '20px';
       bill.style.fontWeight = '900';
       bill.style.color = '#ffffff';
       bill.style.background = 'linear-gradient(135deg, #34d399 0%, #10b981 100%)';
-      bill.style.border = '2px solid #059669';
-      bill.style.borderRadius = '6px';
+      bill.style.border = '1.5px solid #059669';
+      bill.style.borderRadius = '4px';
       bill.style.display = 'flex';
       bill.style.alignItems = 'center';
       bill.style.justifyContent = 'center';
-      bill.style.boxShadow = '0 8px 16px rgba(52, 211, 153, 0.6)';
+      bill.style.boxShadow = '0 6px 12px rgba(52, 211, 153, 0.6)';
       bill.style.zIndex = '999999';
       bill.style.pointerEvents = 'none';
       bill.style.willChange = 'transform';
@@ -61,7 +61,7 @@ function CustomCursor() {
 
       bills.forEach((bill, i) => {
         const angle = bill.angle + time * 2.4;
-        const distance = 70 + Math.sin(time + i) * 15;
+        const distance = 35 + Math.sin(time + i) * 8;
 
         bill.x = mouseX + Math.cos(angle) * distance;
         bill.y = mouseY + Math.sin(angle) * distance;
@@ -69,7 +69,7 @@ function CustomCursor() {
         const rotation = (angle * 180) / Math.PI;
         const scale = 0.9 + Math.sin(time * 2 + i) * 0.15;
 
-        bill.el.style.transform = `translate(${bill.x - 20}px, ${bill.y - 25}px) rotate(${rotation}deg) scale(${scale})`;
+        bill.el.style.transform = `translate(${bill.x - 12.5}px, ${bill.y - 15}px) rotate(${rotation}deg) scale(${scale})`;
         bill.el.style.opacity = '0.95';
       });
 
