@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import api from '../services/api';
+import CustomCursor from '../components/CustomCursor';
 
 function TradingPage() {
   const [symbol, setSymbol] = useState('INFY');

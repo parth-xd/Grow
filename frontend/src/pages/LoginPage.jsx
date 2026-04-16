@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 import GoogleLoginButton from '../components/GoogleLoginButton';
+import CustomCursor from '../components/CustomCursor';
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -48,7 +49,9 @@ function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 flex items-center justify-center px-4 sm:px-6 py-8">
+    <>
+      <CustomCursor />
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 flex items-center justify-center px-4 sm:px-6 py-8">
       {/* Decorative elements */}
       <div className="absolute top-0 left-0 w-48 h-48 sm:w-72 sm:h-72 md:w-96 md:h-96 bg-blue-50 rounded-full blur-3xl opacity-20 -z-10"></div>
       <div className="absolute bottom-0 right-0 w-48 h-48 sm:w-72 sm:h-72 md:w-96 md:h-96 bg-indigo-50 rounded-full blur-3xl opacity-20 -z-10"></div>
@@ -130,7 +133,8 @@ function LoginPage() {
           <StatCard number="24/7" label="Support" />
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 

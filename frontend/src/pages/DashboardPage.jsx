@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import api from '../services/api';
 import useAuthStore from '../store/authStore';
 import PnLChart from '../components/PnLChart';
+import CustomCursor from '../components/CustomCursor';
 
 function DashboardPage() {
   const navigate = useNavigate();

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import toast from 'react-hot-toast';
+import CustomCursor from '../components/CustomCursor';
 
 function BacktestingPage() {
   const [loading, setLoading] = useState(false);
