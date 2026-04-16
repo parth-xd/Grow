@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // Pages
 import LandingPage from './pages/LandingPage';
@@ -77,6 +78,7 @@ function App() {
         </Routes>
 
         <Toaster position="top-right" />
+        <SpeedInsights />
       </div>
     </Router>
   );
