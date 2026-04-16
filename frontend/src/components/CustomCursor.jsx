@@ -2,6 +2,11 @@ import { useEffect } from 'react';
 
 function CustomCursor() {
   useEffect(() => {
+    // Skip on mobile/touch devices (only for desktop cursors)
+    if (window.matchMedia('(hover: none)').matches || window.matchMedia('(pointer: coarse)').matches) {
+      return;
+    }
+
     const bills = [];
     let mouseX = 0;
     let mouseY = 0;
