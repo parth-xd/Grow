@@ -15,7 +15,7 @@ RETURNS BOOLEAN AS $$
     ),
     FALSE
   )
-$$ LANGUAGE sql STABLE;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
 
 -- ============================================================================
 -- USERS TABLE
