@@ -86,10 +86,19 @@ function GoogleLoginButton({ onSuccess, loading }) {
 
     try {
       console.log('🔐 Sending credential to backend...');
+      console.log('API URL:', API_URL);
       setError(null);
       setIsLoading(true);
       
-      const result = await fetch(`${API_URL}/api/auth/google`, {
+      // Check if API URL is properly configured
+      if (!API_URL || API_URL === 'http://localhost:5000') {
+        console.warn('⚠️  Using default API URL. Set VITE_API_URL environment variable for production.');
+      }
+      
+      const authUrl = `${API_URL}/api/auth/google`;
+      console.log('Auth URL:', authUrl);
+      
+      const result = await fetch(authUrl, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -105,10 +114,21 @@ function GoogleLoginButton({ onSuccess, loading }) {
         try {
           errorData = await result.json();
         } catch {
-          errorData = { error: `HTTP ${result.status}` };
+          errorData = { error: `HTTP ${result.status}`, detail: `Backend returned ${result.status}. Check API connection.` };
         }
         console.error('Auth error:', errorData);
-        setError(errorData.error || errorData.detail || 'Authentication failed. Please try again.');
+        
+        // Provide specific error messages
+        let userMessage = errorData.error || 'Authentication failed';
+        if (result.status === 404) {
+          userMessage = 'Backend API not found. Please check server status.';
+        } else if (result.status === 500) {
+          userMessage = `Server error: ${errorData.detail || 'Internal server error'}`;
+        } else if (result.status === 503) {
+          userMessage = 'Backend service unavailable. Please try again in a moment.';
+        }
+        
+        setError(userMessage);
         setIsLoading(false);
         return;
       }
@@ -118,7 +138,13 @@ function GoogleLoginButton({ onSuccess, loading }) {
       onSuccess(data);
     } catch (err) {
       console.error('Login request failed:', err);
-      setError(err.message || 'Login failed. Check your connection and try again.');
+      
+      // Detect network errors
+      if (err.message.includes('Failed to fetch')) {
+        setError('Network error: Cannot reach backend server. Check your connection and API URL configuration.');
+      } else {
+        setError(err.message || 'Login failed. Check your connection and try again.');
+      }
       setIsLoading(false);
     }
   };

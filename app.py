@@ -130,6 +130,16 @@ def index(path):
 
 # ── Authentication ───────────────────────────────────────────────────────────
 
+# Health check endpoint (no auth required)
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint - returns server status"""
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'db_connected': hasattr(app, 'db') and app.db is not None
+    }), 200
+
 @app.route("/api/auth/google", methods=["POST", "OPTIONS"])
 def google_auth():
     """Handle Google OAuth - verify ID token and issue JWT"""
