@@ -5,6 +5,14 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 function GoogleLoginButton({ onSuccess, loading }) {
   useEffect(() => {
+    // DEBUG: Log environment variables
+    console.log('=== OAUTH DEBUG ===');
+    console.log('Client ID:', GOOGLE_CLIENT_ID);
+    console.log('API URL:', API_URL);
+    console.log('Client ID length:', GOOGLE_CLIENT_ID.length);
+    console.log('Expected ID: 909946700089-5fr10qa7c51cl88ofmft1gp9f6eldsv1.apps.googleusercontent.com');
+    console.log('Match:', GOOGLE_CLIENT_ID === '909946700089-5fr10qa7c51cl88ofmft1gp9f6eldsv1.apps.googleusercontent.com');
+    
     // Initialize Google Sign-In button
     if (window.google?.accounts?.id) {
       window.google.accounts.id.initialize({
