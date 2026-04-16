@@ -181,17 +181,41 @@ def google_auth():
         
         # Get or create user in database
         try:
+            logger.info(f"Creating/fetching user with Google ID: {google_info.get('sub')}")
             user = auth_manager.get_or_create_user({
                 'id': google_info.get('sub'),
                 'email': google_info.get('email'),
                 'name': google_info.get('name'),
                 'picture': google_info.get('picture')
             })
+            logger.info(f"✓ User obtained: {user}")
         except Exception as e:
             logger.error(f"✗ Failed to get/create user: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return jsonify({'error': 'Failed to create user', 'detail': str(e)}), 500
+            
+            # Return detailed error info for debugging
+            error_msg = str(e)
+            if 'unique constraint' in error_msg.lower():
+                return jsonify({
+                    'error': 'User already exists with this email',
+                    'detail': 'Email address is already registered'
+                }), 409
+            elif 'permission denied' in error_msg.lower():
+                return jsonify({
+                    'error': 'Database permission error',
+                    'detail': 'User service lacks database permissions'
+                }), 403
+            elif 'connection' in error_msg.lower():
+                return jsonify({
+                    'error': 'Database connection failed',
+                    'detail': 'Cannot connect to database'
+                }), 503
+            else:
+                return jsonify({
+                    'error': 'Failed to create user',
+                    'detail': error_msg
+                }), 500
         
         if not user:
             logger.error("✗ Failed to create/get user - returned None")

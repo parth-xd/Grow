@@ -139,58 +139,90 @@ class AuthManager:
     
     def get_or_create_user(self, google_info):
         """Get or create user from Google info"""
-        
-        # Check if user exists
-        result = self.db.session.execute(text("""
-            SELECT id, email, name FROM users 
-            WHERE google_id = :google_id
-        """), {'google_id': google_info['id']})
-        
-        user = result.fetchone()
-        
-        if user:
-            # Update last login
-            self.db.session.execute(text("""
-                UPDATE users SET last_login = CURRENT_TIMESTAMP
-                WHERE id = :user_id
-            """), {'user_id': user[0]})
-            self.db.session.commit()
+        try:
+            # Check if user exists
+            result = self.db.session.execute(text("""
+                SELECT id, email, name FROM users 
+                WHERE google_id = :google_id
+            """), {'google_id': google_info['id']})
             
-            return {
-                'id': user[0],
-                'email': user[1],
-                'name': user[2]
-            }
-        
-        else:
-            # Create new user
-            import uuid
-            user_id = str(uuid.uuid4())
+            user = result.fetchone()
             
-            self.db.session.execute(text("""
-                INSERT INTO users (id, google_id, email, name, profile_picture_url, is_active)
-                VALUES (:id, :google_id, :email, :name, :picture, TRUE)
-            """), {
-                'id': user_id,
-                'google_id': google_info['id'],
-                'email': google_info['email'],
-                'name': google_info['name'],
-                'picture': google_info.get('picture')
-            })
+            if user:
+                # Update last login
+                self.db.session.execute(text("""
+                    UPDATE users SET last_login = CURRENT_TIMESTAMP
+                    WHERE id = :user_id
+                """), {'user_id': user[0]})
+                self.db.session.commit()
+                
+                return {
+                    'id': str(user[0]),
+                    'email': user[1],
+                    'name': user[2]
+                }
             
-            # Create user settings
-            self.db.session.execute(text("""
-                INSERT INTO user_settings (user_id)
-                VALUES (:user_id)
-            """), {'user_id': user_id})
-            
-            self.db.session.commit()
-            
-            return {
-                'id': user_id,
-                'email': google_info['email'],
-                'name': google_info['name']
-            }
+            else:
+                # Create new user
+                import uuid
+                user_id = str(uuid.uuid4())
+                
+                try:
+                    self.db.session.execute(text("""
+                        INSERT INTO users (id, google_id, email, name, profile_picture_url, is_active)
+                        VALUES (:id::uuid, :google_id, :email, :name, :picture, TRUE)
+                    """), {
+                        'id': user_id,
+                        'google_id': google_info['id'],
+                        'email': google_info['email'],
+                        'name': google_info['name'],
+                        'picture': google_info.get('picture')
+                    })
+                except Exception as insert_err:
+                    self.db.session.rollback()
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"User insert failed: {insert_err}")
+                    # Try checking if user exists by email instead
+                    result = self.db.session.execute(text("""
+                        SELECT id, email, name FROM users 
+                        WHERE email = :email
+                    """), {'email': google_info['email']})
+                    existing_user = result.fetchone()
+                    if existing_user:
+                        return {
+                            'id': str(existing_user[0]),
+                            'email': existing_user[1],
+                            'name': existing_user[2]
+                        }
+                    raise
+                
+                # Create user settings
+                try:
+                    self.db.session.execute(text("""
+                        INSERT INTO user_settings (user_id)
+                        VALUES (:user_id::uuid)
+                    """), {'user_id': user_id})
+                except Exception as settings_err:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"User settings creation failed (non-critical): {settings_err}")
+                    # Don't fail if settings creation fails
+                
+                self.db.session.commit()
+                
+                return {
+                    'id': user_id,
+                    'email': google_info['email'],
+                    'name': google_info['name']
+                }
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"get_or_create_user failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
     
     def encrypt_api_key(self, api_key):
         """Encrypt API key for storage"""
