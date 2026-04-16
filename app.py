@@ -145,6 +145,7 @@ def google_auth():
         id_token = data.get('id_token')
         
         if not id_token:
+            logger.error("✗ No token provided in request")
             return jsonify({'error': 'No token provided'}), 400
         
         logger.info("🔐 Attempting Google sign-in")
@@ -155,36 +156,55 @@ def google_auth():
             logger.info(f"✓ Google ID token decoded for: {google_info.get('email')}")
         except Exception as e:
             logger.error(f"✗ Failed to decode Google ID token: {e}")
-            return jsonify({'error': 'Invalid token'}), 401
+            return jsonify({'error': 'Invalid token', 'detail': str(e)}), 401
         
         # Verify token is from Google
         if google_info.get('iss') not in ['https://accounts.google.com', 'accounts.google.com']:
+            logger.error(f"✗ Invalid token issuer: {google_info.get('iss')}")
             return jsonify({'error': 'Invalid token issuer'}), 401
         
         # Verify Client ID matches
-        if google_info.get('aud') != os.getenv('GOOGLE_CLIENT_ID'):
-            logger.warning(f"⚠️  Token Client ID mismatch. Expected: {os.getenv('GOOGLE_CLIENT_ID')}, Got: {google_info.get('aud')}")
-            # Don't fail here - sometimes Google returns `azp` instead of `aud`
+        client_id = os.getenv('GOOGLE_CLIENT_ID')
+        token_aud = google_info.get('aud')
+        token_azp = google_info.get('azp')
         
-        # Initialize auth manager
+        if token_aud != client_id and token_azp != client_id:
+            logger.warning(f"⚠️  Token Client ID mismatch. Expected: {client_id}, Got aud: {token_aud}, azp: {token_azp}")
+            # Don't fail - sometimes Google returns `azp` instead of `aud`
+        
+        # Initialize auth manager - check if db exists
+        if not hasattr(app, 'db') or app.db is None:
+            logger.error("✗ Database not initialized")
+            return jsonify({'error': 'Server error - database not available', 'detail': 'Database not initialized'}), 500
+        
         auth_manager = AuthManager(app.db)
         
         # Get or create user in database
-        user = auth_manager.get_or_create_user({
-            'id': google_info.get('sub'),
-            'email': google_info.get('email'),
-            'name': google_info.get('name'),
-            'picture': google_info.get('picture')
-        })
+        try:
+            user = auth_manager.get_or_create_user({
+                'id': google_info.get('sub'),
+                'email': google_info.get('email'),
+                'name': google_info.get('name'),
+                'picture': google_info.get('picture')
+            })
+        except Exception as e:
+            logger.error(f"✗ Failed to get/create user: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({'error': 'Failed to create user', 'detail': str(e)}), 500
         
         if not user:
-            logger.error("✗ Failed to create/get user")
-            return jsonify({'error': 'Failed to create user'}), 500
+            logger.error("✗ Failed to create/get user - returned None")
+            return jsonify({'error': 'Failed to create user', 'detail': 'User creation returned None'}), 500
         
         logger.info(f"✓ User authenticated: {user['email']}")
         
         # Generate JWT token for frontend
-        token = auth_manager.generate_jwt(user['id'], user['email'])
+        try:
+            token = auth_manager.generate_jwt(user['id'], user['email'])
+        except Exception as e:
+            logger.error(f"✗ Failed to generate JWT: {e}")
+            return jsonify({'error': 'Failed to generate token', 'detail': str(e)}), 500
         
         return jsonify({
             'token': token,
@@ -198,6 +218,8 @@ def google_auth():
     except Exception as e:
         logger.error(f"✗ Google auth error: {e}")
         import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
         logger.error(traceback.format_exc())
         return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
 
