@@ -183,74 +183,67 @@ class PaperTradeTracker:
                     trade['post_trade']['costs_covered_at_time'] = trade['costs_covered_at_time']
                 
                 self._save_trades()
+                
+                # 🔥 NEW: SYNC TO TRADE JOURNAL — so journal status updates when trade closes!
+                try:
+                    import trade_journal
+                    
+                    # Map paper trade exit reason to journal exit reason
+                    journal_exit_reason = 'MANUAL_EXIT'
+                    if exit_reason == "trailing_stop_hit":
+                        journal_exit_reason = 'HIT_SL'
+                    elif exit_reason == "target_hit":
+                        journal_exit_reason = 'HIT_TARGET'
+                    elif exit_reason == "stop_loss_hit":
+                        journal_exit_reason = 'HIT_SL'
+                    elif exit_reason == "prediction_change":
+                        journal_exit_reason = 'SIGNAL_REVERSED'
+                    
+                    # Find and close the corresponding trade journal entry
+                    journal_entry = trade_journal.close_trade_report(
+                        trade_id=trade_id,
+                        exit_price=float(exit_price),
+                        exit_reason=journal_exit_reason,
+                        pnl=trade.get('net_pnl', trade.get('gross_pnl', 0)),
+                    )
+                    logger.info(f"✓ Synced paper trade closure {trade_id} to trade journal")
+                except Exception as e:
+                    logger.warning(f"Failed to sync paper trade closure to journal: {e}")
+                
                 return trade
         
         return None
     
     def update_trailing_stop(self, trade_id, current_price):
         """
-        Update trailing stop for an open trade.
-        Called periodically to check and update the trailing stop.
-        
-        Returns:
-            - None if trade not found
-            - 'closed' if trailing stop was hit
-            - 'costs_covered' if cost coverage price just reached
-            - 'trailing_updated' if trailing stop moved up
-            - 'holding' if no action needed
+        Update trailing stop for an open trade based on current price.
+        Simple logic: If profitable, set trailing stop 1.5 points below current price.
         """
+        TRAILING_BUFFER = 1.5  # Buffer in rupees
+        
         for trade in self.trades:
-            if trade['id'] == trade_id and trade['status'] == 'OPEN':
+            if trade['id'] == trade_id and trade.get('status') == 'OPEN':
+                entry_price = trade.get('entry_price', 0)
+                signal = trade.get('signal', 'BUY')
                 
-                # BUY trades: price should go UP
-                if trade['signal'] == 'BUY':
-                    # Check if cost coverage price was just hit
-                    if not trade['has_covered_costs'] and current_price >= trade['cost_coverage_price']:
-                        trade['has_covered_costs'] = True
-                        trade['costs_covered_at_price'] = float(current_price)
-                        trade['costs_covered_at_time'] = datetime.now(ist).isoformat()
-                        trade['trailing_stop'] = float(current_price)  # Start trailing from here
-                        trade['highest_price_reached'] = float(current_price)
-                        self._save_trades()
-                        return 'costs_covered'
-                    
-                    # If trailing stop is active, check if it was hit
-                    if trade['trailing_stop'] and current_price <= trade['trailing_stop']:
-                        self.close_trade(trade_id, current_price, exit_reason="trailing_stop_hit")
-                        return 'closed'
-                    
-                    # Update trailing stop if price goes higher
-                    if current_price > trade['highest_price_reached']:
-                        trade['highest_price_reached'] = float(current_price)
-                        trade['trailing_stop'] = float(current_price)  # Trail follows price
-                        self._save_trades()
-                        return 'trailing_updated'
+                # Calculate if trade is profitable
+                if signal == 'BUY':
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
+                    # If profitable, set trailing stop below current price
+                    if pnl_pct > 0.5:  # More than 0.5% profit
+                        trade['trailing_stop'] = round(current_price - TRAILING_BUFFER, 2)
+                        trade['highest_price_reached'] = max(trade.get('highest_price_reached', entry_price), current_price)
+                else:  # SELL
+                    pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price else 0
+                    # If profitable, set trailing stop above current price
+                    if pnl_pct > 0.5:  # More than 0.5% profit
+                        trade['trailing_stop'] = round(current_price + TRAILING_BUFFER, 2)
+                        trade['lowest_price_reached'] = min(trade.get('lowest_price_reached', entry_price), current_price)
                 
-                # SELL trades: price should go DOWN
-                else:
-                    # Check if cost coverage price was just hit
-                    if not trade['has_covered_costs'] and current_price <= trade['cost_coverage_price']:
-                        trade['has_covered_costs'] = True
-                        trade['costs_covered_at_price'] = float(current_price)
-                        trade['costs_covered_at_time'] = datetime.now(ist).isoformat()
-                        trade['trailing_stop'] = float(current_price)  # Start trailing from here
-                        trade['highest_price_reached'] = float(current_price)  # For SELL, "highest" means lowest
-                        self._save_trades()
-                        return 'costs_covered'
-                    
-                    # If trailing stop is active, check if it was hit
-                    if trade['trailing_stop'] and current_price >= trade['trailing_stop']:
-                        self.close_trade(trade_id, current_price, exit_reason="trailing_stop_hit")
-                        return 'closed'
-                    
-                    # Update trailing stop if price goes lower
-                    if current_price < trade['highest_price_reached']:
-                        trade['highest_price_reached'] = float(current_price)
-                        trade['trailing_stop'] = float(current_price)  # Trail follows price
-                        self._save_trades()
-                        return 'trailing_updated'
-                
-                return 'holding'
+                self._save_trades()
+                return 'trailing_updated'
+        
+        return None
         
         return None
     
@@ -273,7 +266,7 @@ def get_live_price(symbol):
     except Exception as e:
         print(f"[get_live_price] Bot LTP fetch failed for {symbol}: {e}")
     
-    # Fallback: try 1-minute candles
+    # Fallback: try 5-minute candles (Groww API doesn't support 1-minute)
     try:
         import os
         from growwapi import GrowwAPI
@@ -285,7 +278,7 @@ def get_live_price(symbol):
         
         groww = GrowwAPI(token)
         
-        # Get the latest 1-minute candle(s) to get a more recent price
+        # Get the latest 5-minute candle(s) to get a more recent price
         end_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         start_time = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -295,7 +288,7 @@ def get_live_price(symbol):
             segment='EQ',
             start_time=start_time,
             end_time=end_time,
-            interval_in_minutes=1,  # Use 1-minute for most recent price
+            interval_in_minutes=5,  # Use 5-minute (Groww doesn't support 1-minute)
         )
         
         candles = resp.get("candles", [])
@@ -424,7 +417,7 @@ def main():
     
     for symbol in WATCHLIST[:5]:
         try:
-            # Use 1-minute candles for live trading accuracy
+            # Use 5-minute candles (Groww API doesn't support 1-minute)
             df = bot.fetch_historical(symbol, days=1, interval=1)
             if df.empty:
                 continue

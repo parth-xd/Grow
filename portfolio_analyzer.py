@@ -42,17 +42,19 @@ def analyze_portfolio(groww_api, get_prediction_fn, fetch_live_price_fn):
         - holdings: list of analyzed holdings
         - positions: list of analyzed positions
     """
+    logger.info("analyze_portfolio received groww_api: %s (is None: %s)", type(groww_api).__name__ if groww_api else "None", groww_api is None)
+    
     # ── Fetch portfolio data from Groww ──────────────────────────────────
     try:
         holdings_resp = groww_api.get_holdings_for_user()
-        raw_holdings = holdings_resp.get("holdings", [])
+        raw_holdings = holdings_resp.get("holdings", []) if holdings_resp else []
     except Exception as e:
         logger.error("Failed to fetch holdings: %s", e)
         raw_holdings = []
 
     try:
         positions_resp = groww_api.get_positions_for_user()
-        raw_positions = positions_resp.get("positions", [])
+        raw_positions = positions_resp.get("positions", []) if positions_resp else []
     except Exception as e:
         logger.error("Failed to fetch positions: %s", e)
         raw_positions = []
@@ -60,6 +62,8 @@ def analyze_portfolio(groww_api, get_prediction_fn, fetch_live_price_fn):
     # ── Analyze each holding ─────────────────────────────────────────────
     analyzed_holdings = []
     for h in raw_holdings:
+        if not h:
+            continue
         symbol = h.get("trading_symbol", "")
         qty = h.get("quantity", 0)
         avg_price = h.get("average_price", 0)
@@ -67,21 +71,27 @@ def analyze_portfolio(groww_api, get_prediction_fn, fetch_live_price_fn):
         if not symbol or qty <= 0:
             continue
 
-        analysis = _analyze_stock(
-            symbol=symbol,
-            quantity=qty,
-            avg_price=avg_price,
-            source="holding",
-            get_prediction_fn=get_prediction_fn,
-            fetch_live_price_fn=fetch_live_price_fn,
-            groww_api=groww_api,
-        )
-        analysis["raw"] = h
-        analyzed_holdings.append(analysis)
+        try:
+            analysis = _analyze_stock(
+                symbol=symbol,
+                quantity=qty,
+                avg_price=avg_price,
+                source="holding",
+                get_prediction_fn=get_prediction_fn,
+                fetch_live_price_fn=fetch_live_price_fn,
+                groww_api=groww_api,
+            )
+            analysis["raw"] = h
+            analyzed_holdings.append(analysis)
+        except Exception as e:
+            logger.error(f"Failed to analyze holding {symbol}: {e}", exc_info=True)
+            continue
 
     # ── Analyze each position ────────────────────────────────────────────
     analyzed_positions = []
     for p in raw_positions:
+        if not p:
+            continue
         symbol = p.get("trading_symbol", "")
         qty = p.get("quantity", 0)
         net_price = p.get("net_price", 0)
@@ -90,18 +100,22 @@ def analyze_portfolio(groww_api, get_prediction_fn, fetch_live_price_fn):
         if not symbol or qty <= 0:
             continue
 
-        analysis = _analyze_stock(
-            symbol=symbol,
-            quantity=qty,
-            avg_price=net_price,
-            source="position",
-            get_prediction_fn=get_prediction_fn,
-            fetch_live_price_fn=fetch_live_price_fn,
-            groww_api=groww_api,
-        )
-        analysis["realised_pnl"] = realised_pnl
-        analysis["raw"] = p
-        analyzed_positions.append(analysis)
+        try:
+            analysis = _analyze_stock(
+                symbol=symbol,
+                quantity=qty,
+                avg_price=net_price,
+                source="position",
+                get_prediction_fn=get_prediction_fn,
+                fetch_live_price_fn=fetch_live_price_fn,
+                groww_api=groww_api,
+            )
+            analysis["realised_pnl"] = realised_pnl
+            analysis["raw"] = p
+            analyzed_positions.append(analysis)
+        except Exception as e:
+            logger.error(f"Failed to analyze position {symbol}: {e}", exc_info=True)
+            continue
 
     # ── Build portfolio summary ──────────────────────────────────────────
     all_items = analyzed_holdings + analyzed_positions
@@ -165,6 +179,9 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
     # ── AI Prediction ───────────────────────────────────────────────────
     try:
         prediction = get_prediction_fn(symbol)
+        if prediction is None:
+            prediction = {"signal": "HOLD", "confidence": 0, "reason": "Prediction unavailable"}
+        
         result["prediction"] = prediction
         result["ai_signal"] = prediction.get("signal", "HOLD")
         result["ai_confidence"] = prediction.get("confidence", 0)
@@ -203,6 +220,10 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
     # to set strategic exit targets, NOT a blind % from buy price
     prediction = result.get("prediction")
     long_term = prediction.get("long_term_trend", {}) if prediction and isinstance(prediction, dict) else {}
+    
+    # Ensure long_term is not None
+    if long_term is None:
+        long_term = {}
     
     resistance_5y = long_term.get("resistance", 0)
     max_price_5y = long_term.get("max_price", 0)
@@ -284,6 +305,8 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
     try:
         if groww_api:
             fundamentals = fundamental_analysis.get_fundamental_analysis(groww_api, symbol)
+            if fundamentals is None:
+                fundamentals = {}
             result["fundamentals"] = fundamentals
             result["fundamental_rating"] = fundamentals.get("fundamental_rating", "N/A")
             result["fundamental_score"] = fundamentals.get("fundamental_score", 0)
@@ -318,7 +341,23 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
                 logger.warning("Failed to fetch commodity data for %s: %s", symbol, e)
         else:
             result["fundamentals"] = None
-            result["fundamental_rating"] = "N/A"
+    except Exception as e:
+        logger.warning("Fundamental analysis failed for %s: %s", symbol, e)
+        result["fundamentals"] = None
+        result["fundamental_rating"] = "N/A"
+        result["fundamental_score"] = 0
+        result["fundamental_pct"] = 0
+        result["fundamental_flags"] = []
+        result["fundamental_concerns"] = []
+        result["competitors"] = []
+        result["pe_ratio"] = None
+        result["roe"] = None
+        result["roce"] = None
+        result["debt_to_equity"] = None
+        result["promoter_holding"] = None
+        result["52w_position_pct"] = None
+        result["volume_signal"] = None
+        result["vs_peers"] = None
     except Exception as e:
         logger.warning("Fundamental analysis failed for %s: %s", symbol, e)
         result["fundamentals"] = None
@@ -414,6 +453,10 @@ def _generate_recommendation(analysis):
     else:
         sources = {}
         indicators = {}
+        long_term_data = {}
+    
+    # Ensure long_term_data is never None
+    if long_term_data is None:
         long_term_data = {}
     
     ml_signal = sources.get("ml", {}).get("signal", "---")

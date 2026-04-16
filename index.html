@@ -374,6 +374,7 @@ function ensureChronological(prices) {
     <div class="tab" data-tab="journal">Trade Journal</div>
     <div class="tab" data-tab="fno-backtest">Backtesting</div>
     <div class="tab" data-tab="paper">Paper Trading</div>
+    <div class="tab" data-tab="pnl-chart">P&L Chart</div>
     <div class="tab" data-tab="alerts">Alerts</div>
   </div>
 
@@ -1028,7 +1029,7 @@ function ensureChronological(prices) {
             <!-- Trade info bar - Horizontal scrollable -->
             <div id="snap-info-bar" style="display:flex;gap:12px;margin-bottom:20px;overflow-x:auto;padding-bottom:8px;-webkit-overflow-scrolling:touch"></div>
             <!-- Chart SVG -->
-            <div id="snap-chart" style="margin-bottom:20px;display:flex;justify-content:center;overflow-x:auto"></div>
+            <div id="snap-chart" style="margin-bottom:20px;display:flex;justify-content:center;align-items:center;overflow-x:auto;min-height:420px;width:100%;background:rgba(0,0,0,0.1);border-radius:10px;padding:10px"></div>
             <!-- Indicators -->
             <div id="snap-indicators" style="margin-bottom:16px"></div>
             <!-- News at trade time -->
@@ -1036,6 +1037,42 @@ function ensureChronological(prices) {
             <!-- AI Reasoning -->
             <div id="snap-reasoning" style="margin-bottom:16px"></div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── P&L Chart ──────────────────────── -->
+  <div id="pnl-chart" class="tab-panel">
+    <div class="card" style="padding:12px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="card-title" style="font-size:16px">P&L</div>
+        <select id="pnl-timerange" onchange="cachedTrades && refreshPnLChart(cachedTrades)" style="padding:6px 10px;border:.5px solid var(--border);background:var(--bg);border-radius:8px;color:var(--text);font-size:12px;font-family:inherit;cursor:pointer">
+          <option value="30">30m</option>
+          <option value="60" selected>60m</option>
+          <option value="240">4h</option>
+          <option value="480">8h</option>
+          <option value="1440">24h</option>
+        </select>
+      </div>
+      <canvas id="pnl-chart-canvas" style="width:100%;height:120px;margin-bottom:8px"></canvas>
+      
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+        <div class="card" style="padding:8px;text-align:center">
+          <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-current">₹0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Current</div>
+        </div>
+        <div class="card" style="padding:8px;text-align:center">
+          <div style="font-size:16px;font-weight:700;color:var(--green)" id="pnl-peak">₹0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Peak</div>
+        </div>
+        <div class="card" style="padding:8px;text-align:center">
+          <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-percent">0.00%</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">%</div>
+        </div>
+        <div class="card" style="padding:8px;text-align:center">
+          <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-trades">0 / 0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Profit/Loss</div>
         </div>
       </div>
     </div>
@@ -1187,6 +1224,10 @@ document.querySelectorAll('.tab').forEach(t => {
     } else if (t.dataset.tab === 'paper') {
       loadPaperTradingStatus();
       loadTradeSnapshots();
+    } else if (t.dataset.tab === 'pnl-chart') {
+      if (cachedTrades) {
+        refreshPnLChart(cachedTrades);  // Use cached trades - no server call!
+      }
     } else if (t.dataset.tab === 'alerts') {
       loadTelegramStatus();
       loadNLPStatus();
@@ -1212,6 +1253,51 @@ async function api(path, opts) {
     toast('Error: ' + e.message, 4000);
     throw e;
   }
+}
+
+// ── Unified fetch with timeout helper ───────────────
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, { ...opts, signal: controller.signal });
+    clearTimeout(timeout);
+    return response;
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
+
+// ── Consolidated error handler ───────────────────────
+function handleError(context, error, fallback = null) {
+  const msg = `${context}: ${error?.message || String(error)}`;
+  console.error('[ERROR]', msg);
+  if (fallback) {
+    console.log(`[FALLBACK] ${context} - using fallback...`);
+    return fallback;
+  }
+  toast(msg, 4000);
+  return null;
+}
+
+// ── Calculate profit percentage (handles null values) ───
+function getProfitPercent(trade) {
+  // If actual_profit_pct is already set, use it
+  if (trade.actual_profit_pct !== null && trade.actual_profit_pct !== undefined) {
+    return trade.actual_profit_pct;
+  }
+  // Calculate from entry/exit prices if missing
+  if (trade.entry_price && trade.exit_price) {
+    const isShort = trade.signal === 'SELL';
+    if (isShort) {
+      return ((trade.entry_price - trade.exit_price) / trade.entry_price) * 100;
+    } else {
+      return ((trade.exit_price - trade.entry_price) / trade.entry_price) * 100;
+    }
+  }
+  return 0; // Fallback if data is incomplete
 }
 
 function signalBadge(s) {
@@ -1730,8 +1816,21 @@ async function analyzeWatchlistStock(symbol) {
   const analysisDiv = document.getElementById(`analysis-${symbol}`);
   const chartCanvas = document.getElementById(`chart-${symbol}`);
   
+  // Block analysis during market hours to reduce server load
+  if (isMarketHours()) {
+    if (analysisDiv) analysisDiv.innerHTML = '<div style="padding:20px;text-align:center;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.3);border-radius:8px;color:#ffc107"><div style="font-size:14px;font-weight:600;margin-bottom:8px">📈 Market is Live</div><div style="font-size:12px">Analysis disabled during trading hours (9:15 AM - 3:30 PM) to keep server focused on paper trading.<br><br><em>Try again after 3:30 PM for full analysis</em></div></div>';
+    return;
+  }
+  
   // Show loading state immediately
   if (analysisDiv) analysisDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)"><div style="font-size:24px;margin-bottom:8px">⟳</div>Running deep analysis for ' + symbol + '...<br><span style="font-size:10px">(AI + News + FII/MF + Targets — may take 15-30s)</span></div>';
+  
+  // Refresh candles in background (so they're fresh when analysis renders)
+  api('/api/candles/refresh', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ symbol })
+  }).catch(e => console.debug('Candle refresh started for ' + symbol));
   
   try {
     // Fetch price data and analysis (sequentially to avoid single-thread deadlock fallback)
@@ -6297,195 +6396,306 @@ async function loadPaperTradingStatus() {
       }
     }
     
-    // Fetch live prices for OPEN trades to calculate dynamic P&L
+    // Check if market is open for live data
+    function isMarketOpen() {
+      const now = new Date();
+      const day = now.getDay();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      
+      if (day === 0 || day === 6) return false;
+      if (hours < 9) return false;
+      if (hours > 15) return false;
+      if (hours === 9 && minutes < 15) return false;
+      if (hours === 15 && minutes >= 30) return false;
+      
+      return true;
+    }
+    
+    // Get open trades for price fetching
     const openTrades = trades.filter(t => t.status === 'OPEN');
     let livePrices = {};
+    
+    // FETCH LIVE PRICES FIRST (in parallel for speed) before displaying
     if (openTrades.length > 0) {
       const symbols = [...new Set(openTrades.map(t => t.symbol))];
-      console.log('Getting live prices for OPEN trades:', symbols, openTrades.length);
-      livePrices = await getLivePrices(symbols);
-      console.log('Live prices received:', livePrices);
       
-      // Check for trailing stop losses (auto-close eroding profits)
-      try {
-        const autoCloseResponse = await api('/api/auto-close/check', {method: 'POST'});
-        if (autoCloseResponse.closed_trades && autoCloseResponse.closed_trades.length > 0) {
-          console.warn(`⚠️ Auto-closed ${autoCloseResponse.closed_trades.length} trades via trailing stop`);
-          autoCloseResponse.closed_trades.forEach(t => {
-            console.log(`  ${t.symbol} ${t.signal}: ${t.reason}`);
-            toast(`🔴 Auto-closed ${t.symbol} - ${t.reason}`, 'warning');
+      if (isMarketOpen()) {
+        console.log('🔄 Fetching live prices for', symbols.length, 'symbols...');
+        
+        try {
+          // Use batch fetch if available
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          
+          const response = await fetch('/api/live-prices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols: symbols }),
+            signal: controller.signal
           });
-          // Reload trades after auto-close
-          const updated = await fetch('paper_trades.json?t=' + Date.now());
-          if (updated.ok) {
-            trades = await updated.json();
+          
+          clearTimeout(timeoutId);
+          
+          if (response.ok) {
+            const data = await response.json();
+            livePrices = data.prices || {};
+            console.log('✅ Live prices fetched:', livePrices);
+          } else {
+            console.log('Batch fetch returned status:', response.status);
           }
+        } catch (e) {
+          console.log('Batch live prices failed, trying individual fetches:', e.message);
+          
+          // Fallback: fetch individual symbols in parallel
+          const pricePromises = symbols.map(async (symbol) => {
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 3000);
+              
+              const response = await fetch(`/api/price/${symbol}`, {
+                signal: controller.signal
+              });
+              
+              clearTimeout(timeoutId);
+              
+              if (response.ok) {
+                const data = await response.json();
+                if (data.price) {
+                  console.log(`  ${symbol}: ₹${data.price}`);
+                  return { symbol, price: data.price };
+                }
+              }
+            } catch (err) {
+              console.log(`  ${symbol}: fetch failed`);
+            }
+            return null;
+          });
+          
+          const results = await Promise.all(pricePromises);
+          results.forEach(result => {
+            if (result) {
+              livePrices[result.symbol] = result.price;
+            }
+          });
+          
+          console.log('Individual price fetch results:', livePrices);
+        }
+      } else {
+        console.log('Market closed - will use cached prices');
+      }
+    }
+    
+    // NOW: Update trailing stops with fetched prices
+    if (openTrades.length > 0 && Object.keys(livePrices).length > 0) {
+      try {
+        console.log('📊 Updating trailing stops with live prices...');
+        
+        const updateResponse = await fetch('/api/update-trailing-stops', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({prices: livePrices})
+        });
+        
+        if (updateResponse.ok) {
+          const updateData = await updateResponse.json();
+          trades = updateData.trades || trades;  // Use updated trades
+          console.log('✅ Trailing stops updated for', updateData.updated, 'trades');
         }
       } catch (e) {
-        console.log('Trailing stop check skipped:', e.message);
+        console.warn('⚠️ Trailing stop update failed:', e.message);
       }
     }
     
-    // Calculate stats
-    const buys = trades.filter(t => t.signal === 'BUY');
-    const sells = trades.filter(t => t.signal === 'SELL');
-    const deployed = buys.reduce((sum, t) => sum + (t.entry_price * t.quantity), 0);
+    // DISPLAY TRADES WITH LIVE PRICES (not empty!)
+    console.log('📊 Displaying', trades.length, 'trades with', Object.keys(livePrices).length, 'live prices');
+    displayTrades(trades, livePrices);
     
-    // Calculate P&L metrics (including unrealized from live prices)
-    const closedTrades = trades.filter(t => t.status !== 'OPEN' && t.actual_profit_pct !== null);
-    
-    // Calculate charges: 0.03% per transaction (entry + exit), so 0.06% per trade
-    const chargeRate = 0.0003; // 0.03% per side
-    let totalChargesInRupees = 0;
-    
-    // Realized P&L: sum of closed trades minus charges
-    const realizedPnL = closedTrades.reduce((sum, t) => sum + (t.actual_profit_pct || 0), 0);
-    const realizedPnLAmount = closedTrades.reduce((sum, t) => {
-      if (t.actual_profit_pct && t.exit_price) {
-        const profitAmount = t.entry_price * t.quantity * t.actual_profit_pct / 100;
-        // Calculate charges for entry and exit
-        const entryCharges = t.entry_price * t.quantity * chargeRate;
-        const exitCharges = t.exit_price * t.quantity * chargeRate;
-        totalChargesInRupees += (entryCharges + exitCharges);
-        return sum + profitAmount;
-      }
-      return sum;
-    }, 0);
-    
-    // Unrealized P&L: calculated from current prices for OPEN trades
-    let unrealizedPnL = 0;
-    let unrealizedPnLAmount = 0;
-    for (const trade of openTrades) {
-      if (livePrices[trade.symbol]) {
-        const currentPrice = livePrices[trade.symbol];
-        let tradePnL;
-        if (trade.signal === 'BUY') {
-          tradePnL = ((currentPrice - trade.entry_price) / trade.entry_price) * 100;
-        } else {
-          tradePnL = ((trade.entry_price - currentPrice) / trade.entry_price) * 100;
+    // AUTO-CLOSE CHECK (fires in background)
+    if (isMarketOpen() && openTrades.length > 0) {
+      (async () => {
+        try {
+          const autoCloseResponse = await api('/api/auto-close/check', {method: 'POST'});
+          if (autoCloseResponse.closed_trades && autoCloseResponse.closed_trades.length > 0) {
+            console.warn(`⚠️ Auto-closed ${autoCloseResponse.closed_trades.length} trades via trailing stop`);
+            autoCloseResponse.closed_trades.forEach(t => {
+              toast(`🔴 Auto-closed ${t.symbol} - ${t.reason}`, 'warning');
+            });
+            // Reload trades after auto-close
+            setTimeout(() => loadPaperTradingStatus(), 1000);
+          }
+        } catch (e) {
+          console.log('Trailing stop check failed:', e.message);
         }
-        unrealizedPnL += tradePnL;
-        unrealizedPnLAmount += (trade.entry_price * trade.quantity * tradePnL / 100);
-        // Calculate charges for entry (exit charges apply only when trade closes)
-        const entryCharges = trade.entry_price * trade.quantity * chargeRate;
-        totalChargesInRupees += entryCharges;
-      }
+      })();
     }
     
-    // Total P&L (before charges): realized + unrealized
-    const totalPnLBeforeCharges = realizedPnL + (openTrades.length > 0 ? unrealizedPnL : 0);
-    
-    // Deduct charges from total P&L amount
-    const netPnLAmount = (realizedPnLAmount + unrealizedPnLAmount) - totalChargesInRupees;
-    
-    // Calculate P&L percentage after charges (based on deployed capital)
-    const totalPnL = deployed > 0 ? (netPnLAmount / deployed) * 100 : 0;
-    
-    // Win rate: winners / total closed trades
-    const winners = closedTrades.filter(t => t.actual_profit_pct > 0).length;
-    const losers = closedTrades.filter(t => t.actual_profit_pct <= 0).length;
-    const winRate = closedTrades.length > 0 ? ((winners / closedTrades.length) * 100).toFixed(1) + '%' : '-';
-    
-    // Update stats
-    document.getElementById('paper-count').textContent = trades.length;
-    document.getElementById('paper-buys').textContent = buys.length;
-    document.getElementById('paper-sells').textContent = sells.length;
-    document.getElementById('paper-capital').textContent = '₹' + deployed.toLocaleString('en-IN', {maximumFractionDigits: 0});
-    
-    // Update P&L metrics with dynamic values
-    const dailyPnLEl = document.getElementById('paper-daily-pnl');
-    if (dailyPnLEl) {
-      const chargesPercent = deployed > 0 ? (totalChargesInRupees / deployed) * 100 : 0;
-      const displayPnL = (totalPnL >= 0 ? '+' : '') + totalPnL.toFixed(2) + '% (₹' + netPnLAmount.toFixed(2) + ' after ₹' + totalChargesInRupees.toFixed(2) + ' charges)';
-      dailyPnLEl.textContent = displayPnL;
-      dailyPnLEl.style.color = totalPnL >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-    
-    const realizedPnLEl = document.getElementById('paper-realized-pnl');
-    if (realizedPnLEl) {
-      const realizedCharges = closedTrades.reduce((sum, t) => {
-        if (t.exit_price && t.entry_price) {
-          const entryCharges = t.entry_price * t.quantity * chargeRate;
-          const exitCharges = t.exit_price * t.quantity * chargeRate;
-          return sum + (entryCharges + exitCharges);
-        }
-        return sum;
-      }, 0);
-      const netRealizedAmount = realizedPnLAmount - realizedCharges;
-      const realizedPnLAfterCharges = (realizedPnLAmount > 0) ? ((netRealizedAmount / (closedTrades.length > 0 ? closedTrades.reduce((sum, t) => sum + (t.entry_price * t.quantity), 0) : 1)) * 100) : realizedPnL - ((realizedCharges / (closedTrades.length > 0 ? closedTrades.reduce((sum, t) => sum + (t.entry_price * t.quantity), 0) : 1)) * 100);
-      const displayRealizedPnL = (realizedPnLAfterCharges >= 0 ? '+' : '') + realizedPnLAfterCharges.toFixed(2) + '% (₹' + netRealizedAmount.toFixed(2) + ' after ₹' + realizedCharges.toFixed(2) + ' charges)';
-      realizedPnLEl.textContent = displayRealizedPnL;
-      realizedPnLEl.style.color = realizedPnLAfterCharges >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-    
-    const unrealizedPnLEl = document.getElementById('paper-unrealized-pnl');
-    if (unrealizedPnLEl) {
-      if (openTrades.length > 0) {
-        const displayUnrealizedPnL = (unrealizedPnL >= 0 ? '+' : '') + unrealizedPnL.toFixed(2) + '% (₹' + unrealizedPnLAmount.toFixed(2) + ', ' + openTrades.length + ' Open)';
-        unrealizedPnLEl.textContent = displayUnrealizedPnL;
-        unrealizedPnLEl.style.color = unrealizedPnL >= 0 ? 'var(--green)' : 'var(--red)';
-      } else {
-        unrealizedPnLEl.textContent = '-';
-        unrealizedPnLEl.style.color = 'var(--accent)';
-      }
-    }
-    
-    const winRateEl = document.getElementById('paper-win-rate');
-    if (winRateEl) {
-      winRateEl.textContent = winRate !== '-' ? winners + '/' + closedTrades.length + ' (' + winRate + ')' : '-';
-      if (winRate !== '-') {
-        const rate = parseInt(winRate);
-        winRateEl.style.color = rate >= 50 ? 'var(--green)' : 'var(--red)';
-      }
-    }
-    
-    // Display trades with live prices
-    displayPaperTrades(trades, livePrices);
-    
-    // Restore refresh button
+    // Restore refresh button state
     if (refreshBtn) {
       refreshBtn.textContent = 'Refresh';
       refreshBtn.disabled = false;
-      toast('Trades refreshed');
     }
-    
-  } catch (e) {
-    console.error('Paper trading status error:', e);
-    // Restore refresh button on error
+  } catch (error) {
+    console.error('loadPaperTradingStatus error:', error);
     const refreshBtn = document.querySelector('[onclick="loadPaperTradingStatus()"]');
     if (refreshBtn) {
       refreshBtn.textContent = 'Refresh';
       refreshBtn.disabled = false;
     }
-    toast('Failed to refresh trades');
   }
 }
 
-function displayPaperTrades(trades, livePrices = {}) {
-  const tbody = document.getElementById('paper-trades-body');
-  if (!tbody) return;
+// Helper function to display trades and stats
+function displayTradesWithStats(trades, livePrices = {}) {
+  // Calculate stats
+  const openTrades = trades.filter(t => t.status === 'OPEN');
+  const buys = trades.filter(t => t.signal === 'BUY');
+  const sells = trades.filter(t => t.signal === 'SELL');
+  const deployed = buys.reduce((sum, t) => sum + (t.entry_price * t.quantity), 0);
   
-  if (trades.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:20px">No paper trades yet</td></tr>';
-    return;
+  // Calculate P&L metrics
+  const closedTrades = trades.filter(t => 
+    t.status !== 'OPEN' && 
+    t.actual_profit_pct !== null &&
+    t.exit_time != null  // Only truly closed trades (with exit time)
+  );
+  
+  const chargeRate = 0.0003;
+  let totalChargesInRupees = 0;
+  
+  const realizedPnL = closedTrades.reduce((sum, t) => sum + (t.actual_profit_pct || 0), 0);
+  const realizedPnLAmount = closedTrades.reduce((sum, t) => {
+    if (t.actual_profit_pct && t.exit_price) {
+      const profitAmount = t.entry_price * t.quantity * t.actual_profit_pct / 100;
+      const entryCharges = t.entry_price * t.quantity * chargeRate;
+      const exitCharges = t.exit_price * t.quantity * chargeRate;
+      totalChargesInRupees += (entryCharges + exitCharges);
+      return sum + profitAmount;
+    }
+    return sum;
+  }, 0);
+  
+  // Unrealized P&L
+  let unrealizedPnL = 0;
+  let unrealizedPnLAmount = 0;
+  let totalInvestedValue = 0;
+  
+  for (const trade of openTrades) {
+    if (livePrices[trade.symbol]) {
+      const currentPrice = livePrices[trade.symbol];
+      const investedValue = trade.entry_price * trade.quantity;
+      const currentValue = currentPrice * trade.quantity;
+      
+      let tradePnL;
+      let tradePnLAmount;
+      
+      if (trade.signal === 'BUY') {
+        tradePnL = ((currentPrice - trade.entry_price) / trade.entry_price) * 100;
+        tradePnLAmount = currentValue - investedValue;
+      } else {
+        tradePnL = ((trade.entry_price - currentPrice) / trade.entry_price) * 100;
+        tradePnLAmount = investedValue - currentValue;
+      }
+      
+      unrealizedPnL += tradePnL;
+      unrealizedPnLAmount += tradePnLAmount;
+      totalInvestedValue += investedValue;
+    }
   }
   
-  // Sort trades: OPEN first, then CLOSED
-  const sortedTrades = trades.sort((a, b) => {
-    if (a.status === 'OPEN' && b.status !== 'OPEN') return -1;
-    if (a.status !== 'OPEN' && b.status === 'OPEN') return 1;
-    return 0;
-  });
+  const winners = closedTrades.filter(t => (t.actual_profit_pct || 0) > 0).length;
+  const winRate = closedTrades.length > 0 ? ((winners / closedTrades.length) * 100).toFixed(1) : '-';
   
-  const tradesHTML = sortedTrades.map((t, idx) => {
-    // Calculate dynamic P&L for OPEN trades
-    let displayPnL = t.actual_profit_pct;
+  const totalCharges = realizedCharges = (closedTrades.length > 0 ? closedTrades.reduce((sum, t) => {
+    if (t.exit_price && t.entry_price) {
+      const entryCharges = t.entry_price * t.quantity * chargeRate;
+      const exitCharges = t.exit_price * t.quantity * chargeRate;
+      return sum + (entryCharges + exitCharges);
+    }
+    return sum;
+  }, 0) : 0);
+  
+  // Update stats display
+  const realizedPnLEl = document.getElementById('paper-realized-pnl');
+  if (realizedPnLEl) {
+    const displayRealizedPnL = (realizedPnLAmount - realizedCharges >= 0 ? '+' : '') + (realizedPnLAmount - realizedCharges).toFixed(2) + '% (₹' + (realizedPnLAmount - realizedCharges).toFixed(2) + ' after ₹' + realizedCharges.toFixed(2) + ' charges)';
+    realizedPnLEl.textContent = displayRealizedPnL;
+    realizedPnLEl.style.color = (realizedPnLAmount - realizedCharges) >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  
+  const unrealizedPnLEl = document.getElementById('paper-unrealized-pnl');
+  if (unrealizedPnLEl) {
+    if (openTrades.length > 0 && totalInvestedValue > 0) {
+      // Calculate portfolio unrealized P&L percentage
+      const portfolioUnrealizedPct = (unrealizedPnLAmount / totalInvestedValue) * 100;
+      const displayUnrealizedPnL = (portfolioUnrealizedPct >= 0 ? '+' : '') + portfolioUnrealizedPct.toFixed(2) + '% (₹' + unrealizedPnLAmount.toFixed(2) + ', ' + openTrades.length + ' Open)';
+      unrealizedPnLEl.textContent = displayUnrealizedPnL;
+      unrealizedPnLEl.style.color = portfolioUnrealizedPct >= 0 ? 'var(--green)' : 'var(--red)';
+    } else {
+      unrealizedPnLEl.textContent = '-';
+      unrealizedPnLEl.style.color = 'var(--accent)';
+    }
+  }
+  
+  const winRateEl = document.getElementById('paper-win-rate');
+  if (winRateEl) {
+    winRateEl.textContent = winRate !== '-' ? winners + '/' + closedTrades.length + ' (' + winRate + '%)' : '-';
+    if (winRate !== '-') {
+      const rate = parseInt(winRate);
+      winRateEl.style.color = rate >= 50 ? 'var(--green)' : 'var(--red)';
+    }
+  }
+  
+  // Cache trades for P&L chart calculations
+  cachedTrades = trades;
+  
+  // Display trades
+  displayPaperTrades(trades, livePrices);
+  
+  // Refresh P&L chart if tab is visible (use cached data, no server call!)
+  const pnlChartTab = document.getElementById('pnl-chart');
+  if (pnlChartTab && !pnlChartTab.classList.contains('hidden')) {
+    refreshPnLChart(trades);
+  }
+}
+
+// Fast trade display (shows trades with or without live prices)
+function displayTrades(trades, livePrices = {}) {
+  displayTradesWithStats(trades, livePrices);
+}
+
+function displayPaperTrades(trades, livePrices = {}) {
+  try {
+    const tbody = document.getElementById('paper-trades-body');
+    if (!tbody) return;
+    
+    if (trades.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No paper trades yet</td></tr>';
+      return;
+    }
+    
+    // Sort trades: OPEN first, then CLOSED
+    const sortedTrades = trades.sort((a, b) => {
+      if (a.status === 'OPEN' && b.status !== 'OPEN') return -1;
+      if (a.status !== 'OPEN' && b.status === 'OPEN') return 1;
+      return 0;
+    });
+    
+    const tradesHTML = sortedTrades.map((t, idx) => {
+      // Ensure required fields have defaults
+      const qty = t.quantity || 1;
+      const projExit = t.projected_exit || t.entry_price;
+      const profitTarget = t.entry_profit_target || 0;
+      
+      // Calculate dynamic P&L for OPEN trades
+      const profitPct = getProfitPercent(t);
+      let displayPnL = profitPct;
     let displayPnLAmount = 0;
     let pnlColor = 'var(--accent)';
     let pnlDisplay = '-';
     let statusIndicator = '';
     
-    const amountInvested = t.entry_price * t.quantity;
+    const amountInvested = t.entry_price * qty;
     
     // Calculate breakeven for display
     const charges_and_tax = 0.16;
@@ -6511,7 +6721,7 @@ function displayPaperTrades(trades, livePrices = {}) {
       if (livePrices[t.symbol]) {
         // Live price available
         const currentPrice = livePrices[t.symbol];
-        const currentValue = currentPrice * t.quantity;
+        const currentValue = currentPrice * qty;
         
         if (t.signal === 'BUY') {
           displayPnL = ((currentPrice - t.entry_price) / t.entry_price) * 100;
@@ -6537,22 +6747,22 @@ function displayPaperTrades(trades, livePrices = {}) {
         pnlDisplay = `${statusIndicator}Invested: ₹${amountInvested.toFixed(2)}<br>Current: ₹${currentValue.toFixed(2)}<br>${pnlLabel}: ${displayPnL > 0 ? '+' : (displayPnL < 0 ? '-' : '')}₹${pnlAmount} (${displayPnL > 0 ? '+' : (displayPnL < 0 ? '-' : '')}${pnlPercent}%)`;
       } else {
         // No live price
-        const projectedValue = t.projected_exit * t.quantity;
-        const projectedPnL = t.entry_profit_target;
+        const projectedValue = projExit * qty;
+        const projectedPnL = profitTarget;
         displayPnLAmount = projectedValue - amountInvested;
         pnlColor = 'var(--accent)';
         
         pnlDisplay = `Invested: ₹${amountInvested.toFixed(2)}<br>Target: ₹${projectedValue.toFixed(2)}<br>Projected: ${projectedPnL > 0 ? '+' : ''}₹${displayPnLAmount.toFixed(2)} (${projectedPnL > 0 ? '+' : ''}${projectedPnL.toFixed(2)}%)<br><small style="color:#f59e0b;font-size:11px">awaiting live data</small>`;
       }
-    } else if (t.actual_profit_pct !== null && t.exit_price) {
-      const currentValue = t.exit_price * t.quantity;
+    } else if (profitPct !== null && t.exit_price) {
+      const currentValue = t.exit_price * qty;
       displayPnLAmount = currentValue - amountInvested;
-      pnlColor = t.actual_profit_pct > 0 ? 'var(--green)' : (t.actual_profit_pct < 0 ? 'var(--red)' : 'var(--yellow)');
+      pnlColor = profitPct > 0 ? 'var(--green)' : (profitPct < 0 ? 'var(--red)' : 'var(--yellow)');
       
       // For closed trades
-      const finalLabel = t.actual_profit_pct > 0 ? '✅ PROFIT' : (t.actual_profit_pct < 0 ? '❌ LOSS' : '⚪ BREAKEVEN');
+      const finalLabel = profitPct > 0 ? '✅ PROFIT' : (profitPct < 0 ? '❌ LOSS' : '⚪ BREAKEVEN');
       const exitReasonDisplay = t.exit_reason ? `<br><small style="color:#60a5fa;font-size:10px">${t.exit_reason}</small>` : '';
-      pnlDisplay = `Invested: ₹${amountInvested.toFixed(2)}<br>Exit: ₹${currentValue.toFixed(2)}<br>${finalLabel}: ${t.actual_profit_pct > 0 ? '+' : (t.actual_profit_pct < 0 ? '-' : '')}₹${Math.abs(displayPnLAmount).toFixed(2)} (${t.actual_profit_pct > 0 ? '+' : (t.actual_profit_pct < 0 ? '-' : '')}${Math.abs(t.actual_profit_pct).toFixed(2)}%)${exitReasonDisplay}`;
+      pnlDisplay = `Invested: ₹${amountInvested.toFixed(2)}<br>Exit: ₹${currentValue.toFixed(2)}<br>${finalLabel}: ${profitPct > 0 ? '+' : (profitPct < 0 ? '-' : '')}₹${Math.abs(displayPnLAmount).toFixed(2)} (${profitPct > 0 ? '+' : (profitPct < 0 ? '-' : '')}${Math.abs(profitPct).toFixed(2)}%)${exitReasonDisplay}`;
     }
     
     const isClosed = t.status !== 'OPEN';
@@ -6560,10 +6770,19 @@ function displayPaperTrades(trades, livePrices = {}) {
     const entryTime = new Date(t.entry_time).toLocaleTimeString();
     
     // SL display
-    let slDisplay = `₹${t.stop_loss != null ? parseFloat(t.stop_loss).toFixed(2) : 'N/A'}<br><small style="color:var(--muted);font-size:11px">${t.entry_profit_target > 0 ? '-2.0%' : '+2.0%'}</small>`;
+    let slDisplay = `₹${t.stop_loss != null ? parseFloat(t.stop_loss).toFixed(2) : 'N/A'}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '-2.0%' : '+2.0%'}</small>`;
     if (t.status === 'OPEN') {
-      const slProtectionColor = t.peak_pnl && t.peak_pnl > 0 ? 'var(--green)' : 'var(--accent)';
-      slDisplay = `₹${breakeven.toFixed(2)}<br><small style="color:${slProtectionColor};font-size:10px;font-weight:600">BREAKEVEN FLOOR</small><br><small style="color:var(--muted);font-size:10px">${distanceFromBreakeven >= 0 ? '+' : ''}${distanceFromBreakeven.toFixed(2)}% safe</small>`;
+      // For OPEN trades, show trailing stop if available, otherwise show breakeven
+      if (t.trailing_stop !== null && t.trailing_stop !== undefined) {
+        // Trailing stop is active - show its current value
+        const trailingStopPrice = parseFloat(t.trailing_stop).toFixed(2);
+        const priceFromEntry = t.entry_price ? ((t.trailing_stop - t.entry_price) / t.entry_price * 100).toFixed(2) : 0;
+        slDisplay = `₹${trailingStopPrice}<br><small style="color:#10b981;font-weight:600;font-size:10px">📈 TRAILING (+${priceFromEntry}%)</small>`;
+      } else {
+        // No trailing stop yet
+        const slProtectionColor = t.peak_pnl && t.peak_pnl > 0 ? 'var(--green)' : 'var(--accent)';
+        slDisplay = `₹${breakeven.toFixed(2)}<br><small style="color:${slProtectionColor};font-size:10px;font-weight:600">BREAKEVEN FLOOR</small><br><small style="color:var(--muted);font-size:10px">${distanceFromBreakeven >= 0 ? '+' : ''}${distanceFromBreakeven.toFixed(2)}% safe</small>`;
+      }
     }
     
     // Direction indicator for SELL trades
@@ -6585,11 +6804,11 @@ function displayPaperTrades(trades, livePrices = {}) {
       }
     }
     
-    return `<tr style="opacity:${isClosed ? 0.6 : 1}; background:${t.status === 'OPEN' ? 'rgba(16,185,129,0.05)' : 'transparent'};" onclick="viewTradeChart({entry_price: ${t.entry_price}, projected_exit: ${t.projected_exit}, exit_price: ${t.exit_price}, symbol: '${t.symbol}', signal: '${t.signal}', entry_time: '${entryTime}', actual_profit_pct: ${t.actual_profit_pct}});">
+    return `<tr style="opacity:${isClosed ? 0.6 : 1}; background:${t.status === 'OPEN' ? 'rgba(16,185,129,0.05)' : 'transparent'}; cursor:pointer;" class="trade-row" data-entry-price="${t.entry_price}" data-projected-exit="${t.projected_exit}" data-exit-price="${t.exit_price || ''}" data-symbol="${t.symbol}" data-signal="${t.signal}" data-entry-time="${entryTime}" data-profit-pct="${profitPct}">
       <td><strong>${t.symbol}</strong></td>
       <td><span class="signal-${t.signal.toLowerCase()}">${t.signal}</span>${directionHint ? `<br><small style="font-size:10px;color:var(--muted)">${directionHint}</small>` : ''}</td>
       <td>₹${t.entry_price.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${entryTime}</small></td>
-      <td>₹${t.projected_exit.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${t.entry_profit_target > 0 ? '+' : ''}${t.entry_profit_target.toFixed(1)}%</small></td>
+      <td>₹${projExit.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '+' : ''}${profitTarget.toFixed(1)}%</small></td>
       <td>${slDisplay}</td>
       <td>${t.exit_price ? '₹' + t.exit_price.toFixed(2) : (livePrices[t.symbol] ? '<strong style="color:var(--green)">₹' + livePrices[t.symbol].toFixed(2) + '</strong><br><small style="color:#10b981">LIVE</small>' : '-')}</td>
       <td><span style="color:${pnlColor}; font-weight:700; font-size:11px;line-height:1.6">${pnlDisplay}</span></td>
@@ -6598,10 +6817,60 @@ function displayPaperTrades(trades, livePrices = {}) {
   }).join('');
   
   tbody.innerHTML = tradesHTML;
+  
+  // Add click listeners to trade rows
+  document.querySelectorAll('.trade-row').forEach(row => {
+    row.addEventListener('click', function() {
+      const tradeData = {
+        entry_price: parseFloat(this.dataset.entryPrice),
+        projected_exit: parseFloat(this.dataset.projectedExit),
+        exit_price: this.dataset.exitPrice ? parseFloat(this.dataset.exitPrice) : null,
+        symbol: this.dataset.symbol,
+        signal: this.dataset.signal,
+        entry_time: this.dataset.entryTime,
+        actual_profit_pct: parseFloat(this.dataset.profitPct)
+      };
+      viewTradeChart(tradeData);
+    });
+  });
+  
+  } catch (error) {
+    console.error('Error in displayPaperTrades:', error);
+    const tbody = document.getElementById('paper-trades-body');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="8" style="color:#ff6b6b;text-align:center;padding:20px">
+        ⚠️ Error rendering trades: ${error.message}
+      </td></tr>`;
+    }
+  }
 }
 
 async function getLivePrices(symbols) {
   try {
+    // Don't fetch live prices outside market hours
+    function isMarketOpen() {
+      const now = new Date();
+      const day = now.getDay();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      
+      // Market closed on weekends
+      if (day === 0 || day === 6) return false;
+      
+      // Market hours: 9:15 AM to 3:30 PM IST
+      if (hours < 9) return false;
+      if (hours > 15) return false;
+      if (hours === 9 && minutes < 15) return false;
+      if (hours === 15 && minutes >= 30) return false;
+      
+      return true;
+    }
+    
+    if (!isMarketOpen()) {
+      console.log('Market closed - skipping live price fetch');
+      return {};
+    }
+    
     if (!symbols || symbols.length === 0) {
       return {};
     }
@@ -6762,254 +7031,950 @@ async function togglePaperTrading() {
 
 let _snapChartInstance = null;
 
-function displaySnapshotsWithMarkData(snapshots, tbody) {
+function displayTradesByDate(tradesByDate, sortedDates, tbody) {
   /**
-   * Display pre-built daily snapshots with full market data
-   * snapshots = {symbol: {trades: [...], candles: [...], date: "2026-04-02", ...}, ...}
+   * New interactive UI:
+   * 1. Date selector dropdown
+   * 2. Select date → Shows all stocks with trade counts
+   * 3. Click stock → View all trades together OR individually
+   * Filters to only closed trades
    */
-  const symbolsWithData = Object.keys(snapshots).filter(symbol => {
-    const data = snapshots[symbol];
-    return data.trades && data.trades.length > 0 && data.candles && data.candles.length > 0;
-  });
-  
-  if (!symbolsWithData.length) {
-    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 Daily snapshots will be available after 4 PM market close...</td></tr>';
+  if (!sortedDates || sortedDates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
     return;
   }
+
+  // Filter all trades to only closed ones
+  const filteredTradesByDate = {};
+  for (const date in tradesByDate) {
+    filteredTradesByDate[date] = tradesByDate[date].filter(t => 
+      t.exit_price != null && t.exit_time != null && t.status !== 'OPEN'
+    );
+  }
+  // Remove dates with no closed trades
+  const validDates = sortedDates.filter(d => filteredTradesByDate[d] && filteredTradesByDate[d].length > 0);
+  if (validDates.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
+    return;
+  }
+
+  // Store global reference (filtered)
+  window._tradesByDate = filteredTradesByDate;
+  window._tradesByDateSorted = validDates;
   
-  // Store snapshots globally for click handlers
-  window._tradeSnapshots = snapshots;
+  // Select the most recent date by default
+  const defaultDate = validDates[0];
+
+  // Build HTML structure
+  let html = `
+    <div style="margin-bottom:24px">
+      <!-- Date Selector Dropdown (Apple Style) -->
+      <div style="position:relative;display:inline-block;width:100%;max-width:300px">
+        <label style="display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Select Date</label>
+        <select id="trade-date-selector" onchange="onDateSelected(this.value)" style="
+          width:100%;
+          padding:12px 16px;
+          background:var(--surface);
+          border:1px solid var(--border);
+          border-radius:10px;
+          color:var(--text);
+          font-size:14px;
+          font-weight:600;
+          font-family:inherit;
+          cursor:pointer;
+          appearance:none;
+          background-image:url('data:image/svg+xml;charset=UTF-8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23999%22 stroke-width=%222%22><polyline points=%226 9 12 15 18 9%22></polyline></svg>');
+          background-repeat:no-repeat;
+          background-position:right 12px center;
+          background-size:18px;
+          padding-right:40px;
+        ">
+          ${validDates.map(date => {
+            const dateObj = new Date(date);
+            const dateStr = dateObj.toLocaleDateString('en-IN', {weekday:'short', year:'numeric', month:'short', day:'numeric'});
+            const selected = date === defaultDate ? 'selected' : '';
+            return `<option value="${date}" ${selected}>${dateStr}</option>`;
+          }).join('')}
+        </select>
+      </div>
+    </div>
+
+    <!-- Stocks Summary for Selected Date -->
+    <div id="stocks-summary-container">
+      ${buildStocksSummary(defaultDate, tradesByDate)}
+    </div>
+  `;
+
+  tbody.innerHTML = html;
   
-  // Flatten all trades from all symbols and create card grid with 2 columns
-  const allSymbols = symbolsWithData;
+  // Initialize with default date
+  window._selectedDate = defaultDate;
+}
+
+function buildStocksSummary(date, tradesByDate) {
+  /**
+   * Display all stocks with trade counts for the selected date
+   * Filters to only closed trades
+   */
+  let trades = tradesByDate[date] || [];
   
-  const html = `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;padding:0;max-width:100%">
-    ${allSymbols.map(symbol => {
-      const snapshot = snapshots[symbol];
-      const trades = snapshot.trades;
-      const candles = snapshot.candles || [];
-      const totalWins = trades.filter(t => t.actual_profit_pct > 0).length;
-      const totalLosses = trades.filter(t => t.actual_profit_pct <= 0).length;
-      const netPnL = trades.reduce((sum, t) => sum + (t.actual_profit_pct || 0), 0);
-      const isPositive = netPnL > 0;
-      const headerGradient = isPositive 
-        ? 'linear-gradient(135deg, rgba(52,199,89,0.1) 0%, rgba(52,199,89,0.05) 100%)'
-        : 'linear-gradient(135deg, rgba(255,59,48,0.1) 0%, rgba(255,59,48,0.05) 100%)';
-      
-      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:all 0.3s cubic-bezier(0.4,0,0.2,1);box-shadow:var(--shadow-sm);display:flex;flex-direction:column;transform:skewY(-1deg)" onmouseover="this.style.box-shadow='var(--shadow-md)';this.style.transform='translateY(-2px) skewY(-1deg)'" onmouseout="this.style.box-shadow='var(--shadow-sm)';this.style.transform='translateY(0) skewY(-1deg)'" onclick="viewSymbolChart('${symbol}')">
-        <div style="background:${headerGradient};padding:14px 16px;border-bottom:2px solid ${isPositive ? 'rgba(52,199,89,0.2)' : 'rgba(255,59,48,0.2)'}">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
-            <div>
-              <div style="font-size:18px;font-weight:700;letter-spacing:-0.02em;color:var(--text)">${symbol}</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:3px;font-weight:500">${trades.length}T • ${totalWins}W ${totalLosses}L</div>
+  // Filter to only closed trades
+  trades = trades.filter(t => t.exit_price != null && t.exit_time != null && t.status !== 'OPEN');
+  
+  if (trades.length === 0) {
+    return `<div style="color:var(--muted);text-align:center;padding:40px">No closed trades on this date</div>`;
+  }
+
+  // Group trades by symbol
+  const tradesBySymbol = {};
+  for (const trade of trades) {
+    const symbol = trade.symbol;
+    if (!tradesBySymbol[symbol]) {
+      tradesBySymbol[symbol] = [];
+    }
+    tradesBySymbol[symbol].push(trade);
+  }
+
+  const symbols = Object.keys(tradesBySymbol).sort();
+
+  let html = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px">
+  `;
+
+  for (const symbol of symbols) {
+    const symbolTrades = tradesBySymbol[symbol];
+    const wins = symbolTrades.filter(t => getProfitPercent(t) > 0).length;
+    const losses = symbolTrades.filter(t => getProfitPercent(t) <= 0).length;
+    const netPnL = symbolTrades.reduce((sum, t) => sum + getProfitPercent(t), 0);
+    const isPositive = netPnL > 0;
+    
+    const headerColor = isPositive ? '#10b981' : '#ef4444';
+    const headerBg = isPositive ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
+
+    html += `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:all 0.3s cubic-bezier(0.4,0,0.2,1)">
+        <div style="background:${headerBg};padding:14px 16px;border-bottom:2px solid ${headerColor}40">
+          <div style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px">${symbol}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="font-size:12px;color:var(--muted);font-weight:500">
+              ${symbolTrades.length}T • ${wins}W ${losses}L
             </div>
-            <div style="text-align:right">
-              <div style="font-size:16px;font-weight:700;color:${isPositive ? 'var(--green)' : 'var(--red)'}">
-                ${isPositive ? '+' : ''}${netPnL.toFixed(2)}%
-              </div>
-              <div style="font-size:10px;color:var(--muted);margin-top:2px;font-weight:500">
-                ${(totalWins/trades.length*100).toFixed(0)}% W
-              </div>
+            <div style="font-size:14px;font-weight:700;color:${headerColor}">
+              ${isPositive ? '+' : ''}${netPnL.toFixed(2)}%
             </div>
           </div>
         </div>
         
-        <div style="padding:12px 14px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;max-height:280px">
-          ${trades.map((t, idx) => {
-            const entryTime = new Date(t.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
-            const isWin = t.actual_profit_pct > 0;
-            const bgColor = isWin ? 'rgba(52,199,89,0.08)' : 'rgba(255,59,48,0.08)';
-            const borderColor = isWin ? 'rgba(52,199,89,0.3)' : 'rgba(255,59,48,0.3)';
-            const textColor = isWin ? 'var(--green)' : 'var(--red)';
-            
-            return `<div style="padding:10px;background:${bgColor};border:1px solid ${borderColor};border-radius:8px;font-size:11px;display:flex;justify-content:space-between;align-items:center;transition:all 0.2s;cursor:pointer" onclick="viewSymbolChart('${symbol}', ${idx})" onmouseover="this.style.background='${isWin ? 'rgba(52,199,89,0.15)' : 'rgba(255,59,48,0.15)'}';this.style.transform='translateX(1px)';this.style.boxShadow='0 0 8px ${textColor}40'" onmouseout="this.style.background='${bgColor}';this.style.transform='translateX(0)';this.style.boxShadow='none'">
-              <div>
-                <div style="font-weight:700;color:${isWin ? 'var(--green)' : 'var(--red)'};letter-spacing:0.01em;font-size:12px">
-                  ${t.signal} @${entryTime}
-                </div>
-                <div style="color:var(--muted);font-size:10px;margin-top:2px;font-weight:500">
-                  ₹${t.entry_price.toFixed(2)}→₹${t.exit_price.toFixed(2)} ${t.stop_loss != null ? '| SL:₹' + parseFloat(t.stop_loss).toFixed(2) : ''}
-                </div>
-              </div>
-              <div style="text-align:right">
-                <div style="font-weight:700;color:${textColor};font-size:12px">
-                  ${isWin ? '+' : ''}${t.actual_profit_pct.toFixed(2)}%
-                </div>
-              </div>
-            </div>`;
-          }).join('')}
+        <div style="padding:12px;display:flex;flex-direction:column;gap:8px">
+          <!-- View Options -->
+          <button onclick="viewTradesOverlay('${symbol}', '${window._selectedDate}')" style="
+            width:100%;
+            padding:8px 12px;
+            background:var(--accent);
+            color:white;
+            border:none;
+            border-radius:8px;
+            font-size:12px;
+            font-weight:600;
+            cursor:pointer;
+            transition:all 0.2s;
+          " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+            📊 View All Trades
+          </button>
+          
+          <button onclick="viewTradesCarousel('${symbol}', '${window._selectedDate}')" style="
+            width:100%;
+            padding:8px 12px;
+            background:var(--bg);
+            color:var(--text);
+            border:1px solid var(--border);
+            border-radius:8px;
+            font-size:12px;
+            font-weight:600;
+            cursor:pointer;
+            transition:all 0.2s;
+          " onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text)'">
+            🔄 View Individual Trades
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function onDateSelected(selectedDate) {
+  /**
+   * Handle date selection from dropdown
+   */
+  window._selectedDate = selectedDate;
+  const container = document.getElementById('stocks-summary-container');
+  if (container) {
+    container.innerHTML = buildStocksSummary(selectedDate, window._tradesByDate);
+  }
+}
+
+function viewTradesOverlay(symbol, date) {
+  /**
+   * View all trades of a symbol on a specific date overlaid on one chart
+   * Fetches full-day candle data from API for complete price history
+   * Filters to only closed trades for clarity
+   */
+  let trades = window._tradesByDate[date].filter(t => t.symbol === symbol) || [];
+  
+  // Filter to only closed trades (must have exit_price and exit_time)
+  const closedTrades = trades.filter(t => t.exit_price != null && t.exit_time != null);
+  const openTrades = trades.filter(t => !t.exit_price || !t.exit_time);
+  
+  trades = closedTrades; // Use only closed trades
+  
+  if (!trades.length) {
+    toast('No closed trades found');
+    return;
+  }
+
+  // Show modal
+  const modal = document.getElementById('snapshot-chart-modal');
+  if (modal) {
+    modal.style.display = 'block';
+  }
+
+  // Update title - show if there are open trades not included
+  const titleSuffix = openTrades.length > 0 ? ` (${openTrades.length} open trades excluded)` : '';
+  document.getElementById('snap-modal-title').textContent = `${symbol} - Closed Trades (${trades.length} trades on ${new Date(date).toLocaleDateString('en-IN')})${titleSuffix}`;
+
+  // Update trade info bar with summary
+  const infoBar = document.getElementById('snap-info-bar');
+  if (infoBar) {
+    const wins = trades.filter(t => getProfitPercent(t) > 0).length;
+    const losses = trades.filter(t => getProfitPercent(t) <= 0).length;
+    const totalPnL = trades.reduce((sum, t) => sum + getProfitPercent(t), 0);
+    const avgPnL = totalPnL / trades.length;
+    const isPositive = avgPnL > 0;
+    const statusColor = isPositive ? '#10b981' : '#ef4444';
+
+    infoBar.innerHTML = `
+      <div style="flex-shrink:0;min-width:300px;padding:16px;background:rgba(0,0,0,0.2);border-radius:10px;border-left:5px solid ${statusColor}">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;font-weight:600">Summary</div>
+        <div style="font-size:14px;font-weight:700;margin-bottom:6px">${symbol} • ${trades.length} Closed Trades</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:8px">
+          <div>Wins: <strong style="color:#10b981">${wins}</strong></div>
+          <div>Losses: <strong style="color:#ef4444">${losses}</strong></div>
+        </div>
+        <div style="font-size:13px;font-weight:700;color:${statusColor}">
+          Avg P&L: ${isPositive ? '+' : ''}${avgPnL.toFixed(2)}%
+        </div>
+      </div>
+    `;
+  }
+
+  // Fetch full-day candles from API for complete price history
+  // Use 5min-candles endpoint which handles full trading day properly
+  fetch(`/api/5min-candles?symbol=${symbol}&trading_date=${date}`)
+    .then(r => r.json())
+    .then(data => {
+      const candles = data.candles || [];
+      console.log(`✓ Fetched ${candles.length} candles for ${symbol} on ${date}`);
+      if (candles.length > 0) {
+        renderMultiTradeChart(trades, candles);
+      } else {
+        // Fallback to trade-snapshots endpoint
+        return fetch(`/api/trade-snapshots/candles/${symbol}/${date}`)
+          .then(r => r.json())
+          .then(fallbackData => {
+            const fbCandles = fallbackData.candles || [];
+            if (fbCandles.length > 0) {
+              renderMultiTradeChart(trades, fbCandles);
+            } else {
+              // Last resort: use embedded candles
+              const firstTrade = trades[0];
+              const embeddedCandles = firstTrade.candles || [];
+              if (embeddedCandles.length > 0) {
+                renderMultiTradeChart(trades, embeddedCandles);
+              } else {
+                renderFallbackChart(trades);
+              }
+            }
+          });
+      }
+    })
+    .catch(e => {
+      console.log('Failed to fetch candles:', e.message);
+      // Fallback chain
+      const firstTrade = trades[0];
+      const candles = firstTrade.candles || [];
+      if (candles.length > 0) {
+        renderMultiTradeChart(trades, candles);
+      } else {
+        renderFallbackChart(trades);
+      }
+    });
+}
+
+function viewTradesCarousel(symbol, date) {
+  /**
+   * View trades individually with navigation
+   */
+  const trades = window._tradesByDate[date].filter(t => t.symbol === symbol) || [];
+  if (!trades.length) {
+    toast('No trades found');
+    return;
+  }
+
+  // Store in global for carousel navigation
+  window._carouselTrades = trades;
+  window._carouselIndex = 0;
+
+  // Show first trade
+  showCarouselTrade(0);
+}
+
+function showCarouselTrade(index) {
+  /**
+   * Display a specific trade in carousel
+   */
+  const trades = window._carouselTrades;
+  if (!trades || index < 0 || index >= trades.length) return;
+
+  const trade = trades[index];
+  const symbol = trade.symbol;
+  const date = new Date(trade.entry_time).toLocaleDateString('en-IN');
+
+  // Show modal
+  const modal = document.getElementById('snapshot-chart-modal');
+  if (modal) {
+    modal.style.display = 'block';
+  }
+
+  // Update title with carousel controls
+  const entryTime = new Date(trade.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
+  document.getElementById('snap-modal-title').textContent = `${symbol} • ${trade.signal || 'BUY'} @ ${entryTime} (Trade ${index + 1}/${trades.length})`;
+
+  // Update trade info bar
+  const infoBar = document.getElementById('snap-info-bar');
+  if (infoBar) {
+    const profitPct = getProfitPercent(trade);
+    const safeProfit = typeof profitPct === 'number' ? profitPct : 0;
+    const isWin = safeProfit > 0;
+    const statusColor = isWin ? '#10b981' : '#ef4444';
+    const statusBg = isWin ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
+
+    const entryPx = parseFloat(trade.entry_price) || 0;
+    const exitPx = parseFloat(trade.exit_price) || 0;
+    const pnlAmount = Math.abs(exitPx - entryPx);
+
+    infoBar.innerHTML = `
+      <div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;font-size:14px;color:${statusColor}">${(trade.signal || 'BUY').toUpperCase()}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
         </div>
         
-        <div style="padding:10px 12px;border-top:1px solid var(--border);background:rgba(0,0,0,0.02);text-align:center;color:var(--accent);font-size:11px;font-weight:600;letter-spacing:0.02em">
-          📊 VIEW CHART
+        <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">ENTRY PRICE</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text)">₹${entryPx.toFixed(2)}</div>
         </div>
-      </div>`;
-    }).join('')}
-  </div>`;
+        
+        <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">EXIT PRICE</div>
+          <div style="font-size:16px;font-weight:700;color:${statusColor}">₹${exitPx.toFixed(2)}</div>
+        </div>
+        
+        <div style="background:${statusColor}15;padding:10px;border-radius:6px;border:1px solid ${statusColor}40;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">${isWin ? 'PROFIT' : 'LOSS'}</div>
+          <div style="font-size:18px;font-weight:700;color:${statusColor}">
+            ${isWin ? '+' : ''}₹${pnlAmount.toFixed(2)} <span style="font-size:13px">(${(safeProfit > 0 ? '+' : '')}${safeProfit.toFixed(2)}%)</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Carousel Controls -->
+      <div style="flex-shrink:0;display:flex;gap:8px;align-items:center">
+        <button onclick="showCarouselTrade(window._carouselIndex - 1)" style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-weight:600;font-size:12px" ${index <= 0 ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}>← Previous</button>
+        <span style="color:var(--muted);font-size:11px;min-width:60px;text-align:center">${index + 1}/${trades.length}</span>
+        <button onclick="showCarouselTrade(window._carouselIndex + 1)" style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-weight:600;font-size:12px" ${index >= trades.length - 1 ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}>Next →</button>
+      </div>
+    `;
+  }
+
+  // Render chart
+  const candles = trade.candles || [];
+  if (candles.length > 0) {
+    displayFullDayChartWithRealData(symbol, [trade], candles);
+  } else {
+    renderFallbackChart([trade]);
+  }
+
+  // Update carousel index
+  window._carouselIndex = index;
+}
+
+function renderMultiTradeChart(trades, candles) {
+  /**
+   * Professional multi-trade chart with clear trade numbering and full-day display
+   */
+  // Extract OHLCV data safely
+  const closePrices = candles.map(c => {
+    const v = c.c || c.close;
+    return v != null && !isNaN(v) ? v : null;
+  }).filter(p => p != null);
   
-  tbody.innerHTML = `<tr><td colspan="1" style="padding:0;border:none">${html}</td></tr>`;
+  const openPrices = candles.map((c, i) => {
+    const v = c.o || c.open;
+    return (v != null && !isNaN(v)) ? v : (closePrices[i] || null);
+  });
+  
+  const highPrices = candles.map((c, i) => {
+    const v = c.h || c.high;
+    return (v != null && !isNaN(v)) ? v : (closePrices[i] || null);
+  });
+  
+  const lowPrices = candles.map((c, i) => {
+    const v = c.l || c.low;
+    return (v != null && !isNaN(v)) ? v : (closePrices[i] || null);
+  });
+  
+  const volumes = candles.map(c => c.v || c.volume || 0);
+  const times = candles.map(c => c.time);
+
+  if (closePrices.length === 0) {
+    document.getElementById('snap-chart').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">No market data available</div>';
+    return;
+  }
+
+  // Price range with trades included
+  const tradePrices = trades.map(t => [
+    parseFloat(t.entry_price) || 0,
+    t.stop_loss != null ? parseFloat(t.stop_loss) : null,
+    parseFloat(t.exit_price) || parseFloat(t.entry_price) || 0
+  ]).flat().filter(p => p != null && !isNaN(p));
+  
+  const allPrices = [...closePrices, ...openPrices, ...highPrices, ...lowPrices, ...tradePrices];
+  let minPrice = Math.min(...allPrices);
+  let maxPrice = Math.max(...allPrices);
+  const pad = 0.015;
+  minPrice *= (1 - pad);
+  maxPrice *= (1 + pad);
+  const range = maxPrice - minPrice;
+  const maxVol = Math.max(...volumes, 1);
+
+  // Layout
+  const svgWidth = 1100;
+  const svgHeight = 460;
+  const leftPadding = 72;
+  const rightPadding = 62;
+  const topPadding = 32;
+  const volHeight = 50;
+  const bottomPadding = 44;
+  const chartBottom = svgHeight - bottomPadding - volHeight;
+  const plotWidth = svgWidth - leftPadding - rightPadding;
+  const plotHeight = chartBottom - topPadding;
+
+  const priceToY = (price) => chartBottom - ((price - minPrice) / range) * plotHeight;
+  const parseTime = (timeStr) => {
+    let hours = 9, minutes = 15;
+    if (typeof timeStr === 'string' && timeStr.includes('T')) {
+      const dt = new Date(timeStr);
+      hours = dt.getHours(); minutes = dt.getMinutes();
+    } else if (typeof timeStr === 'string' && timeStr.includes(':')) {
+      const parts = timeStr.split(':').map(Number);
+      hours = parts[0]; minutes = parts[1];
+    }
+    return { hours, minutes };
+  };
+  const timeToX = (timeStr) => {
+    const { hours, minutes } = parseTime(timeStr);
+    const totalMinutes = hours * 60 + minutes;
+    const startMin = 9 * 60 + 15;
+    const endMin = 15 * 60 + 30;
+    const progress = (totalMinutes - startMin) / (endMin - startMin);
+    return leftPadding + Math.max(0, Math.min(1, progress)) * plotWidth;
+  };
+
+  let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" style="background: linear-gradient(180deg, #0c1222 0%, #111827 40%, #0f172a 100%); border-radius: 14px; box-shadow: 0 4px 24px rgba(0,0,0,0.4);">`;
+
+  svg += `<defs>
+    <linearGradient id="multiGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(16,185,129,0.2)" />
+      <stop offset="100%" style="stop-color:rgba(16,185,129,0.01)" />
+    </linearGradient>
+    <linearGradient id="volGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(99,102,241,0.4)" />
+      <stop offset="100%" style="stop-color:rgba(99,102,241,0.05)" />
+    </linearGradient>
+    <filter id="multiGlow"><feGaussianBlur stdDeviation="1.5" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="tradePathGlow"><feGaussianBlur stdDeviation="2.5" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="softShadow"><feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="rgba(0,0,0,0.4)"/></filter>
+    <clipPath id="chartClip"><rect x="${leftPadding}" y="${topPadding}" width="${plotWidth}" height="${plotHeight}"/></clipPath>
+  </defs>`;
+
+  // Trading hours background guide
+  svg += `<text x="${leftPadding + 5}" y="${topPadding - 8}" fill="rgba(148,163,184,0.3)" font-size="9" font-weight="600" letter-spacing="1">MARKET HOURS (9:15 AM - 3:30 PM)</text>`;
+
+  // Alternating grid bands with time labels
+  const gridCount = 6;
+  for (let i = 0; i <= gridCount; i++) {
+    const y = topPadding + (i / gridCount) * plotHeight;
+    const price = maxPrice - (i / gridCount) * range;
+    if (i > 0 && i % 2 === 0) {
+      svg += `<rect x="${leftPadding}" y="${topPadding + ((i-1) / gridCount) * plotHeight}" width="${plotWidth}" height="${plotHeight / gridCount}" fill="rgba(148,163,184,0.02)"/>`;
+    }
+    svg += `<line x1="${leftPadding}" y1="${y}" x2="${svgWidth - rightPadding}" y2="${y}" stroke="rgba(100,116,139,0.12)" stroke-width="0.5"/>`;
+    svg += `<text x="${leftPadding - 10}" y="${y + 3}" text-anchor="end" fill="rgba(148,163,184,0.45)" font-size="10" font-family="monospace">₹${price.toFixed(0)}</text>`;
+  }
+
+  // Time labels across full trading day (every 30 min)
+  const timeLabels = [
+    {h:9, m:15, label:'9:15'}, {h:10, m:0, label:'10:00'}, {h:10, m:30, label:'10:30'},
+    {h:11, m:0, label:'11:00'}, {h:11, m:30, label:'11:30'}, {h:12, m:0, label:'12:00'},
+    {h:12, m:30, label:'12:30'}, {h:13, m:0, label:'1:00'}, {h:13, m:30, label:'1:30'},
+    {h:14, m:0, label:'2:00'}, {h:14, m:30, label:'2:30'}, {h:15, m:0, label:'3:00'},
+    {h:15, m:30, label:'3:30'}
+  ];
+  timeLabels.forEach(({h, m, label}) => {
+    const totalMin = h * 60 + m;
+    const progress = (totalMin - (9*60+15)) / ((15*60+30) - (9*60+15));
+    const x = leftPadding + progress * plotWidth;
+    svg += `<line x1="${x}" y1="${topPadding}" x2="${x}" y2="${chartBottom}" stroke="rgba(100,116,139,0.08)" stroke-width="0.5"/>`;
+    svg += `<text x="${x}" y="${svgHeight - bottomPadding + 18}" text-anchor="middle" fill="rgba(148,163,184,0.4)" font-size="8" font-weight="500">${label}</text>`;
+  });
+
+  // Candlestick bars (subtle background)
+  const candleW = Math.max(1, (plotWidth / closePrices.length) * 0.6);
+  candles.forEach((c, i) => {
+    if (!closePrices[i]) return;
+    const x = timeToX(times[i]);
+    const o = openPrices[i] || closePrices[i];
+    const h = highPrices[i] || closePrices[i];
+    const l = lowPrices[i] || closePrices[i];
+    const close = closePrices[i];
+    
+    const yHi = priceToY(h);
+    const yLo = priceToY(l);
+    const yOpen = priceToY(o);
+    const yClose = priceToY(close);
+    
+    const isGreen = close >= o;
+    const bodyY = Math.min(yOpen, yClose);
+    const bodyH = Math.abs(yClose - yOpen) || 1;
+    // Much more subtle candlesticks so trades stand out
+    const barColor = isGreen ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.15)';
+    
+    // High-low wick
+    svg += `<line x1="${x}" y1="${yHi}" x2="${x}" y2="${yLo}" stroke="${barColor}" stroke-width="0.6" opacity="0.4"/>`;
+    // Open-close body
+    svg += `<rect x="${x - candleW/2}" y="${bodyY}" width="${candleW}" height="${bodyH}" fill="${barColor}" rx="1" stroke="${isGreen ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.3)'}" stroke-width="0.3"/>`;
+  });
+
+  // Volume bars
+  const volBarW = Math.max(1, (plotWidth / closePrices.length) * 0.65);
+  candles.forEach((c, i) => {
+    const vol = c.v || c.volume || 0;
+    const x = timeToX(times[i]);
+    const barH = (vol / maxVol) * volHeight;
+    const volY = chartBottom + (volHeight - barH);
+    const cClose = c.c || c.close || 0;
+    const cOpen = c.o || c.open || cClose;
+    const barColor = cClose >= cOpen ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.25)';
+    svg += `<rect x="${x - volBarW/2}" y="${volY}" width="${volBarW}" height="${barH}" fill="${barColor}" rx="0.5"/>`;
+  });
+  svg += `<text x="${leftPadding - 10}" y="${chartBottom + volHeight / 2 + 3}" text-anchor="end" fill="rgba(148,163,184,0.25)" font-size="8" font-weight="500">VOL</text>`;
+
+  // Build smooth price curve using Catmull-Rom (or linear if sparse)
+  // If we have very few points, add interpolated points for smooth curve
+  let points = closePrices.map((price, i) => ({
+    x: timeToX(times[i]),
+    y: priceToY(price),
+    time: times[i]
+  }));
+
+  // Check if data is too sparse (missing hours)
+  const dataSpan = points.length > 0 ? Math.max(...points.map(p => p.x)) - Math.min(...points.map(p => p.x)) : 0;
+  const expectedSpan = plotWidth;
+  const dataIsSparse = dataSpan < expectedSpan * 0.5;  // Data covers less than 50% of day
+
+  // If data is sparse, we still want to show the full trading hours
+  // So ensure the x-axis extends to 3:30 PM even without data
+  const endOfDayX = timeToX('15:30');
+  
+  let pathData = points.length > 0 ? `M${points[0].x} ${points[0].y}` : '';
+  
+  if (points.length > 1) {
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[Math.min(points.length - 1, i + 2)];
+      const tension = 0.3;
+      const cp1x = p1.x + (p2.x - p0.x) * tension;
+      const cp1y = p1.y + (p2.y - p0.y) * tension;
+      const cp2x = p2.x - (p3.x - p1.x) * tension;
+      const cp2y = p2.y - (p3.y - p1.y) * tension;
+      pathData += ` C${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    }
+  }
+
+  // If data is sparse, add a note
+  if (dataIsSparse && points.length > 0) {
+    const lastPrice = closePrices[closePrices.length - 1];
+    const lastPt = points[points.length - 1];
+    svg += `<text x="${lastPt.x + 20}" y="${lastPt.y - 10}" fill="rgba(239,68,68,0.6)" font-size="10" font-weight="600">DATA SPARSE</text>`;
+    // Extend line to end of day visually
+    svg += `<line x1="${lastPt.x}" y1="${lastPt.y}" x2="${endOfDayX}" y2="${lastPt.y}" stroke="rgba(148,163,184,0.1)" stroke-width="1" stroke-dasharray="3,3"/>`;
+  }
+
+  // Fill under curve
+  if (closePrices.length > 0 && pathData.length > 2) {
+    const lastPt = points[points.length - 1];
+    const firstPt = points[0];
+    let fillPath = pathData + ` L${lastPt.x} ${chartBottom} L${firstPt.x} ${chartBottom} Z`;
+    svg += `<path d="${fillPath}" fill="url(#multiGrad)" clip-path="url(#chartClip)"/>`;
+  }
+
+  // Smooth price line - more prominent
+  svg += `<path d="${pathData}" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#multiGlow)" class="market-line" style="cursor:crosshair" clip-path="url(#chartClip)"/>`;
+
+  // Hover points for tooltip
+  const hoverStep = Math.max(1, Math.floor(closePrices.length / 150));
+  closePrices.forEach((price, i) => {
+    if (i % hoverStep !== 0 && i !== closePrices.length - 1) return;
+    const x = timeToX(times[i]);
+    const y = priceToY(price);
+    const o = (openPrices[i] || price).toFixed(2);
+    const h = (highPrices[i] || price).toFixed(2);
+    const l = (lowPrices[i] || price).toFixed(2);
+    const c = price.toFixed(2);
+    const v = (volumes[i] || 0).toLocaleString();
+    const t = times[i] || '';
+    const tParsed = parseTime(t);
+    const tFmt = `${String(tParsed.hours).padStart(2,'0')}:${String(tParsed.minutes).padStart(2,'0')}`;
+    svg += `<circle cx="${x}" cy="${y}" r="10" fill="transparent" class="price-hover-point" style="cursor:crosshair">
+      <title>${tFmt}  O:₹${o}  H:₹${h}  L:₹${l}  C:₹${c}  Vol:${v}</title>
+    </circle>`;
+  });
+
+  // Trade entry/exit markers with CLEAR NUMBERING and better spacing
+  trades.forEach((trade, tradeIdx) => {
+    const entryPrice = parseFloat(trade.entry_price) || 0;
+    const exitPrice = parseFloat(trade.exit_price) || entryPrice;
+    if (!entryPrice || isNaN(entryPrice)) return;
+
+    const xEntry = timeToX(trade.entry_time);
+    const yEntry = priceToY(entryPrice);
+    const xExit = timeToX(trade.exit_time || trade.entry_time);
+    const yExit = priceToY(exitPrice);
+    const pnlPercent = getProfitPercent(trade);
+    const isProfit = pnlPercent >= 0;
+    const pathColor = isProfit ? '#10b981' : '#ef4444';
+    const tradeNum = tradeIdx + 1;
+
+    // Curved trade path - elegant and refined
+    const midX = (xEntry + xExit) / 2;
+    const arcHeight = Math.min(45, Math.abs(yExit - yEntry) * 0.5 + 15);
+    const cpY = Math.min(yEntry, yExit) - arcHeight;
+    svg += `<path d="M${xEntry} ${yEntry} Q${midX} ${cpY}, ${xExit} ${yExit}" fill="none" stroke="${pathColor}" stroke-width="2.8" stroke-dasharray="5,3" opacity="0.85" filter="url(#tradePathGlow)" class="trade-path" data-trade="${tradeIdx}" style="cursor:pointer"/>`;
+
+    // Profit label - more subtle and minimal Apple style
+    const labelX = midX;
+    const labelY = cpY - 8;
+    const labelText = `T${tradeNum}: ${pnlPercent > 0 ? '+' : ''}${pnlPercent.toFixed(1)}%`;
+    const boxW = labelText.length * 7.5 + 12;
+    svg += `<g class="trade-label" data-trade="${tradeIdx}" style="cursor:pointer">
+      <rect x="${labelX - boxW/2}" y="${labelY - 14}" width="${boxW}" height="28" rx="12" fill="${pathColor}" opacity="0.92" filter="url(#softShadow)" stroke="rgba(255,255,255,0.4)" stroke-width="1.5"/>
+      <text x="${labelX}" y="${labelY + 5}" text-anchor="middle" fill="white" font-size="12" font-weight="900" letter-spacing="0.5">${labelText}</text>
+    </g>`;
+
+    // Entry marker - positioned AT the price point (peak is the anchor)
+    const triSize = 8;
+    const tEntry = parseTime(trade.entry_time);
+    const entryFmt = `${String(tEntry.hours).padStart(2,'0')}:${String(tEntry.minutes).padStart(2,'0')}`;
+    
+    svg += `<g class="trade-entry" data-trade="${tradeIdx}" style="cursor:pointer">
+      <polygon points="${xEntry},${yEntry} ${xEntry - triSize/2},${yEntry + triSize} ${xEntry + triSize/2},${yEntry + triSize}" fill="#10b981" stroke="rgba(255,255,255,0.8)" stroke-width="1.5" filter="url(#multiGlow)"/>
+      <text x="${xEntry + triSize + 2}" y="${yEntry + 4}" text-anchor="start" fill="#10b981" font-size="11" font-weight="900">T${tradeNum}</text>
+      <title>Trade #${tradeNum} ENTRY @ ${entryFmt}  ₹${entryPrice.toFixed(2)}</title>
+    </g>`;
+
+    // Exit marker - positioned AT the price point (peak is the anchor)
+    const tExit = parseTime(trade.exit_time || trade.entry_time);
+    const exitFmt = `${String(tExit.hours).padStart(2,'0')}:${String(tExit.minutes).padStart(2,'0')}`;
+    
+    svg += `<g class="trade-exit" data-trade="${tradeIdx}" style="cursor:pointer">
+      <polygon points="${xExit},${yExit} ${xExit - triSize/2},${yExit - triSize} ${xExit + triSize/2},${yExit - triSize}" fill="${pathColor}" stroke="rgba(255,255,255,0.8)" stroke-width="1.5" filter="url(#multiGlow)"/>
+      <text x="${xExit + triSize + 2}" y="${yExit + 4}" text-anchor="start" fill="${pathColor}" font-size="11" font-weight="900">T${tradeNum}</text>
+      <title>Trade #${tradeNum} EXIT @ ${exitFmt}  ₹${exitPrice.toFixed(2)}  P&L: ${isProfit ? '+' : ''}${pnlPercent.toFixed(2)}%</title>
+    </g>`;
+  });
+
+  svg += '</svg>';
+
+  const container = document.getElementById('snap-chart');
+  container.innerHTML = svg;
+
+  // --- Interactive hover logic ---
+  const svgEl = container.querySelector('svg');
+  const paths = svgEl.querySelectorAll('.trade-path');
+  const entries = svgEl.querySelectorAll('.trade-entry');
+  const exits = svgEl.querySelectorAll('.trade-exit');
+  const labels = svgEl.querySelectorAll('.trade-label');
+  const marketLine = svgEl.querySelector('.market-line');
+  const pricePoints = svgEl.querySelectorAll('.price-hover-point');
+
+  // Crosshair tooltip
+  const crossV = document.createElementNS('http://www.w3.org/2000/svg','line');
+  crossV.setAttribute('y1', topPadding); crossV.setAttribute('y2', chartBottom);
+  crossV.setAttribute('stroke','rgba(148,163,184,0.25)'); crossV.setAttribute('stroke-width','0.5');
+  crossV.setAttribute('stroke-dasharray','3,2'); crossV.style.display = 'none'; crossV.style.pointerEvents = 'none';
+  svgEl.appendChild(crossV);
+  
+  const crossH = document.createElementNS('http://www.w3.org/2000/svg','line');
+  crossH.setAttribute('x1', leftPadding); crossH.setAttribute('x2', svgWidth - rightPadding);
+  crossH.setAttribute('stroke','rgba(148,163,184,0.25)'); crossH.setAttribute('stroke-width','0.5');
+  crossH.setAttribute('stroke-dasharray','3,2'); crossH.style.display = 'none'; crossH.style.pointerEvents = 'none';
+  svgEl.appendChild(crossH);
+  
+  const crossDot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  crossDot.setAttribute('r','3'); crossDot.setAttribute('fill', '#10b981'); crossDot.setAttribute('stroke','white');
+  crossDot.setAttribute('stroke-width','1.5'); crossDot.style.display = 'none'; crossDot.style.pointerEvents = 'none';
+  svgEl.appendChild(crossDot);
+  
+  const crossLabel = document.createElementNS('http://www.w3.org/2000/svg','g');
+  crossLabel.style.display = 'none'; crossLabel.style.pointerEvents = 'none';
+  crossLabel.innerHTML = `<rect class="cl-bg" rx="3" fill="rgba(15,23,42,0.95)" stroke="#10b981" stroke-width="0.8"/><text class="cl-txt" fill="white" font-size="9" font-weight="600" font-family="monospace"></text>`;
+  svgEl.appendChild(crossLabel);
+
+  // Mouse hover logic
+  svgEl.addEventListener('mousemove', (e) => {
+    const rect = svgEl.getBoundingClientRect();
+    const scaleX = svgWidth / rect.width;
+    const scaleY = svgHeight / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
+    
+    if (mx < leftPadding || mx > svgWidth - rightPadding || my < topPadding || my > chartBottom) {
+      crossV.style.display = 'none'; crossH.style.display = 'none';
+      crossDot.style.display = 'none'; crossLabel.style.display = 'none';
+      return;
+    }
+    
+    // Find nearest point
+    let closest = 0, closestDist = Infinity;
+    points.forEach((pt, i) => {
+      const d = Math.abs(pt.x - mx);
+      if (d < closestDist) { closestDist = d; closest = i; }
+    });
+    
+    const pt = points[closest];
+    crossV.setAttribute('x1', pt.x); crossV.setAttribute('x2', pt.x); crossV.style.display = '';
+    crossH.setAttribute('y1', pt.y); crossH.setAttribute('y2', pt.y); crossH.style.display = '';
+    crossDot.setAttribute('cx', pt.x); crossDot.setAttribute('cy', pt.y); crossDot.style.display = '';
+    
+    // Tooltip label
+    const price = closePrices[closest];
+    const tParsed = parseTime(times[closest]);
+    const tFmt = `${String(tParsed.hours).padStart(2,'0')}:${String(tParsed.minutes).padStart(2,'0')}`;
+    const txt = `₹${price.toFixed(2)}  ${tFmt}`;
+    
+    const bg = crossLabel.querySelector('.cl-bg');
+    const tx = crossLabel.querySelector('.cl-txt');
+    tx.textContent = txt;
+    
+    const lx = Math.min(pt.x + 10, svgWidth - rightPadding - 100);
+    const ly = Math.max(pt.y - 22, topPadding + 5);
+    bg.setAttribute('x', lx - 4); bg.setAttribute('y', ly - 10);
+    bg.setAttribute('width', txt.length * 6.5 + 10); bg.setAttribute('height', 16);
+    tx.setAttribute('x', lx); tx.setAttribute('y', ly);
+    crossLabel.style.display = '';
+  });
+
+  svgEl.addEventListener('mouseleave', () => {
+    crossV.style.display = 'none'; crossH.style.display = 'none';
+    crossDot.style.display = 'none'; crossLabel.style.display = 'none';
+  });
+
+  // Trade highlight on hover - subtle refinement
+  const highlightTrade = (tradeIdx) => {
+    paths.forEach((p, i) => {
+      p.setAttribute('stroke-width', i == tradeIdx ? '3.5' : '2');
+      p.style.opacity = i == tradeIdx ? '1' : '0.2';
+    });
+    entries.forEach((e, i) => {
+      e.style.opacity = i == tradeIdx ? '1' : '0.35';
+    });
+    exits.forEach((ex, i) => {
+      ex.style.opacity = i == tradeIdx ? '1' : '0.35';
+    });
+    labels.forEach((l, i) => l.style.opacity = i == tradeIdx ? '1' : '0.25');
+  };
+  
+  const resetHighlight = () => {
+    paths.forEach(p => { p.setAttribute('stroke-width', '2.8'); p.style.opacity = '0.85'; });
+    entries.forEach(e => { e.style.opacity = '1'; });
+    exits.forEach(ex => { ex.style.opacity = '1'; });
+    labels.forEach(l => l.style.opacity = '1');
+  };
+
+  [paths, entries, exits, labels].forEach(group => {
+    group.forEach((el, i) => {
+      el.addEventListener('mouseover', () => highlightTrade(i));
+      el.addEventListener('mouseout', resetHighlight);
+    });
+  });
 }
 
 async function loadTradeSnapshots() {
   try {
     const tbody = document.getElementById('snapshots-body');
     
-    // First: Try to load pre-built daily snapshots (generated after 4 PM with full market data)
-    let snapshots = null;
+    // WORKFLOW: Load paper trades from JSON, then fetch actual price candles from DB for each trade date
+    let paperTrades = null;
+    
+    // 1. Load paper trades (source of truth for all trades)
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch('daily_snapshots.json?t=' + Date.now(), {
-        signal: controller.signal
-      });
+      const response = await fetch('paper_trades.json?t=' + Date.now(), { signal: controller.signal });
       clearTimeout(timeout);
-      
       if (response.ok) {
-        snapshots = await response.json();
-        console.log(`✓ Loaded pre-built daily snapshots with full market data`);
+        paperTrades = await response.json();
+        console.log(`✓ Loaded ${paperTrades.length} trades from paper_trades.json`);
+      }
+    } catch (e) {
+      console.log(`Paper trades unavailable: ${e.message}`);
+    }
+    
+    // 2. Process trades: create snapshots with actual DB price data
+    let snapshots = {};
+    
+    if (paperTrades && Array.isArray(paperTrades)) {
+      // Filter to only closed trades with required data
+      const closedTrades = paperTrades.filter(t => 
+        t.status && t.status !== 'OPEN' && 
+        t.exit_price != null && 
+        t.exit_time != null &&  // Truly closed trades must have exit_time
+        (t.actual_profit_pct != null || (t.entry_price && t.exit_price)) &&
+        t.entry_time  // Must have entry time to determine trade date
+      );
+      
+      // Group by (symbol, trade_date) to fetch candles once per date
+      const tradesBySymbolDate = {};
+      for (const trade of closedTrades) {
+        const tradeDate = trade.entry_time.split('T')[0];  // Extract YYYY-MM-DD
+        const key = `${trade.symbol}|${tradeDate}`;
+        if (!tradesBySymbolDate[key]) {
+          tradesBySymbolDate[key] = [];
+        }
+        tradesBySymbolDate[key].push(trade);
+      }
+      
+      // For each (symbol, date), fetch candles from API and build snapshot
+      const candleFetches = [];
+      for (const [key, trades] of Object.entries(tradesBySymbolDate)) {
+        const [symbol, tradeDate] = key.split('|');
         
-        // snapshots is {symbol: {trades, candles, ...}, ...}
-        if (snapshots && Object.keys(snapshots).length > 0) {
-          return displaySnapshotsWithMarkData(snapshots, tbody);
+        // Fetch candles from DB for this symbol on this date
+        candleFetches.push(
+          fetch(`/api/trade-snapshots/candles/${symbol}/${tradeDate}`)
+            .then(r => r.json())
+            .then(data => ({
+              symbol,
+              tradeDate,
+              trades,
+              candles: data.candles || []
+            }))
+            .catch(e => {
+              console.log(`Failed to fetch candles for ${symbol} on ${tradeDate}: ${e.message}`);
+              return {
+                symbol,
+                tradeDate,
+                trades,
+                candles: []  // Use trades without candles if fetch fails
+              };
+            })
+        );
+      }
+      
+      // Wait for all candle fetches in parallel
+      const candleResults = await Promise.all(candleFetches);
+      
+      // Build snapshot for each symbol
+      for (const result of candleResults) {
+        const { symbol, tradeDate, trades, candles } = result;
+        
+        if (!snapshots[symbol]) {
+          snapshots[symbol] = {
+            trades: [],
+            candles: candles,
+            date: tradeDate,
+            source: 'database'
+          };
+        }
+        
+        // Add trades to this symbol's snapshot
+        snapshots[symbol].trades = snapshots[symbol].trades.concat(trades);
+        
+        // Update candles if we got better data
+        if (candles.length > 0) {
+          snapshots[symbol].candles = candles;
         }
       }
-    } catch (e) {
-      console.log(`Daily snapshots not available yet: ${e.message}`);
-    }
-    
-    // Fallback: Load trades without full market data
-    let trades = null;
-    let error = null;
-    
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
       
-      const response = await fetch('paper_trades.json?t=' + Date.now(), {
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
-      
-      if (response.ok) {
-        trades = await response.json();
-        console.log(`✓ Loaded ${trades.length} trades from paper_trades.json`);
-      } else {
-        error = `HTTP ${response.status}`;
-      }
-    } catch (e) {
-      error = e.message;
-      console.log(`paper_trades.json fetch failed: ${error}, falling back to API`);
+      const symbolsWithCandles = Object.keys(snapshots).filter(s => snapshots[s].candles.length > 0);
+      console.log(`✓ Built snapshots for ${Object.keys(snapshots).length} symbols (${symbolsWithCandles.length} with candles)`);
     }
     
-    // Fallback: fetch from API if file failed
-    if (!trades && error) {
-      try {
-        const data = await api('/api/paper-trading/closed-trades');
-        trades = data.trades || [];
-        console.log(`✓ Loaded ${trades.length} closed trades from API`);
-      } catch (e) {
-        console.error('API fallback failed:', e.message);
-        trades = [];
-      }
-    }
+    // 3. Reorganize snapshots by DATE (group trades by trade date)
+    let tradesByDate = {};
+    let allTradesFlat = [];  // Flat list of all trades for easy lookup
     
-    // Get all closed/exited trades - filter for trades that have actually been closed
-    const closedTrades = trades ? trades.filter(t => {
-      // Include only trades that have exit data AND non-OPEN status
-      return t.status && t.status !== 'OPEN' && 
-             t.exit_price != null && 
-             t.actual_profit_pct != null;
-    }) : [];
-    
-    console.log(`Found ${closedTrades.length} properly closed trades`);
-    const uniqueSymbols = [...new Set(closedTrades.map(t => t.symbol))];
-    
-    if (!closedTrades || !closedTrades.length || !uniqueSymbols.length) {
-      tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">No closed trades yet. System waiting for first exit...</td></tr>';
-      return;
-    }
-    
-    // Group trades by symbol (normalize to {trades: [...], candles: []} format)
-    const tradesBySymbol = {};
-    for (const symbol of uniqueSymbols) {
-      tradesBySymbol[symbol] = {
-        trades: closedTrades.filter(t => t.symbol === symbol),
-        candles: [],  // No market data in fallback mode
-        date: new Date().toLocaleDateString('en-IN')
-      };
-    }
-    
-    // Store globally for click handlers
-    window._tradeSnapshots = tradesBySymbol;
-    
-    // Create card grid with 2 columns 
-    const html = `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;padding:0;max-width:100%">
-      ${uniqueSymbols.map(symbol => {
-        const trades = tradesBySymbol[symbol].trades;
-        const totalWins = trades.filter(t => t.actual_profit_pct > 0).length;
-        const totalLosses = trades.filter(t => t.actual_profit_pct <= 0).length;
-        const netPnL = trades.reduce((sum, t) => sum + (t.actual_profit_pct || 0), 0);
-        const isPositive = netPnL > 0;
-        const headerGradient = isPositive 
-          ? 'linear-gradient(135deg, rgba(52,199,89,0.1) 0%, rgba(52,199,89,0.05) 100%)'
-          : 'linear-gradient(135deg, rgba(255,59,48,0.1) 0%, rgba(255,59,48,0.05) 100%)';
+    for (const symbol in snapshots) {
+      const data = snapshots[symbol];
+      for (const trade of data.trades) {
+        const tradeDate = trade.entry_time.split('T')[0];  // Extract YYYY-MM-DD
+        if (!tradesByDate[tradeDate]) {
+          tradesByDate[tradeDate] = [];
+        }
         
-        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:all 0.3s cubic-bezier(0.4,0,0.2,1);box-shadow:var(--shadow-sm);display:flex;flex-direction:column;transform:skewY(-1deg)" onmouseover="this.style.box-shadow='var(--shadow-md)';this.style.transform='translateY(-2px) skewY(-1deg)'" onmouseout="this.style.box-shadow='var(--shadow-sm)';this.style.transform='translateY(0) skewY(-1deg)'" onclick="viewSymbolChart('${symbol}')">
-          <div style="background:${headerGradient};padding:14px 16px;border-bottom:2px solid ${isPositive ? 'rgba(52,199,89,0.2)' : 'rgba(255,59,48,0.2)'}">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
-              <div>
-                <div style="font-size:18px;font-weight:700;letter-spacing:-0.02em;color:var(--text)">${symbol}</div>
-                <div style="font-size:11px;color:var(--muted);margin-top:3px;font-weight:500">${trades.length}T • ${totalWins}W ${totalLosses}L</div>
-              </div>
-              <div style="text-align:right">
-                <div style="font-size:16px;font-weight:700;color:${isPositive ? 'var(--green)' : 'var(--red)'}">
-                  ${isPositive ? '+' : ''}${netPnL.toFixed(2)}%
-                </div>
-                <div style="font-size:10px;color:var(--muted);margin-top:2px;font-weight:500">
-                  ${(totalWins/trades.length*100).toFixed(0)}% W
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div style="padding:12px 14px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;max-height:280px">
-            ${trades.map((t, idx) => {
-              const entryTime = new Date(t.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
-              const isWin = t.actual_profit_pct > 0;
-              const bgColor = isWin ? 'rgba(52,199,89,0.08)' : 'rgba(255,59,48,0.08)';
-              const borderColor = isWin ? 'rgba(52,199,89,0.3)' : 'rgba(255,59,48,0.3)';
-              const textColor = isWin ? 'var(--green)' : 'var(--red)';
-              
-              return `<div style="padding:10px;background:${bgColor};border:1px solid ${borderColor};border-radius:8px;font-size:11px;display:flex;justify-content:space-between;align-items:center;transition:all 0.2s" onmouseover="this.style.background='${isWin ? 'rgba(52,199,89,0.12)' : 'rgba(255,59,48,0.12)'}';this.style.transform='translateX(1px)'" onmouseout="this.style.background='${bgColor}';this.style.transform='translateX(0)'">
-                <div>
-                  <div style="font-weight:700;color:${isWin ? 'var(--green)' : 'var(--red)'};letter-spacing:0.01em;font-size:12px">
-                    ${t.signal} @${entryTime}
-                  </div>
-                  <div style="color:var(--muted);font-size:10px;margin-top:2px;font-weight:500">
-                    ₹${t.entry_price.toFixed(2)}→₹${t.exit_price.toFixed(2)} ${t.stop_loss != null ? '| SL:₹' + parseFloat(t.stop_loss).toFixed(2) : ''}
-                  </div>
-                </div>
-                <div style="text-align:right">
-                  <div style="font-weight:700;color:${textColor};font-size:12px">
-                    ${isWin ? '+' : ''}${t.actual_profit_pct.toFixed(2)}%
-                  </div>
-                </div>
-              </div>`;
-            }).join('')}
-          </div>
-          
-          <div style="padding:10px 12px;border-top:1px solid var(--border);background:rgba(0,0,0,0.02);text-align:center;color:var(--accent);font-size:11px;font-weight:600;letter-spacing:0.02em">
-            📊 VIEW CHART
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`;
+        // Create unique trade ID
+        const tradeId = `${symbol}_${tradeDate}_${trade.entry_time}_${trade.entry_price}`;
+        const tradeWithData = {
+          ...trade,
+          candles: data.candles,
+          symbol: symbol,
+          tradeId: tradeId
+        };
+        
+        tradesByDate[tradeDate].push(tradeWithData);
+        allTradesFlat.push(tradeWithData);
+      }
+    }
     
-    tbody.innerHTML = `<tr><td colspan="1" style="padding:0;border:none">${html}</td></tr>`;
+    // Sort dates in descending order (newest first)
+    const sortedDates = Object.keys(tradesByDate).sort().reverse();
+    
+    // Store for global access
+    window._allTradesFlat = allTradesFlat;
+    
+    // 4. Display snapshots organized by date
+    if (sortedDates.length > 0) {
+      return displayTradesByDate(tradesByDate, sortedDates, tbody);
+    }
+    
+    // No data available from any source
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
   } catch (e) {
     console.error('Snapshot load error:', e);
-    toast('Failed to load trade snapshots');
+    console.error('Error stack:', e.stack);
+    const tbody = document.getElementById('snapshots-body');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="1" style="color:#ff6b6b;text-align:center;padding:16px">
+        ⚠️ Error loading snapshots: ${e.message}<br>
+        <small>Check browser console for details</small>
+      </td></tr>`;
+    }
+    toast('❌ Failed to load trade snapshots: ' + (e.message || 'Unknown error'));
   }
 }
 
@@ -7035,8 +8000,13 @@ function viewSymbolChart(symbol, tradeIndex = null) {
         trades = [trades[tradeIndex]];
       }
       
-      // ALWAYS fetch fresh 1-minute candle data for today (not from snapshot)
-      fetchTodaysCandlesAndShowChart(symbol, trades);
+      // Use snapshot candles if available, otherwise fetch fresh ones
+      if (snapshotData.candles && snapshotData.candles.length > 0) {
+        displayFullDayChartWithRealData(symbol, trades, snapshotData.candles);
+      } else {
+        // Fallback: try to fetch fresh 1-minute candle data
+        fetchTodaysCandlesAndShowChart(symbol, trades);
+      }
     } else {
       // Old format: just trades array
       displaySimplifiedSymbolChart(symbol, snapshotData);
@@ -7050,6 +8020,98 @@ function viewSymbolChart(symbol, tradeIndex = null) {
   } catch (e) {
     console.error('Error opening chart:', e);
     toast('Error opening chart: ' + e.message);
+  }
+}
+
+function viewTradeByDate(tradeId) {
+  /**
+   * View a specific trade's chart from the date-based display
+   */
+  try {
+    if (!window._allTradesFlat) {
+      toast('Trade data not loaded');
+      return;
+    }
+    
+    const trade = window._allTradesFlat.find(t => t.tradeId === tradeId);
+    if (!trade) {
+      toast('Trade not found: ' + tradeId);
+      return;
+    }
+    
+    // Validate trade data
+    if (!trade.entry_price || !trade.exit_price || trade.entry_time == null) {
+      console.error('Invalid trade data:', trade);
+      toast('⚠️ Trade missing required data (entry/exit price)');
+      return;
+    }
+    
+    const symbol = trade.symbol;
+    const candles = trade.candles || [];
+    
+    // Show the modal and display the chart
+    const modal = document.getElementById('snapshot-chart-modal');
+    if (modal) {
+      modal.style.display = 'block';
+    }
+    
+    // Update title
+    const entryTime = new Date(trade.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'});
+    document.getElementById('snap-modal-title').textContent = `${symbol} • ${trade.signal || 'BUY'} @ ${entryTime}`;
+    
+    // Update trade info bar
+    const infoBar = document.getElementById('snap-info-bar');
+    if (infoBar) {
+      const profitPct = getProfitPercent(trade);
+      const safeProfit = typeof profitPct === 'number' ? profitPct : 0;
+      const isWin = safeProfit > 0;
+      const statusColor = isWin ? '#10b981' : '#ef4444';
+      const statusBg = isWin ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
+      
+      const entryPx = parseFloat(trade.entry_price) || 0;
+      const exitPx = parseFloat(trade.exit_price) || 0;
+      const pnlAmount = Math.abs(exitPx - entryPx);
+      
+      infoBar.innerHTML = `<div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;font-size:14px;color:${statusColor}">${(trade.signal || 'BUY').toUpperCase()}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">@ ${entryTime}</div>
+        
+        <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">ENTRY PRICE</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text)">₹${entryPx.toFixed(2)}</div>
+        </div>
+        
+        <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">EXIT PRICE</div>
+          <div style="font-size:16px;font-weight:700;color:${statusColor}">₹${exitPx.toFixed(2)}</div>
+        </div>
+        
+        <div style="background:${statusColor}15;padding:10px;border-radius:6px;border:1px solid ${statusColor}40;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:3px">${isWin ? 'PROFIT' : 'LOSS'}</div>
+          <div style="font-size:18px;font-weight:700;color:${statusColor}">
+            ${isWin ? '+' : ''}₹${pnlAmount.toFixed(2)} <span style="font-size:13px">(${(safeProfit > 0 ? '+' : '')}${safeProfit.toFixed(2)}%)</span>
+          </div>
+        </div>
+      </div>`;
+    }
+    
+    // Render chart with available candles
+    if (candles && candles.length > 0) {
+      console.log(`Rendering chart with ${candles.length} candles`);
+      displayFullDayChartWithRealData(symbol, [trade], candles);
+    } else {
+      // Show fallback chart without candles - use trade reference points
+      console.log('No candles available, showing simplified chart');
+      renderFallbackChart([trade]);
+    }
+    
+  } catch (e) {
+    console.error('Error viewing trade:', e);
+    console.error('Stack:', e.stack);
+    toast('Error opening trade chart: ' + e.message);
   }
 }
 
@@ -7863,6 +8925,7 @@ async function displaySimplifiedSymbolChart(symbol, trades) {
     renderFallbackChart(trades);
   }
   
+  // Show the modal
   modal.style.display = 'block';
 }
 
@@ -8348,6 +9411,24 @@ function startPriceStream() {
 // Start SSE on page load (optional — enable by uncommenting below)
 // startPriceStream();
 
+// Check if within market hours (9:15 AM to 3:30 PM IST Monday-Friday)
+function isMarketHours() {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sunday, 6=Saturday
+  const hours = now.getHours();
+  const minutes = now.getMinutes();
+  
+  // Market closed on weekends
+  if (day === 0 || day === 6) return false;
+  
+  // Market hours: 9:15 AM to 3:30 PM (09:15 to 15:30)
+  const currentMin = hours * 60 + minutes;
+  const marketOpen = 9 * 60 + 15; // 9:15 AM
+  const marketClose = 15 * 60 + 30; // 3:30 PM
+  
+  return currentMin >= marketOpen && currentMin < marketClose;
+}
+
 // Initialize components on page load
 document.addEventListener('DOMContentLoaded', function() {
   fbtLoadInstruments();
@@ -8359,22 +9440,9 @@ document.addEventListener('DOMContentLoaded', function() {
   const startupTimeout = setTimeout(() => {
     console.warn('Paper trades loading timed out on startup');
     toast('⏱️ Paper trades loading is slow - try manual refresh');
-  }, 10000);
+  }, 15000);
   
   loadPaperTradingStatus().finally(() => clearTimeout(startupTimeout));
-  
-  // Check if within market hours (9 AM to 4 PM Monday-Friday)
-  function isMarketHours() {
-    const now = new Date();
-    const day = now.getDay(); // 0=Sunday, 6=Saturday
-    const hours = now.getHours();
-    
-    // Market closed on weekends
-    if (day === 0 || day === 6) return false;
-    
-    // Market hours: 9 AM (09:00) to 4 PM (16:00)
-    return hours >= 9 && hours < 16;
-  }
   
   // Update market hours badge
   function updateMarketHoursBadge() {
@@ -8386,7 +9454,7 @@ document.addEventListener('DOMContentLoaded', function() {
       badge.style.background = '#dcfce7';
       badge.style.color = '#166534';
     } else {
-      badge.textContent = '⏸ Off-hours (9 AM - 4 PM)';
+      badge.textContent = '⏸ Off-hours (9:15 AM - 3:30 PM IST)';
       badge.style.background = '#fee2e2';
       badge.style.color = '#991b1b';
     }
@@ -8404,10 +9472,303 @@ document.addEventListener('DOMContentLoaded', function() {
       isRefreshing = true;
       loadPaperTradingStatus();
       loadTradeSnapshots();
+      // refreshPnLChart();  // DISABLED: Causing browser lag, will refresh manually when P&L tab clicked
       isRefreshing = false;
     }
-  }, 5000);
+  }, 5000);  // Changed from 15000ms to 5000ms for real-time updates
 });
+
+// ── P&L Chart Functions ──────────────────────────
+
+let pnlChartInstance = null;
+let cachedPnLData = null;  // Cache P&L data to avoid recalculation
+let cachedTrades = null;   // Cache latest trades for P&L chart calculation
+
+// Calculate P&L data from trades (CLIENT-SIDE - no server call!)
+function calculatePnLFromTrades(trades) {
+  // Filter to closed trades with exit_time
+  const closedTrades = trades.filter(t => 
+    t.status !== 'OPEN' && 
+    t.actual_profit_pct !== null &&
+    t.exit_time != null
+  );
+  
+  // Sort by exit_time
+  closedTrades.sort((a, b) => {
+    const timeA = new Date(a.exit_time).getTime();
+    const timeB = new Date(b.exit_time).getTime();
+    return timeA - timeB;
+  });
+  
+  if (closedTrades.length === 0) {
+    return null;
+  }
+  
+  // Build cumulative P&L over time
+  let cumulativePnL = 0;
+  let peakPnL = 0;
+  const pnlData = [];
+  
+  for (const trade of closedTrades) {
+    const pnlPct = trade.actual_profit_pct || 0;
+    
+    // Add to cumulative
+    cumulativePnL += pnlPct;
+    peakPnL = Math.max(peakPnL, cumulativePnL);
+    
+    // Format exit time
+    let timeStr = '';
+    if (trade.exit_time) {
+      const exitDt = new Date(trade.exit_time);
+      const month = String(exitDt.getMonth() + 1).padStart(2, '0');
+      const date = String(exitDt.getDate()).padStart(2, '0');
+      const hours = String(exitDt.getHours()).padStart(2, '0');
+      const mins = String(exitDt.getMinutes()).padStart(2, '0');
+      timeStr = `${month}-${date} ${hours}:${mins}`;
+    }
+    
+    pnlData.push({
+      timestamp: trade.exit_time,
+      time: timeStr,
+      symbol: trade.symbol,
+      trade_id: trade.id,
+      trade_pnl: pnlPct,
+      cumulative_pnl: Math.round(cumulativePnL * 100) / 100,
+      peak_pnl: Math.round(peakPnL * 100) / 100,
+    });
+  }
+  
+  // Calculate statistics
+  if (pnlData.length > 0) {
+    const finalPnL = pnlData[pnlData.length - 1].cumulative_pnl;
+    const minPnL = Math.min(...pnlData.map(d => d.cumulative_pnl));
+    const maxPnL = Math.max(...pnlData.map(d => d.cumulative_pnl));
+    
+    return {
+      pnl_data: pnlData,
+      statistics: {
+        current_pnl: finalPnL,
+        peak_pnl: maxPnL,
+        trough_pnl: minPnL,
+        total_trades_closed: closedTrades.length,
+      }
+    };
+  }
+  
+  return null;
+}
+
+async function refreshPnLChart(trades) {
+  try {
+    // Calculate P&L from trades (CLIENT-SIDE - NO SERVER CALL!)
+    if (!trades) {
+      clearPnLChart();
+      return;
+    }
+    
+    const pnlResult = calculatePnLFromTrades(trades);
+    if (!pnlResult || !pnlResult.pnl_data || pnlResult.pnl_data.length === 0) {
+      clearPnLChart();
+      return;
+    }
+    
+    // Cache the result
+    cachedPnLData = pnlResult;
+    
+    // Update stats
+    if (pnlResult.statistics) {
+      const currentEl = document.getElementById('pnl-current');
+      const peakEl = document.getElementById('pnl-peak');
+      const percentEl = document.getElementById('pnl-percent');
+      
+      if (currentEl) {
+        const curr = pnlResult.statistics.current_pnl;
+        currentEl.textContent = (curr >= 0 ? '+' : '') + curr.toFixed(2) + '%';
+        currentEl.style.color = curr >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      
+      if (peakEl) {
+        const peak = pnlResult.statistics.peak_pnl;
+        peakEl.textContent = (peak >= 0 ? '+' : '') + peak.toFixed(2) + '%';
+        peakEl.style.color = peak >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      
+      if (percentEl) {
+        percentEl.textContent = pnlResult.statistics.total_trades_closed + ' closed';
+      }
+    }
+    
+    renderCumulativePnLChart(pnlResult.pnl_data);
+  } catch (e) {
+    console.error('Failed to refresh P&L chart:', e);
+  }
+}
+
+function renderCumulativePnLChart(pnlData) {
+  const canvas = document.getElementById('pnl-chart-canvas');
+  if (!canvas) return;
+  
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  
+  // Prepare data - sample if too many points for cleaner visualization
+  let sampledData = pnlData;
+  if (pnlData.length > 100) {
+    const sampleRate = Math.ceil(pnlData.length / 100);
+    sampledData = pnlData.filter((_, i) => i % sampleRate === 0);
+  }
+  
+  const labels = sampledData.map(d => {
+    const dateStr = d.time || '';
+    // Extract date and time parts
+    if (dateStr.length > 10) {
+      return dateStr.substring(5, 16); // "04-15 14:23" format
+    }
+    return dateStr;
+  });
+  
+  const cumulativePnL = sampledData.map(d => d.cumulative_pnl);
+  const peakPnL = sampledData.map(d => d.peak_pnl);
+  
+  const minPnL = Math.min(...cumulativePnL, 0);
+  const maxPnL = Math.max(...peakPnL, 0);
+  const rangePnL = maxPnL - minPnL;
+  const padding = Math.max(1, rangePnL * 0.15);
+  
+  // Destroy old chart instance
+  if (pnlChartInstance) {
+    pnlChartInstance.destroy();
+  }
+  
+  // Determine color based on final P&L
+  const finalPnL = cumulativePnL[cumulativePnL.length - 1];
+  const isProfit = finalPnL >= 0;
+  const primaryColor = isProfit ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)';
+  const primaryColorLight = isProfit ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)';
+  
+  // Create new chart
+  pnlChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Cumulative P&L (%)',
+          data: cumulativePnL,
+          borderColor: primaryColor,
+          backgroundColor: primaryColorLight,
+          borderWidth: 3,
+          fill: true,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 8,
+          pointBackgroundColor: primaryColor,
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2.5,
+        },
+        {
+          label: 'Peak P&L (%)',
+          data: peakPnL,
+          borderColor: 'rgba(0, 113, 227, 0.35)',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          borderDash: [5, 5],
+          fill: false,
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 6,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: {
+        intersect: false,
+        mode: 'index'
+      },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            color: 'var(--muted)',
+            font: { size: 12, weight: '600' },
+            padding: 16,
+            usePointStyle: true,
+            boxWidth: 8,
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(29, 29, 31, 0.95)',
+          titleColor: '#fff',
+          bodyColor: '#fff',
+          borderColor: primaryColor,
+          borderWidth: 1.5,
+          padding: 14,
+          displayColors: true,
+          callbacks: {
+            title: function(ctx) {
+              const point = ctx[0];
+              const fullData = pnlData[pnlData.findIndex(d => labels.includes(d.time))];
+              return fullData ? fullData.time : point.label;
+            },
+            label: function(ctx) {
+              const value = ctx.parsed.y;
+              const symbol = ctx.dataset.label.includes('Peak') ? '' : (ctx.dataset.data === cumulativePnL ? '' : '');
+              return ctx.dataset.label + ': ' + (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+            },
+            afterLabel: function(ctx) {
+              const idx = ctx.dataIndex;
+              if (ctx.dataset.data === cumulativePnL && idx < sampledData.length) {
+                return 'Trades closed: ' + (idx + 1);
+              }
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          min: minPnL - padding,
+          max: maxPnL + padding,
+          ticks: {
+            color: 'var(--muted)',
+            font: { size: 11, weight: '500' },
+            callback: function(value) {
+              return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+            }
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.05)',
+            drawBorder: false,
+            lineWidth: 0.5,
+          }
+        },
+        x: {
+          ticks: {
+            color: 'var(--muted)',
+            font: { size: 10, weight: '500' },
+            maxRotation: 45,
+            minRotation: 0,
+          },
+          grid: {
+            display: false,
+            drawBorder: false,
+          }
+        }
+      }
+    }
+  });
+}
+
+function clearPnLChart() {
+  if (pnlChartInstance) {
+    pnlChartInstance.destroy();
+    pnlChartInstance = null;
+  }
+}
+
 
 </script>
 </body>

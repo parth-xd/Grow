@@ -61,14 +61,14 @@ def _fetch_trade_candles(symbol, entry_time, exit_time):
         start_str = entry_dt.strftime("%Y-%m-%d %H:%M:%S")
         end_str = exit_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Fetch 1-minute candles
+        # Fetch 5-minute candles (Groww doesn't support 1-minute)
         resp = groww.get_historical_candle_data(
             trading_symbol=symbol,
             exchange='NSE',
             segment='EQ',
             start_time=start_str,
             end_time=end_str,
-            interval_in_minutes=1
+            interval_in_minutes=5
         )
         
         candles_raw = resp.get("candles", [])
@@ -168,7 +168,67 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
         should_close = False
         exit_reason = ""
         
-        # GET HARD STOP LOSS FROM TRADE DEFINITION
+        # CHECK TARGET PRICE HIT WITH SIGNAL VALIDATION
+        target_price = trade.get('projected_exit')
+        target_hit = False
+        
+        if target_price:
+            if signal == 'BUY':
+                target_hit = current_price >= target_price
+            elif signal == 'SELL':
+                target_hit = current_price <= target_price
+        
+        # If target was hit, CLOSE IMMEDIATELY to lock in profits
+        if target_hit:
+            if signal == 'BUY':
+                # BUY STRATEGY: Close immediately at target with profit
+                if current_pnl > 0:
+                    should_close = True
+                    exit_reason = f"TARGET_HIT_PROFIT_LOCKED (Price: ₹{current_price:.2f} ≥ Target: ₹{target_price:.2f} | P&L: +{current_pnl:.2f}%)"
+                else:
+                    # Negative P&L at target - close to minimize loss
+                    should_close = True
+                    exit_reason = f"TARGET_HIT_NO_PROFIT (Price: ₹{current_price:.2f} ≥ Target: ₹{target_price:.2f})"
+            
+            elif signal == 'SELL':
+                # SELL STRATEGY: Close immediately at target with profit
+                if current_pnl > 0:
+                    should_close = True
+                    exit_reason = f"TARGET_HIT_PROFIT_LOCKED (Price: ₹{current_price:.2f} ≤ Target: ₹{target_price:.2f} | P&L: +{current_pnl:.2f}%)"
+                else:
+                    # Negative P&L at target - close to minimize loss
+                    should_close = True
+                    exit_reason = f"TARGET_HIT_NO_PROFIT (Price: ₹{current_price:.2f} ≤ Target: ₹{target_price:.2f})"
+        
+        # If target was hit with negative P&L, close the trade
+        if should_close:
+            trade['exit_price'] = round(current_price, 2)
+            trade['exit_time'] = datetime.now(ist).isoformat()
+            trade['actual_profit_pnl'] = round(current_pnl, 2)
+            trade['status'] = 'HIT_TARGET'
+            trade['exit_reason'] = exit_reason
+            
+            # Fetch and store intraday candles for this trade (entry -> exit)
+            candles = _fetch_trade_candles(symbol, trade.get('entry_time'), trade['exit_time'])
+            if candles:
+                trade['intraday_candles'] = candles
+                trade['candle_count'] = len(candles)
+            
+            closed_trades.append({
+                'id': trade['id'],
+                'symbol': symbol,
+                'signal': signal,
+                'entry_price': entry_price,
+                'exit_price': current_price,
+                'pnl': current_pnl,
+                'reason': exit_reason,
+                'target': target_price
+            })
+            
+            print(f"✓ TARGET HIT: {symbol} {signal} | Entry: ₹{entry_price:.2f} → Target: ₹{target_price:.2f} (at: ₹{current_price:.2f}) | P&L: {current_pnl:.2f}%")
+            continue  # Move to next trade
+        
+        # Get the hard stop loss
         hard_stop_loss = trade.get('stop_loss')
         
         # CHECK 0: ABSOLUTE HARD STOP LOSS (HIGHEST PRIORITY - CANNOT BE BREACHED)
@@ -178,25 +238,30 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
                 if current_price <= hard_stop_loss:
                     should_close = True
                     exit_reason = f"HARD_STOP_LOSS_HIT (Price: ₹{current_price:.2f} ≤ SL: ₹{hard_stop_loss:.2f})"
-            else:  # SELL
+            elif signal == 'SELL':
                 # For SELL: if price rises to or above stop loss, close immediately
                 if current_price >= hard_stop_loss:
                     should_close = True
                     exit_reason = f"HARD_STOP_LOSS_HIT (Price: ₹{current_price:.2f} ≥ SL: ₹{hard_stop_loss:.2f})"
         
-        # CHECK 1: HARD FLOOR - If price at or below breakeven, close (no point holding)
-        if not should_close:  # Only check if hard SL didn't trigger
+        # CHECK 1: HARD FLOOR - If price at breakeven, close (no point holding)
+        if not should_close:
             if signal == 'BUY':
                 at_breakeven = current_price <= breakeven
-            else:  # SELL
+            elif signal == 'SELL':
                 at_breakeven = current_price >= breakeven
+            else:
+                at_breakeven = False
+            
+            if at_breakeven and current_pnl <= 0:
+                should_close = True
+                if signal == 'BUY':
+                    exit_reason = f"BREAKEVEN_FLOOR (P&L: {current_pnl:.2f}% | Price: ₹{current_price:.2f} ≤ Breakeven: ₹{breakeven:.2f})"
+                else:
+                    exit_reason = f"BREAKEVEN_FLOOR (P&L: {current_pnl:.2f}% | Price: ₹{current_price:.2f} ≥ Breakeven: ₹{breakeven:.2f})"
         
-        if at_breakeven and current_pnl <= 0:
-            should_close = True
-            exit_reason = f"BREAKEVEN_FLOOR (P&L: {current_pnl:.2f}% | Price: ₹{current_price:.2f} ≤ Breakeven: ₹{breakeven:.2f})"
-        
-        # CHECK 2: AGGRESSIVE PEAK PROFIT PROTECTION
-        elif current_pnl > 0:  # Trade is profitable
+        # CHECK 2: AGGRESSIVE PEAK PROFIT PROTECTION (for both BUY and SELL)
+        elif current_pnl > 0 and not should_close:  # Trade is profitable
             peak_pnl = trade['peak_pnl']
             
             # AGGRESSIVE PROTECTION: Once profit > +1%, protect it aggressively

@@ -25,13 +25,18 @@ import stock_thesis
 import auto_analyzer
 import fundamental_analysis
 import stock_search
+import trade_chart_manager
 from thesis_manager import get_manager as get_thesis_manager
+from pnl_analytics import pnl_bp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder=".", static_url_path="")
+app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
 CORS(app)
+
+# Register blueprints
+app.register_blueprint(pnl_bp)
 
 # Auto-refresh Groww token on startup (before any API calls)
 try:
@@ -44,6 +49,7 @@ except Exception as e:
 try:
     from db_manager import get_db, seed_stocks
     db = get_db(DB_URL)
+    app.db = db  # Attach db to app for use in blueprints
     logger.info("✓ Database initialized and connected")
     # Seed master stock table on first run (no-op if already populated)
     try:
@@ -102,9 +108,13 @@ except Exception as e:
 
 # ── Pages ────────────────────────────────────────────────────────────────────
 
-@app.route("/")
-def index():
-    return send_file("index.html")
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def index(path):
+    # Serve React app for all routes except API
+    if path.startswith("api/"):
+        return {"error": "Not found"}, 404
+    return send_file("frontend/dist/index.html")
 
 
 # ── Manual Trade Management ──────────────────────────────────────────────────
@@ -1347,7 +1357,7 @@ def fno_backtest_instruments():
 
 @app.route("/api/watchlist")
 def get_watchlist():
-    """Get all stocks in watchlist with their analysis."""
+    """Get all stocks in watchlist with their price data and latest prices."""
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -1361,13 +1371,15 @@ def get_watchlist():
         conn = psycopg2.connect(db_url, connect_timeout=3)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get watchlist stocks with their price data summary
+        # Get watchlist stocks with their price data summary AND latest price
         cursor.execute("""
             SELECT DISTINCT symbol, 
                    COUNT(*) as price_candles,
                    MIN(date) as earliest_date,
-                   MAX(date) as latest_date
-            FROM stock_prices 
+                   MAX(date) as latest_date,
+                   (SELECT close FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price,
+                   (SELECT date FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price_date
+            FROM stock_prices sp
             GROUP BY symbol 
             ORDER BY symbol
         """)
@@ -1376,10 +1388,19 @@ def get_watchlist():
         cursor.close()
         conn.close()
         
+        # Convert to dicts with proper formatting if needed
+        stocks_list = []
+        for stock in stocks:
+            stock_dict = dict(stock)
+            # Format latest price to 2 decimals if available
+            if stock_dict.get('latest_price'):
+                stock_dict['latest_price'] = round(float(stock_dict['latest_price']), 2)
+            stocks_list.append(stock_dict)
+        
         return jsonify({
             "success": True,
-            "count": len(stocks),
-            "stocks": stocks
+            "count": len(stocks_list),
+            "stocks": stocks_list
         })
     except Exception as e:
         logger.exception("Watchlist error")
@@ -1408,6 +1429,14 @@ def add_to_watchlist():
                 if candles:
                     stored = store_prices_in_db(symbol, candles)
                     logger.info(f"✓ Added {symbol} to watchlist with {stored} price records")
+                    
+                    # Immediately collect peer comparison and other intelligence
+                    try:
+                        import market_intelligence as mi
+                        results = mi.collect_all_intelligence(symbol)
+                        logger.info(f"Intelligence collected for {symbol}: {results}")
+                    except Exception as e:
+                        logger.warning(f"Could not collect intelligence for {symbol}: {e}")
                 else:
                     logger.warning(f"No price data fetched for {symbol}")
             except Exception as e:
@@ -1516,6 +1545,9 @@ def remove_from_watchlist(symbol):
         # Also delete from thesis_analysis
         cursor.execute("DELETE FROM thesis_analysis WHERE symbol = %s", (symbol,))
         
+        # Delete peer comparison data
+        cursor.execute("DELETE FROM peer_comparisons WHERE symbol = %s", (symbol,))
+        
         conn.commit()
         
         deleted_count = cursor.rowcount
@@ -1525,7 +1557,7 @@ def remove_from_watchlist(symbol):
         # Remove note too
         _save_watchlist_note(symbol, "")
         
-        logger.info(f"✓ Removed {symbol} from watchlist and deleted {deleted_count} price records")
+        logger.info(f"✓ Removed {symbol} from watchlist and deleted {deleted_count} price records and peer data")
         
         return jsonify({
             "success": True,
@@ -1534,6 +1566,58 @@ def remove_from_watchlist(symbol):
         })
     except Exception as e:
         logger.exception("Remove from watchlist error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/candles/refresh", methods=["POST"])
+def refresh_candles():
+    """Manually trigger candle sync for all watchlist stocks or specific symbol."""
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol", "").upper() if data.get("symbol") else None
+        
+        import threading
+        import bot
+        from db_manager import get_db, get_all_stocks
+        
+        def sync_candles():
+            try:
+                if symbol:
+                    # Sync single symbol
+                    new_candles = bot.sync_candles_from_api(symbol)
+                    logger.info(f"✅ Manually synced {new_candles} candles for {symbol}")
+                    return {"symbol": symbol, "new_candles": new_candles}
+                else:
+                    # Sync all stocks
+                    db = get_db()
+                    stocks = get_all_stocks(db)
+                    symbols = [s.symbol for s in stocks if s.is_active]
+                    
+                    total_candles = 0
+                    for sym in symbols:
+                        try:
+                            new_candles = bot.sync_candles_from_api(sym)
+                            total_candles += new_candles
+                        except Exception as e:
+                            logger.debug(f"Failed to sync {sym}: {e}")
+                    
+                    logger.info(f"✅ Manually synced {total_candles} candles for {len(symbols)} stocks")
+                    return {"stocks_synced": len(symbols), "total_candles": total_candles}
+            except Exception as e:
+                logger.exception("Candle sync error")
+                raise
+        
+        # Run in background to avoid blocking
+        thread = threading.Thread(target=sync_candles, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Started {'symbol ' + symbol if symbol else 'all watchlist'} candle refresh in background",
+            "symbol": symbol
+        })
+    except Exception as e:
+        logger.exception("Candle refresh endpoint error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2079,83 +2163,201 @@ def quote(symbol):
 
 @app.route("/api/journal")
 def journal_all():
-    """Get all trade journal entries (newest first)."""
+    """Get all trade journal entries (newest first) from database."""
     from flask import request
-    trade_type = request.args.get('type', None)  # 'paper' or 'actual'
-    entries = trade_journal.get_all_reports()
+    from db_manager import get_db, TradeJournalEntry
     
-    if trade_type == 'paper':
-        entries = [e for e in entries if e.get('is_paper', False)]
-    elif trade_type == 'actual':
-        entries = [e for e in entries if not e.get('is_paper', False)]
+    trade_type = request.args.get('type', None)  # 'paper' or 'actual'
+    
+    db = get_db()
+    with db.Session() as session:
+        query = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at.desc())
+        
+        if trade_type == 'paper':
+            query = query.filter(TradeJournalEntry.is_paper == True)
+        elif trade_type == 'actual':
+            query = query.filter(TradeJournalEntry.is_paper == False)
+        
+        entries = [t.to_dict() for t in query.all()]
+    
+    # Attach filtered candles to each entry based on trade status
+    try:
+        for entry in entries:
+            trade_id = entry.get('trade_id')
+            cached = trade_chart_manager.get_cached_trade_candles(trade_id)
+            if cached:
+                filtered_candles = cached
+            else:
+                filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                    entry.get('intraday_candles', []),
+                    entry
+                )
+            entry['intraday_candles'] = filtered_candles
+    except Exception as e:
+        logger.warning(f"Failed to attach candles to journal entries: {e}")
     
     return jsonify(entries)
 
 
 @app.route("/api/journal/stats")
 def journal_stats():
-    """Get aggregate journal statistics."""
-    return jsonify(trade_journal.get_journal_stats())
+    """Get aggregate journal statistics from database."""
+    from db_manager import get_db, TradeJournalEntry
+    from sqlalchemy import func
+    
+    db = get_db()
+    with db.Session() as session:
+        trades = session.query(TradeJournalEntry).all()
+        
+        total_trades = len(trades)
+        open_trades = len([t for t in trades if t.status == "OPEN"])
+        closed_trades = len([t for t in trades if t.status == "CLOSED"])
+        
+        # Calculate P&L stats
+        winning_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct > 0])
+        losing_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct < 0])
+        
+        total_profit_pct = sum([t.actual_profit_pct for t in trades if t.actual_profit_pct]) if trades else 0
+        win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
+        
+        # Group by symbol
+        symbols = {}
+        for t in trades:
+            if t.symbol not in symbols:
+                symbols[t.symbol] = {'count': 0, 'winning': 0, 'losing': 0}
+            symbols[t.symbol]['count'] += 1
+            if t.actual_profit_pct:
+                if t.actual_profit_pct > 0:
+                    symbols[t.symbol]['winning'] += 1
+                else:
+                    symbols[t.symbol]['losing'] += 1
+        
+        stats = {
+            "total_trades": total_trades,
+            "open": open_trades,
+            "closed": closed_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate": round(win_rate, 2),
+            "total_profit_pct": round(total_profit_pct, 2),
+            "avg_profit_pct": round(total_profit_pct / closed_trades, 2) if closed_trades > 0 else 0,
+            "symbols": symbols,
+        }
+        
+        return jsonify(stats)
 
 
 @app.route("/api/journal/open")
 def journal_open():
-    """Get only open (active) trades."""
-    return jsonify(trade_journal.get_open_reports())
+    """Get only open (active) trades from database."""
+    from db_manager import get_db, TradeJournalEntry
+    
+    db = get_db()
+    with db.Session() as session:
+        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
+                   .filter(TradeJournalEntry.status == "OPEN")
+                   .order_by(TradeJournalEntry.created_at.desc()).all()]
+    
+    return jsonify(entries)
 
 
 @app.route("/api/journal/closed")
 def journal_closed():
-    """Get only closed trades with post-trade reports."""
-    return jsonify(trade_journal.get_closed_reports())
+    """Get only closed trades with post-trade reports from database."""
+    from db_manager import get_db, TradeJournalEntry
+    
+    db = get_db()
+    with db.Session() as session:
+        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
+                   .filter(TradeJournalEntry.status == "CLOSED")
+                   .order_by(TradeJournalEntry.created_at.desc()).all()]
+    
+    return jsonify(entries)
 
 
 @app.route("/api/journal/<trade_id>")
 def journal_entry(trade_id):
-    """Get a single trade journal entry with full pre & post trade reports."""
-    report = trade_journal.get_report_by_id(trade_id)
-    if report is None:
+    """Get a single trade journal entry with full pre & post trade reports from database."""
+    from db_manager import get_db, TradeJournalEntry
+    
+    db = get_db()
+    with db.Session() as session:
+        entry = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
+    
+    if entry is None:
         return jsonify({"error": "Trade not found"}), 404
+    
+    report = entry.to_dict()
+    
+    # Attach filtered candles to the entry
+    try:
+        cached = trade_chart_manager.get_cached_trade_candles(trade_id)
+        if cached:
+            filtered_candles = cached
+        else:
+            filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                report.get('intraday_candles', []),
+                report
+            )
+        report['intraday_candles'] = filtered_candles
+    except Exception as e:
+        logger.warning(f"Failed to attach candles to journal entry {trade_id}: {e}")
+    
     return jsonify(report)
 
 
 @app.route("/api/journal/<trade_id>/close", methods=["POST"])
 def journal_close(trade_id):
-    """Manually close a trade and generate the post-trade report."""
+    """Manually close a trade in the database."""
+    from db_manager import get_db, TradeJournalEntry
+    from datetime import datetime
+    
     data = request.get_json(force=True)
     exit_price = data.get("exit_price")
     exit_reason = data.get("exit_reason", "manual")
 
     if not exit_price:
-        # Try to fetch current price from the open report
-        report = trade_journal.get_report_by_id(trade_id)
-        if report and report["status"] == "OPEN":
-            try:
-                exit_price = bot.fetch_live_price(report["symbol"])
-            except Exception:
-                return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
-        else:
+        # Try to fetch current price if not provided
+        try:
+            db = get_db()
+            with db.Session() as session:
+                trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
+                if trade and trade.status == "OPEN":
+                    try:
+                        exit_price = bot.fetch_live_price(trade.symbol)
+                    except Exception:
+                        return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
+                else:
+                    return jsonify({"error": "Trade not found or already closed"}), 404
+        except Exception:
             return jsonify({"error": "exit_price is required"}), 400
 
-    # Get current indicators for comparison
-    current_indicators = None
-    report = trade_journal.get_report_by_id(trade_id)
-    if report:
-        try:
-            pred = bot.get_prediction(report["symbol"])
-            current_indicators = pred.get("indicators")
-        except Exception:
-            pass
-
-    result = trade_journal.close_trade_report(
-        trade_id=trade_id,
-        exit_price=float(exit_price),
-        exit_reason=exit_reason,
-        current_indicators=current_indicators,
-    )
-    if result is None:
-        return jsonify({"error": "Trade not found or already closed"}), 404
-    return jsonify(result)
+    # Update trade in database
+    try:
+        db = get_db()
+        with db.Session() as session:
+            trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
+            if not trade:
+                return jsonify({"error": "Trade not found"}), 404
+            
+            # Update exit details
+            trade.exit_price = float(exit_price)
+            trade.exit_time = datetime.utcnow()
+            trade.exit_reason = exit_reason
+            trade.status = "CLOSED"
+            
+            # Calculate P&L if we have quantity and entry price
+            if trade.quantity and trade.entry_price:
+                pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price) * 100
+                trade.actual_profit_pct = pnl_pct
+            
+            session.commit()
+            
+            # Return updated trade
+            return jsonify(trade.to_dict())
+    except Exception as e:
+        logger.error(f"Failed to close trade {trade_id}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Portfolio Analysis endpoints ─────────────────────────────────────────────
@@ -2177,18 +2379,68 @@ def portfolio_analysis():
     """Return cached portfolio analysis instantly; trigger background refresh."""
     try:
         # If we have a cached result, return it immediately and refresh in background
-        if _pa_cache["result"] is not None:
-            if not _pa_cache["refreshing"]:
+        if _pa_cache.get("result") is not None:
+            if not _pa_cache.get("refreshing"):
                 _pa_cache["refreshing"] = True
                 threading.Thread(target=_pa_refresh_background, daemon=True).start()
             return jsonify(_pa_cache["result"])
+        
         # No cache yet — run synchronously for the first time
-        result = bot.analyze_portfolio()
-        _pa_cache["result"] = result
-        return jsonify(result)
+        try:
+            logger.info("Starting portfolio analysis...")
+            if not hasattr(bot, 'analyze_portfolio'):
+                logger.error("bot.analyze_portfolio function not found")
+                return jsonify({
+                    "error": "Portfolio analysis function unavailable",
+                    "portfolio": [],
+                    "total_holdings": 0,
+                    "summary": {}
+                }), 200
+            
+            result = bot.analyze_portfolio()
+            if result is None:
+                result = {"error": "Analysis returned None", "portfolio": [], "total_holdings": 0}
+            
+            _pa_cache["result"] = result
+            logger.info(f"Portfolio analysis complete: {len(result.get('portfolio', []))} holdings")
+            return jsonify(result)
+            
+        except TypeError as te:
+            logger.error(f"Type error in portfolio analysis: {te}", exc_info=True)
+            return jsonify({
+                "error": "Portfolio analysis type error",
+                "message": str(te),
+                "portfolio": [],
+                "total_holdings": 0
+            }), 200
+            
+        except AttributeError as ae:
+            logger.error(f"Missing attribute in portfolio analysis: {ae}", exc_info=True)
+            return jsonify({
+                "error": "Portfolio analysis missing data",
+                "message": str(ae),
+                "portfolio": [],
+                "total_holdings": 0
+            }), 200
+            
+        except Exception as analyze_error:
+            logger.error(f"Portfolio analysis failed: {analyze_error}", exc_info=True)
+            return jsonify({
+                "error": "Portfolio analysis temporarily unavailable",
+                "message": str(analyze_error),
+                "portfolio": [],
+                "total_holdings": 0,
+                "summary": {}
+            }), 200
+            
     except Exception as e:
-        logger.exception("Portfolio analysis error")
-        return jsonify({"error": str(e)}), 500
+        logger.exception(f"Portfolio analysis endpoint critical error: {e}")
+        return jsonify({
+            "error": "Critical portfolio analysis error",
+            "message": str(e),
+            "portfolio": [],
+            "total_holdings": 0
+        }), 200
 
 
 @app.route("/api/portfolio-review", methods=["POST"])
@@ -2702,101 +2954,207 @@ def compare_strategies_endpoint(symbol):
 
 @app.route("/api/paper-trading/status")
 def paper_trading_status():
-    """Get paper trading mode status and recent paper trades."""
-    from db_manager import get_config, get_db, PaperTrade
-    is_paper = get_config("paper_trading", "false").lower() == "true"
-    
-    # Check for trailing stop loss exits on open trades
+    """Get paper trading mode status and paper trades from unified database table."""
     try:
-        from trailing_stop import check_and_close_trades_on_loss
-        from paper_trader import get_live_price
-        
-        # Get live prices for all symbols in open trades
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
-        if os.path.exists(trades_json_path):
-            import json
-            with open(trades_json_path, 'r') as f:
-                trades = json.load(f)
-            
-            # Get unique symbols from OPEN trades
-            open_symbols = list(set(t['symbol'] for t in trades if t['status'] == 'OPEN'))
-            live_prices = {}
-            for symbol in open_symbols:
-                try:
-                    price = get_live_price(symbol)
-                    if price:
-                        live_prices[symbol] = price
-                except:
-                    pass
-            
-            # Check for trailing stop exits
-            if live_prices:
-                closed_by_trailing_stop = check_and_close_trades_on_loss(
-                    paper_trades_file='paper_trades.json',
-                    live_prices=live_prices
-                )
-                if closed_by_trailing_stop:
-                    logger.info(f"✓ Trailing stop closed {len(closed_by_trailing_stop)} trades")
-    except Exception as e:
-        logger.debug(f"Trailing stop check error: {e}")
-    
-    db = get_db()
-    session = db.Session()
-    try:
-        trades = session.query(PaperTrade).order_by(PaperTrade.created_at.desc()).limit(50).all()
-        trade_list = [{
-            "id": t.id, "symbol": t.symbol, "side": t.side,
-            "quantity": t.quantity, "price": t.price,
-            "segment": t.segment, "status": t.status,
-            "paper_order_id": t.paper_order_id,
-            "charges": t.charges,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-        } for t in trades]
-
-        # Virtual P&L summary
-        buys = {}
-        for t in reversed(trade_list):
-            sym = t["symbol"]
-            if t["side"] == "BUY":
-                buys[sym] = {"qty": t["quantity"], "price": t["price"], "charges": t["charges"]}
-            elif t["side"] == "SELL" and sym in buys:
-                buys[sym]["sell_price"] = t["price"]
-
+        from db_manager import get_config, get_db, TradeJournalEntry
+        is_paper = get_config("paper_trading", "false").lower() == "true"
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.warning("Database not available: %s", e)
         return jsonify({
-            "paper_mode": is_paper,
-            "trades": trade_list,
-            "trade_count": len(trade_list),
-        })
-    finally:
-        session.close()
+            "paper_trading_enabled": False,
+            "trades": [],
+            "trade_count": 0,
+            "db_available": False,
+            "error": "Database unavailable"
+        }), 200
+
+    # Query unified trade journal table for paper trades
+    db = get_db()
+    try:
+        with db.Session() as session:
+            trades_orm = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.is_paper == True
+            ).order_by(TradeJournalEntry.created_at.desc()).all()
+            
+            # Convert to JSON-serializable format
+            trades = [{
+                "trade_id": t.trade_id,
+                "symbol": t.symbol,
+                "side": t.side,
+                "quantity": t.quantity,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "status": t.status,
+                "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "signal": t.signal,
+                "confidence": t.confidence,
+                "stop_loss": t.stop_loss,
+                "projected_exit": t.projected_exit,
+                "actual_profit_pct": t.actual_profit_pct,
+            } for t in trades_orm]
+
+            return jsonify({
+                "paper_mode": is_paper,
+                "trades": trades,
+                "trade_count": len(trades),
+                "db_available": True,
+            })
+    except Exception as e:
+        logger.error(f"Failed to fetch paper trades: {e}")
+        return jsonify({
+            "paper_trading_enabled": is_paper,
+            "trades": [],
+            "trade_count": 0,
+            "db_available": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/update-trailing-stops", methods=['POST'])
+def update_trailing_stops():
+    """Update trailing stops for open trades with current prices, then return updated trades."""
+    try:
+        import json
+        from paper_trader import PaperTradeTracker
+        
+        # Get request data with current prices
+        data = request.get_json() or {}
+        current_prices = data.get('prices', {})  # dict: {symbol: price}
+        
+        # Load trades from JSON
+        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        
+        if not os.path.exists(trades_json_path):
+            return jsonify({"error": "No paper trades file", "trades": []}), 404
+        
+        # Initialize PaperTradeTracker and load trades
+        tracker = PaperTradeTracker()
+        
+        # Update trailing stops for each open trade
+        updated_count = 0
+        for trade in tracker.trades:
+            try:
+                # Safely check status
+                if trade.get('status') == 'OPEN' and trade.get('symbol') in current_prices:
+                    current_price = current_prices[trade['symbol']]
+                    result = tracker.update_trailing_stop(trade['id'], current_price)
+                    if result:
+                        updated_count += 1
+            except Exception as trade_error:
+                # Log but continue with other trades
+                logger.debug(f"Error updating trade {trade.get('id')}: {trade_error}")
+                continue
+        
+        # Return updated trades
+        logger.info(f"✓ Updated trailing stops for {updated_count} trades")
+        return jsonify({"trades": tracker.trades, "total": len(tracker.trades), "updated": updated_count})
+        
+    except Exception as e:
+        logger.error(f"Error updating trailing stops: {e}", exc_info=True)
+        # Return detailed error
+        import traceback
+        return jsonify({"error": str(e), "trades": [], "traceback": traceback.format_exc()[:200]}), 500
 
 
 @app.route("/api/paper-trading/closed-trades")
 def get_closed_trades():
-    """Get closed paper trading strategy trades (with entry/exit data)."""
-    import json
-    
-    trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+    """Get closed paper trading strategy trades from database."""
     try:
-        if os.path.exists(trades_json_path):
-            with open(trades_json_path, 'r') as f:
-                trades = json.load(f)
+        from db_manager import get_db, TradeJournalEntry
+        
+        db = get_db()
+        with db.Session() as session:
+            trades_orm = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.is_paper == True,
+                TradeJournalEntry.status == "CLOSED"
+            ).order_by(TradeJournalEntry.created_at.desc()).all()
             
-            # Filter for truly closed/exited trades
-            closed_trades = [
-                t for t in trades if 
-                t.get('status') and t['status'] != 'OPEN' and
-                t.get('exit_price') is not None and
-                t.get('actual_profit_pct') is not None
-            ]
-            
-            logger.info(f"✓ Returned {len(closed_trades)} closed trades from paper_trades.json")
+            closed_trades = [t.to_dict() for t in trades_orm]
+            logger.info(f"✓ Returned {len(closed_trades)} closed paper trades from database")
             return jsonify({"trades": closed_trades, "count": len(closed_trades)})
-        else:
-            return jsonify({"trades": [], "count": 0, "message": "No paper trades file"}), 404
     except Exception as e:
         logger.error(f"Error reading closed trades: {e}")
-        return jsonify({"error": str(e), "trades": []}), 500
+        return jsonify({"error": str(e), "trades": [], "count": 0}), 500
+
+
+@app.route("/api/trade-snapshots/candles/<symbol>/<trade_date>")
+def get_trade_snapshot_candles(symbol, trade_date):
+    """
+    Fetch candles for a specific symbol and date from database.
+    Used for overlaying trades on actual market price data.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'TCS')
+        trade_date: Date string (e.g., '2026-04-02' or timestamp in ms)
+    
+    Returns:
+        {"candles": [...], "symbol": "TCS", "date": "2026-04-02"}
+    """
+    try:
+        from db_manager import get_db
+        from datetime import datetime, timedelta
+        import pandas as pd
+        
+        db = get_db()
+        if not db:
+            return jsonify({"candles": [], "error": "Database not available"}), 503
+        
+        # Parse trade_date (could be ISO string or timestamp)
+        try:
+            if isinstance(trade_date, str) and len(trade_date) == 10:  # "2026-04-02"
+                target_date = datetime.fromisoformat(trade_date).date()
+            else:
+                # Try parsing as timestamp (milliseconds)
+                ts = int(trade_date) / 1000 if len(trade_date) > 10 else int(trade_date)
+                target_date = datetime.fromtimestamp(ts).date()
+        except Exception as e:
+            logger.debug(f"Invalid date format {trade_date}: {e}")
+            return jsonify({"candles": [], "error": "Invalid date format"}), 400
+        
+        # Fetch candles for this symbol on this date (fetch day + next day to cover full trading day)
+        start = datetime.combine(target_date, datetime.min.time())
+        end = datetime.combine(target_date + timedelta(days=1), datetime.max.time())
+        
+        # Query database for candles in this date range
+        candles_df = db.get_candles(symbol, days=None)  # Get all available
+        if candles_df.empty:
+            logger.debug(f"No candles for {symbol}")
+            return jsonify({"candles": [], "symbol": symbol, "date": str(target_date)}), 200
+        
+        # Filter to the target date
+        candles_df['datetime'] = pd.to_datetime(candles_df['timestamp'], unit='s')
+        candles_df['date'] = candles_df['datetime'].dt.date
+        day_candles = candles_df[candles_df['date'] == target_date]
+        
+        if day_candles.empty:
+            logger.info(f"No candles for {symbol} on {target_date}")
+            return jsonify({"candles": [], "symbol": symbol, "date": str(target_date)}), 200
+        
+        # Format for frontend (time, o, h, l, c, v)
+        formatted = []
+        for _, row in day_candles.iterrows():
+            dt = pd.to_datetime(row['timestamp'], unit='s')
+            formatted.append({
+                "time": dt.strftime("%H:%M"),
+                "o": float(row['open']),
+                "h": float(row['high']),
+                "l": float(row['low']),
+                "c": float(row['close']),
+                "v": int(row['volume'])
+            })
+        
+        logger.info(f"✓ Returned {len(formatted)} candles for {symbol} on {target_date}")
+        return jsonify({
+            "candles": formatted,
+            "symbol": symbol,
+            "date": str(target_date),
+            "count": len(formatted)
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Error fetching candles for {symbol} on {trade_date}: {e}")
+        return jsonify({"candles": [], "error": str(e)}), 500
 
 
 @app.route("/api/paper-trading/build-daily-snapshots", methods=["POST", "GET"])
@@ -2864,7 +3222,7 @@ def build_daily_snapshots():
                     segment='CASH',
                     start_time=start_time,
                     end_time=end_time,
-                    interval_in_minutes=1  # 1-minute candles for intraday detail
+                    interval_in_minutes=5  # 5-minute candles (Groww doesn't support 1-minute)
                 )
                 
                 candles_raw = resp.get("candles", [])
@@ -2933,9 +3291,9 @@ def build_daily_snapshots():
 @app.route("/api/paper-trading/build-daily-snapshots-with-candles", methods=["POST", "GET"])
 def build_daily_snapshots_with_candles():
     """
-    Build end-of-day snapshots with FRESH 1-minute candles stored in PostgreSQL.
+    Build end-of-day snapshots with FRESH 5-minute candles stored in PostgreSQL.
     This is called automatically after 4 PM by the scheduler.
-    Fetches the latest 1-minute intraday data and stores in DB for persistent charting.
+    Fetches the latest 5-minute intraday data and stores in DB for persistent charting.
     """
     import json
     from datetime import date, datetime, timedelta
@@ -2998,38 +3356,81 @@ def build_daily_snapshots_with_candles():
         
         for symbol, symbol_trades in trades_by_symbol.items():
             try:
+                # 🔥 NEW: Check if all trades for this symbol are old closed trades
+                # If so, try cache first before hitting API
+                all_closed_and_old = all(
+                    trade_chart_manager.should_fetch_new_candles(trade) == False 
+                    for trade in symbol_trades
+                )
+                
+                if all_closed_and_old:
+                    # Try to get cached candles for the first trade
+                    logger.info(f"All trades for {symbol} are old closed trades, checking cache...")
+                    cached_candles = None
+                    for trade in symbol_trades:
+                        cached_candles = trade_chart_manager.get_cached_trade_candles(trade.get('id'))
+                        if cached_candles:
+                            logger.info(f"✓ Using cached candles for {symbol} from trade {trade.get('id')}")
+                            formatted_candles = cached_candles
+                            break
+                    
+                    if cached_candles:
+                        # Use cached candles, skip API call
+                        snapshots[symbol] = {
+                            "trades": symbol_trades,
+                            "candles": formatted_candles,
+                            "count": len(formatted_candles),
+                            "symbol": symbol,
+                            "date": today_str,
+                            "market_hours": f"09:15 - 15:30",
+                            "source": "CACHED",
+                            "note": "Cached candles - no fresh API fetch needed for old closed trades"
+                        }
+                        
+                        # Attach filtered candles to each trade
+                        for trade in symbol_trades:
+                            filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                                formatted_candles, 
+                                trade
+                            )
+                            trade['intraday_candles'] = filtered_candles
+                        
+                        total_candles += len(formatted_candles)
+                        logger.info(f"✓ Used cached snapshot for {symbol}: {len(formatted_candles)} candles")
+                        continue  # Skip to next symbol
+                
                 # Market hours: 9:15 AM to 3:30 PM (15:30)
                 start_time = f"{today_str} 09:15:00"
                 end_time = f"{today_str} 15:30:00"
                 
                 logger.info(f"Fetching FRESH 1-minute candles for {symbol} from {start_time} to {end_time}")
                 
-                # Try 1-minute candles first
+                # Try 5-minute candles first (Groww doesn't support 1-minute)
                 resp = groww.get_historical_candle_data(
                     trading_symbol=symbol,
                     exchange='NSE',
                     segment='CASH',
                     start_time=start_time,
                     end_time=end_time,
-                    interval_in_minutes=1  # Smallest interval for detailed price movement
+                    interval_in_minutes=5  # 5-minute is the finest granularity Groww supports
                 )
                 
                 candles_raw = resp.get("candles", [])
-                interval = "1min"
+                interval = "5min"
                 
-                # Fallback to 5-minute if 1-minute unavailable
+                # Fallback to hourly if 5-minute unavailable
                 if not candles_raw or len(candles_raw) < 10:
-                    logger.info(f"Fallback: Fetching 5-minute candles for {symbol}")
+                    logger.info(f"Fallback: Fetching hourly candles for {symbol}")
                     resp = groww.get_historical_candle_data(
                         trading_symbol=symbol,
                         exchange='NSE',
                         segment='CASH',
                         start_time=start_time,
                         end_time=end_time,
-                        interval_in_minutes=5
+                        interval_in_minutes=60
                     )
                     candles_raw = resp.get("candles", [])
-                    interval = "5min"
+                    interval = "60min"
                 
                 if not candles_raw:
                     logger.warning(f"No candles available for {symbol}")
@@ -3106,15 +3507,37 @@ def build_daily_snapshots_with_candles():
                         logger.error(f"Error saving candles to DB: {e}")
                         session.rollback()
                 
+                # 🔥 NEW: Filter candles for each trade based on its entry/exit dates
+                # This prevents closed trades from showing continuous data forward
+                for trade in symbol_trades:
+                    filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                        formatted_candles, 
+                        trade
+                    )
+                    # Attach filtered candles directly to trade object for frontend
+                    trade['intraday_candles'] = filtered_candles
+                    logger.info(f"✓ Trade {trade.get('id')}: Filtered to {len(filtered_candles)} candles (from {len(formatted_candles)} raw)")
+                    
+                    # 🔥 NEW: Cache the candles for this trade to avoid re-fetching later
+                    try:
+                        trade_chart_manager.cache_trade_candles(
+                            trade_id=trade.get('id'),
+                            candles=filtered_candles,
+                            symbol=symbol
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to cache candles for trade {trade.get('id')}: {e}")
+                
                 # Store snapshot with trades and candles
                 snapshots[symbol] = {
                     "trades": symbol_trades,
-                    "candles": formatted_candles,
+                    "candles": formatted_candles,  # Keep full candles in snapshot for reference
                     "count": len(formatted_candles),
                     "symbol": symbol,
                     "date": today_str,
                     "market_hours": f"09:15 - 15:30",
-                    "price_movement": f"REAL {interval.upper()} INTRADAY DATA (Stored in PostgreSQL)"
+                    "price_movement": f"REAL {interval.upper()} INTRADAY DATA (Stored in PostgreSQL)",
+                    "note": "Per-trade candles filtered by entry/exit dates to prevent forward accumulation"
                 }
                 
                 total_candles += len(formatted_candles)
@@ -3127,6 +3550,89 @@ def build_daily_snapshots_with_candles():
                     "candles": [],
                     "error": str(e)
                 }
+        
+        # 🌟 NEW: Also fetch fresh INTRADAY data for INDICES (NIFTY, BANKNIFTY, FINNIFTY)
+        # regardless of whether there are trades - needed for backtester date availability
+        indices_to_sync = ['NIFTY', 'BANKNIFTY', 'FINNIFTY']
+        for index_symbol in indices_to_sync:
+            if index_symbol not in trades_by_symbol:
+                try:
+                    logger.info(f"Fetching fresh index data for {index_symbol}...")
+                    start_time = f"{today_str} 09:15:00"
+                    end_time = f"{today_str} 15:30:00"
+                    
+                    # Try 5-minute candles for indices (Groww doesn't support 1-minute)
+                    resp = groww.get_historical_candle_data(
+                        trading_symbol=index_symbol,
+                        exchange='NSE',
+                        segment='CASH',
+                        start_time=start_time,
+                        end_time=end_time,
+                        interval_in_minutes=5
+                    )
+                    
+                    candles_raw = resp.get("candles", [])
+                    index_interval = "5min"
+                    
+                    # Fallback to hourly if insufficient
+                    if not candles_raw or len(candles_raw) < 10:
+                        resp = groww.get_historical_candle_data(
+                            trading_symbol=index_symbol,
+                            exchange='NSE',
+                            segment='CASH',
+                            start_time=start_time,
+                            end_time=end_time,
+                            interval_in_minutes=60
+                        )
+                        candles_raw = resp.get("candles", [])
+                        index_interval = "60min"
+                    
+                    if candles_raw and session:
+                        # Save to DB (replace old data for today)
+                        session.query(IntradayCandle).filter(
+                            IntradayCandle.symbol == index_symbol,
+                            IntradayCandle.trading_date == today_str
+                        ).delete()
+                        
+                        index_candles_to_save = []
+                        for candle in candles_raw:
+                            try:
+                                unix_ts = candle[0]
+                                if isinstance(unix_ts, (int, float)):
+                                    time_obj = datetime.fromtimestamp(unix_ts)
+                                    time_part = time_obj.strftime("%H:%M:%S")
+                                else:
+                                    if ' ' in str(unix_ts):
+                                        time_part = str(unix_ts).split(' ')[1]
+                                    else:
+                                        time_part = str(unix_ts)
+                                
+                                if time_part.count(':') > 1:
+                                    time_part = ':'.join(time_part.split(':')[:2])
+                                
+                                index_candles_to_save.append(IntradayCandle(
+                                    symbol=index_symbol,
+                                    trading_date=today_str,
+                                    time=time_part,
+                                    open=float(candle[1]),
+                                    high=float(candle[2]),
+                                    low=float(candle[3]),
+                                    close=float(candle[4]),
+                                    volume=int(candle[5]) if len(candle) > 5 else 0,
+                                    interval=index_interval,
+                                    created_at=datetime.utcnow()
+                                ))
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        if index_candles_to_save:
+                            session.add_all(index_candles_to_save)
+                            session.commit()
+                            total_candles += len(index_candles_to_save)
+                            logger.info(f"✓ Saved {len(index_candles_to_save)} fresh candles for index {index_symbol}")
+                
+                except Exception as e:
+                    logger.warning(f"Could not fetch fresh data for index {index_symbol}: {e}")
         
         # Save snapshots to JSON file as backup
         snapshots_path = '/Users/parthsharma/Desktop/Grow/daily_snapshots.json'
@@ -3258,10 +3764,14 @@ def toggle_cash_auto_trade():
 @app.route("/api/cash-auto-trade/status")
 def cash_auto_trade_status():
     """Get cash equity auto-trade status."""
-    from db_manager import get_config
-    enabled = get_config("cash_auto_trade_enabled", "false").lower() == "true"
-    paper = get_config("paper_trading", "false").lower() == "true"
-    return jsonify({"enabled": enabled, "paper_mode": paper})
+    try:
+        from db_manager import get_config
+        enabled = get_config("cash_auto_trade_enabled", "false").lower() == "true"
+        paper = get_config("paper_trading", "false").lower() == "true"
+        return jsonify({"enabled": enabled, "paper_mode": paper})
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.warning("Database not available for cash_auto_trade_status: %s", e)
+        return jsonify({"enabled": False, "paper_mode": False, "db_available": False})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3462,49 +3972,381 @@ def verify_trading_parity():
 @app.route("/api/trade-snapshots")
 def trade_snapshots_list():
     """List all trade snapshots (most recent first)."""
-    from db_manager import get_db, TradeSnapshot
-    limit = request.args.get("limit", 50, type=int)
-    symbol = request.args.get("symbol", "").upper()
-    db = get_db()
-    session = db.Session()
     try:
-        q = session.query(TradeSnapshot).order_by(TradeSnapshot.created_at.desc())
-        if symbol:
-            q = q.filter(TradeSnapshot.symbol == symbol)
-        snaps = q.limit(min(limit, 200)).all()
+        from db_manager import get_db, TradeSnapshot
+        limit = request.args.get("limit", 50, type=int)
+        symbol = request.args.get("symbol", "").upper()
+        db = get_db()
+        session = db.Session()
+        try:
+            q = session.query(TradeSnapshot).order_by(TradeSnapshot.created_at.desc())
+            if symbol:
+                q = q.filter(TradeSnapshot.symbol == symbol)
+            snaps = q.limit(min(limit, 200)).all()
+            return jsonify({
+                "snapshots": [{
+                    "id": s.id,
+                    "paper_order_id": s.paper_order_id,
+                    "symbol": s.symbol,
+                    "side": s.side,
+                    "price": s.price,
+                    "quantity": s.quantity,
+                    "segment": s.segment,
+                    "signal": s.signal,
+                    "confidence": s.confidence,
+                    "reasoning": s.reasoning,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                } for s in snaps],
+                "total": len(snaps),
+            })
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning("Trade snapshot DB unavailable, using JSON fallback: %s", e)
+        import json
+        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        limit = request.args.get("limit", 50, type=int)
+        symbol = request.args.get("symbol", "").upper()
+        snapshots = []
+        try:
+            if os.path.exists(trades_json_path):
+                with open(trades_json_path, 'r') as f:
+                    trades = json.load(f)
+
+                closed_trades = [
+                    t for t in trades
+                    if t.get('status') and t['status'] != 'OPEN' and t.get('exit_price') is not None
+                ]
+                if symbol:
+                    closed_trades = [t for t in closed_trades if (t.get('symbol') or '').upper() == symbol]
+
+                closed_trades = sorted(
+                    closed_trades,
+                    key=lambda t: t.get('entry_time') or t.get('created_at') or '',
+                    reverse=True,
+                )[:min(limit, 200)]
+
+                snapshots = [{
+                    "id": idx + 1,
+                    "paper_order_id": trade.get("id") or trade.get("paper_order_id"),
+                    "symbol": trade.get("symbol"),
+                    "side": trade.get("signal") or trade.get("side"),
+                    "price": trade.get("entry_price") or trade.get("price"),
+                    "quantity": trade.get("quantity"),
+                    "segment": trade.get("segment") or "CASH",
+                    "signal": trade.get("signal") or trade.get("side"),
+                    "confidence": trade.get("confidence"),
+                    "reasoning": trade.get("exit_reason") or trade.get("reasoning"),
+                    "created_at": trade.get("entry_time") or trade.get("created_at"),
+                    "source": "json_fallback",
+                } for idx, trade in enumerate(closed_trades)]
+        except Exception as fallback_error:
+            logger.warning("Trade snapshot JSON fallback failed: %s", fallback_error)
         return jsonify({
-            "snapshots": [{
-                "id": s.id,
-                "paper_order_id": s.paper_order_id,
-                "symbol": s.symbol,
-                "side": s.side,
-                "price": s.price,
-                "quantity": s.quantity,
-                "segment": s.segment,
-                "signal": s.signal,
-                "confidence": s.confidence,
-                "reasoning": s.reasoning,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-            } for s in snaps],
-            "total": len(snaps),
+            "snapshots": snapshots,
+            "total": len(snapshots),
+            "using_json_fallback": True,
         })
-    finally:
-        session.close()
 
 
 @app.route("/api/trade-snapshots/<int:snap_id>")
 def trade_snapshot_detail(snap_id):
     """Get full trade snapshot with candles, indicators, news for chart rendering."""
-    from db_manager import get_db, TradeSnapshot
-    db = get_db()
-    session = db.Session()
     try:
-        snap = session.query(TradeSnapshot).filter_by(id=snap_id).first()
-        if not snap:
-            return jsonify({"error": "Snapshot not found"}), 404
-        return jsonify(snap.to_dict())
-    finally:
-        session.close()
+        from db_manager import get_db, TradeSnapshot
+        db = get_db()
+        session = db.Session()
+        try:
+            snap = session.query(TradeSnapshot).filter_by(id=snap_id).first()
+            if not snap:
+                return jsonify({"error": "Snapshot not found"}), 404
+            return jsonify(snap.to_dict())
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning("Trade snapshot detail DB unavailable, using JSON fallback: %s", e)
+        import json
+        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        try:
+            if os.path.exists(trades_json_path):
+                with open(trades_json_path, 'r') as f:
+                    trades = json.load(f)
+
+                closed_trades = [
+                    t for t in trades
+                    if t.get('status') and t['status'] != 'OPEN' and t.get('exit_price') is not None
+                ]
+                closed_trades = sorted(
+                    closed_trades,
+                    key=lambda t: t.get('entry_time') or t.get('created_at') or '',
+                    reverse=True,
+                )
+
+                if 1 <= snap_id <= len(closed_trades):
+                    trade = closed_trades[snap_id - 1]
+                    return jsonify({
+                        "id": snap_id,
+                        "paper_order_id": trade.get("id") or trade.get("paper_order_id"),
+                        "symbol": trade.get("symbol"),
+                        "side": trade.get("signal") or trade.get("side"),
+                        "price": trade.get("entry_price") or trade.get("price"),
+                        "quantity": trade.get("quantity"),
+                        "segment": trade.get("segment") or "CASH",
+                        "candles": None,
+                        "indicators": None,
+                        "news": None,
+                        "reasoning": trade.get("exit_reason") or trade.get("reasoning"),
+                        "signal": trade.get("signal") or trade.get("side"),
+                        "confidence": trade.get("confidence"),
+                        "combined_score": trade.get("combined_score"),
+                        "sources": None,
+                        "market_context": None,
+                        "created_at": trade.get("entry_time") or trade.get("created_at"),
+                        "using_json_fallback": True,
+                    })
+        except Exception as fallback_error:
+            logger.warning("Trade snapshot detail JSON fallback failed: %s", fallback_error)
+        return jsonify({"error": "Snapshot not found"}), 404
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P&L HISTORY ENDPOINTS (for P&L chart visualization)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/pnl-history")
+def pnl_history():
+    """Get P&L history for charting — returns last N minutes/hours of data."""
+    try:
+        from db_manager import get_db, PnLSnapshot
+        from datetime import datetime, timedelta
+        
+        # Get query parameters
+        minutes = request.args.get("minutes", 60, type=int)  # Last 60 minutes by default
+        limit = request.args.get("limit", 1000, type=int)    # Max 1000 points
+        
+        db = get_db()
+        if not db:
+            return jsonify({"error": "Database not available"}), 503
+        
+        session = db.Session()
+        try:
+            # Query last N minutes of P&L data
+            cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+            snapshots = session.query(PnLSnapshot)\
+                .filter(PnLSnapshot.timestamp >= cutoff_time)\
+                .order_by(PnLSnapshot.timestamp.asc())\
+                .limit(limit)\
+                .all()
+            
+            if not snapshots:
+                return jsonify({
+                    "pnl_data": [],
+                    "total_snapshots": 0,
+                    "time_range_minutes": minutes
+                }), 200
+            
+            # Format for frontend charting with running peak P&L
+            pnl_data = []
+            running_peak = 0.0
+            
+            for s in snapshots:
+                # Track running maximum P&L across all snapshots
+                running_peak = max(running_peak, s.total_pnl)
+                
+                pnl_data.append({
+                    "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+                    "time": s.timestamp.strftime("%H:%M:%S") if s.timestamp else None,
+                    "total_pnl": s.total_pnl,
+                    "total_pnl_pct": s.total_pnl_pct,
+                    "trades_count": s.trades_count,
+                    "peak_pnl": running_peak,  # Running maximum, not stored value
+                    "peak_pnl_pct": s.peak_pnl_pct,
+                    "profit_trades": s.profit_trades,
+                    "loss_trades": s.loss_trades,
+                })
+            
+            # Calculate stats
+            if pnl_data:
+                max_pnl = max(d["total_pnl"] for d in pnl_data)
+                min_pnl = min(d["total_pnl"] for d in pnl_data)
+                current_pnl = pnl_data[-1]["total_pnl"]
+                
+                return jsonify({
+                    "pnl_data": pnl_data,
+                    "total_snapshots": len(snapshots),
+                    "time_range_minutes": minutes,
+                    "statistics": {
+                        "current_pnl": current_pnl,
+                        "max_pnl": max_pnl,
+                        "min_pnl": min_pnl,
+                        "pnl_range": max_pnl - min_pnl,
+                    }
+                }), 200
+            
+            return jsonify({
+                "pnl_data": [],
+                "total_snapshots": 0,
+                "time_range_minutes": minutes
+            }), 200
+        
+        finally:
+            session.close()
+    
+    except Exception as e:
+        logger.warning("P&L history fetch failed: %s", e)
+        return jsonify({
+            "error": f"Failed to fetch P&L history: {str(e)}",
+            "pnl_data": []
+        }), 500
+
+
+@app.route("/api/pnl-stats")
+def pnl_stats():
+    """Get P&L statistics for the current session."""
+    try:
+        from db_manager import get_db, PnLSnapshot
+        import json
+        import os
+        
+        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        open_trades = []
+        try:
+            if os.path.exists(trades_json_path):
+                with open(trades_json_path, 'r') as f:
+                    trades = json.load(f)
+                    open_trades = [t for t in trades if t.get('status') == 'OPEN']
+        except:
+            pass
+        
+        db = get_db()
+        session = None
+        latest_snapshot = None
+        
+        if db:
+            session = db.Session()
+            try:
+                latest_snapshot = session.query(PnLSnapshot)\
+                    .order_by(PnLSnapshot.timestamp.desc())\
+                    .first()
+            except:
+                pass
+            finally:
+                if session:
+                    session.close()
+        
+        # Build response
+        response = {
+            "open_trades_count": len(open_trades),
+            "total_trades_count": len([t for t in trades if os.path.exists(trades_json_path)]),
+        }
+        
+        if latest_snapshot:
+            response.update({
+                "current_pnl": latest_snapshot.total_pnl,
+                "current_pnl_pct": latest_snapshot.total_pnl_pct,
+                "peak_pnl": latest_snapshot.peak_pnl,
+                "peak_pnl_pct": latest_snapshot.peak_pnl_pct,
+                "profit_trades": latest_snapshot.profit_trades,
+                "loss_trades": latest_snapshot.loss_trades,
+                "last_updated": latest_snapshot.timestamp.isoformat() if latest_snapshot.timestamp else None,
+            })
+        
+        return jsonify(response), 200
+    
+    except Exception as e:
+        logger.warning("P&L stats fetch failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/cumulative-pnl")
+def cumulative_pnl():
+    """Get cumulative P&L over time from closed trades - for P&L progression chart."""
+    try:
+        import json
+        import os
+        from datetime import datetime
+        
+        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        
+        if not os.path.exists(trades_json_path):
+            return jsonify({"pnl_data": [], "error": "No trades found"}), 200
+        
+        with open(trades_json_path, 'r') as f:
+            trades = json.load(f)
+        
+        # Filter to closed trades with exit_time
+        closed_trades = [t for t in trades if 
+            t.get('status') != 'OPEN' and 
+            t.get('actual_profit_pct') is not None and
+            t.get('exit_time') is not None
+        ]
+        
+        # Sort by exit_time
+        closed_trades.sort(key=lambda t: t.get('exit_time', ''))
+        
+        if not closed_trades:
+            return jsonify({"pnl_data": [], "statistics": {}}), 200
+        
+        # Build cumulative P&L over time
+        cumulative_pnl = 0
+        pnl_data = []
+        peak_pnl = 0
+        
+        for trade in closed_trades:
+            try:
+                exit_time = trade.get('exit_time')
+                pnl_pct = trade.get('actual_profit_pct', 0)
+                
+                # Add to cumulative
+                cumulative_pnl += pnl_pct
+                peak_pnl = max(peak_pnl, cumulative_pnl)
+                
+                # Format exit time
+                if exit_time:
+                    exit_dt = datetime.fromisoformat(exit_time.replace('+05:30', ''))
+                    time_str = exit_dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    time_str = ""
+                
+                pnl_data.append({
+                    "timestamp": exit_time,
+                    "time": time_str,
+                    "symbol": trade.get('symbol'),
+                    "trade_id": trade.get('id'),
+                    "trade_pnl": pnl_pct,
+                    "cumulative_pnl": round(cumulative_pnl, 2),
+                    "peak_pnl": round(peak_pnl, 2),
+                })
+            except Exception as e:
+                logger.warning(f"Error processing trade {trade.get('id')}: {e}")
+                continue
+        
+        # Calculate statistics
+        if pnl_data:
+            final_pnl = pnl_data[-1]["cumulative_pnl"]
+            min_pnl = min(d["cumulative_pnl"] for d in pnl_data)
+            max_pnl = max(d["cumulative_pnl"] for d in pnl_data)
+            
+            stats = {
+                "current_pnl": final_pnl,
+                "peak_pnl": round(max_pnl, 2),
+                "trough_pnl": round(min_pnl, 2),
+                "total_trades_closed": len(closed_trades),
+                "start_date": pnl_data[0]["time"],
+                "end_date": pnl_data[-1]["time"],
+            }
+        else:
+            stats = {}
+        
+        return jsonify({
+            "pnl_data": pnl_data,
+            "statistics": stats,
+            "total_closed_trades": len(closed_trades)
+        }), 200
+    
+    except Exception as e:
+        logger.exception(f"Cumulative P&L fetch failed: {e}")
+        return jsonify({"error": str(e), "pnl_data": []}), 500
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3740,17 +4582,88 @@ def get_live_prices_endpoint():
 
 @app.route("/api/price/<symbol>", methods=["GET"])
 def get_live_price_endpoint(symbol):
-    """Get current live price for a single symbol."""
+    """Get current live price for a single symbol - live during hours, latest from DB after hours."""
     try:
         from paper_trader import get_live_price
         
+        symbol = symbol.upper()
+        price = get_live_price(symbol)
+        
+        if price is not None:
+            return jsonify({"price": price, "symbol": symbol, "source": "live"})
+        
+        # Fall back to latest database price (for after-hours)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Try latest intraday candle first
+            cursor.execute("""
+                SELECT close FROM intraday_candles 
+                WHERE symbol = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """, (symbol,))
+            row = cursor.fetchone()
+            if row:
+                return jsonify({"price": row[0], "symbol": symbol, "source": "intraday_db"})
+            
+            # Fall back to daily close price
+            cursor.execute("""
+                SELECT close FROM stock_prices 
+                WHERE symbol = ? 
+                ORDER BY trading_date DESC 
+                LIMIT 1
+            """, (symbol,))
+            row = cursor.fetchone()
+            if row:
+                return jsonify({"price": row[0], "symbol": symbol, "source": "daily_db"})
+        
+        return jsonify({"error": f"No price available for {symbol}", "symbol": symbol}), 404
+    except Exception as e:
+        logger.exception(f"Error fetching price for {symbol}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/latest-price/<symbol>", methods=["GET"])
+def get_latest_price(symbol):
+    """Get latest available price (live during market hours, last close after hours)."""
+    try:
+        from paper_trader import get_live_price
+        
+        symbol = symbol.upper()
+        
+        # Try live price first
         price = get_live_price(symbol)
         if price is not None:
-            return jsonify({"price": price, "symbol": symbol})
-        else:
-            return jsonify({"error": f"Could not fetch price for {symbol}"}), 404
+            return jsonify({"price": price, "symbol": symbol, "source": "live"})
+        
+        # Fall back to latest database price
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Get latest close price from intraday_candles or stock_prices
+            cursor.execute("""
+                SELECT close FROM intraday_candles 
+                WHERE symbol = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """, (symbol,))
+            row = cursor.fetchone()
+            if row:
+                return jsonify({"price": row[0], "symbol": symbol, "source": "database_intraday"})
+            
+            # Last resort: daily price
+            cursor.execute("""
+                SELECT close FROM stock_prices 
+                WHERE symbol = ? 
+                ORDER BY trading_date DESC 
+                LIMIT 1
+            """, (symbol,))
+            row = cursor.fetchone()
+            if row:
+                return jsonify({"price": row[0], "symbol": symbol, "source": "database_daily"})
+        
+        return jsonify({"error": f"No price available for {symbol}", "symbol": symbol}), 404
     except Exception as e:
-        logger.exception(f"Error fetching live price for {symbol}")
+        logger.exception(f"Error fetching latest price for {symbol}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -3774,7 +4687,7 @@ def get_intraday_candles():
         
         groww = GrowwAPI(token)
         
-        # Fetch 1-minute candles from trading hours to current
+        # Fetch 5-minute candles from trading hours to current (Groww doesn't support 1-minute)
         end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         start_time = (datetime.now() - timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -3784,7 +4697,7 @@ def get_intraday_candles():
             segment='EQ',
             start_time=start_time,
             end_time=end_time,
-            interval_in_minutes=1
+            interval_in_minutes=5
         )
         
         candles_raw = resp.get("candles", [])
@@ -3870,7 +4783,7 @@ def get_trade_candles():
             segment='EQ',
             start_time=start_time,
             end_time=end_time,
-            interval_in_minutes=1
+            interval_in_minutes=5
         )
         
         candles_raw = resp.get("candles", [])
@@ -3909,11 +4822,14 @@ def get_trade_candles():
 @app.route("/api/1min-candles", methods=["GET"])
 def get_1min_candles():
     """
-    Get today's 1-minute candles for showing real price movement on traded symbols.
-    FIRST tries PostgreSQL DB (if stored), then falls back to live Groww API.
+    Get 5-minute candles for showing real price movement on traded symbols.
+    Groww API does NOT support 1-minute candles reliably, so we fetch 5-minute (primary) or hourly (fallback).
+    Can fetch for a specific trading_date (YYYY-MM-DD) or today.
+    FIRST tries PostgreSQL DB (IntradayCandle table), then falls back to live Groww API.
     """
     try:
         symbol = request.args.get('symbol', '').upper()
+        trading_date = request.args.get('trading_date', '')  # "2026-04-05"
         start_time = request.args.get('start_time', '')
         end_time = request.args.get('end_time', '')
         
@@ -3922,19 +4838,25 @@ def get_1min_candles():
         
         from datetime import datetime, date
         
-        # Try database first
+        # Determine which date to fetch for
+        if trading_date:
+            # Use provided trading date
+            target_date = trading_date
+        else:
+            # Default to today
+            target_date = date.today().strftime("%Y-%m-%d")
+        
+        # Try database first - look for 5-minute candles
         try:
             from db_manager import get_db, IntradayCandle
             db_inst = get_db(DB_URL)
             session = db_inst.Session()
             
-            today_str = date.today().strftime("%Y-%m-%d")
-            
-            # Query candles from DB for today
+            # Query 5-minute candles from DB for the target date
             db_candles = session.query(IntradayCandle).filter(
                 IntradayCandle.symbol == symbol,
-                IntradayCandle.trading_date == today_str,
-                IntradayCandle.interval == "1min"
+                IntradayCandle.trading_date == target_date,
+                IntradayCandle.interval == "5min"
             ).order_by(IntradayCandle.time).all()
             
             session.close()
@@ -3951,12 +4873,13 @@ def get_1min_candles():
                     }
                     for c in db_candles
                 ]
-                logger.info(f"✓ Fetched {len(formatted)} 1-minute candles for {symbol} from PostgreSQL")
-                return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "1min", "source": "PostgreSQL"}), 200
+                logger.info(f"✓ Fetched {len(formatted)} 5-minute candles for {symbol} on {target_date} from PostgreSQL")
+                return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "PostgreSQL", "date": target_date}), 200
         except Exception as e:
-            logger.debug(f"Database fetch failed, falling back to API: {e}")
+            logger.debug(f"Database fetch failed for {target_date}, trying API: {e}")
         
-        # Fallback: Fetch from Groww API
+        # Fallback: Fetch from Groww API (only works for recent/today dates)
+        # Groww API doesn't support 1-minute candles, use 5-minute instead
         from datetime import timedelta
         import os
         from growwapi import GrowwAPI
@@ -3968,46 +4891,52 @@ def get_1min_candles():
         
         groww = GrowwAPI(token)
         
-        # Use provided times or default to today's trading hours
+        # Use provided times or default to trading hours for the target date
         if not start_time or not end_time:
-            today = datetime.now()
-            start_dt = today.replace(hour=9, minute=15, second=0, microsecond=0)
-            end_dt = today.replace(hour=15, minute=30, second=0, microsecond=0)
+            # Parse target_date and build trading hours
+            try:
+                target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            except:
+                target_dt = datetime.today()
+            
+            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
         else:
             try:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                 end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
             except:
-                today = datetime.now()
-                start_dt = today.replace(hour=9, minute=15, second=0, microsecond=0)
-                end_dt = today.replace(hour=15, minute=30, second=0, microsecond=0)
+                target_dt = datetime.today()
+                start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+                end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
         
         start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
         end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
         
-        logger.info(f"Fetching 1-minute candles for {symbol} from API between {start_str} and {end_str}")
+        logger.info(f"Fetching 5-minute candles for {symbol} from Groww API between {start_str} and {end_str}")
         
+        # Groww API: Try 5-minute candles (primary - most reliable)
         resp = groww.get_historical_candle_data(
             trading_symbol=symbol,
             exchange='NSE',
             segment='CASH',
             start_time=start_str,
             end_time=end_str,
-            interval_in_minutes=1
+            interval_in_minutes=5
         )
         
         candles_raw = resp.get("candles", [])
         
-        # Fallback to 5-minute candles if 1-minute not available
+        # Fallback to hourly candles if 5-minute not available
         if not candles_raw:
-            logger.info(f"No 1-minute candles for {symbol}, trying 5-minute...")
+            logger.info(f"No 5-minute candles for {symbol}, trying hourly...")
             resp = groww.get_historical_candle_data(
                 trading_symbol=symbol,
                 exchange='NSE',
                 segment='CASH',
                 start_time=start_str,
                 end_time=end_str,
-                interval_in_minutes=5
+                interval_in_minutes=60
             )
             candles_raw = resp.get("candles", [])
             
@@ -4043,21 +4972,62 @@ def get_1min_candles():
                 continue
         
         logger.info(f"✓ Fetched {len(formatted)} 1-minute candles for {symbol} from Groww API")
-        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "1min", "source": "Groww API"}), 200
+        if len(formatted) == 0:
+            logger.warning(f"⚠️ Formatted array is empty even though we have {len(candles_raw)} raw candles - trying 5-minute fallback")
+            # Try 5-minute as secondary fallback
+            resp_5min = groww.get_historical_candle_data(
+                trading_symbol=symbol,
+                exchange='NSE',
+                segment='CASH',
+                start_time=start_str,
+                end_time=end_str,
+                interval_in_minutes=5
+            )
+            candles_5min = resp_5min.get("candles", [])
+            if candles_5min:
+                formatted_5min = []
+                for candle in candles_5min:
+                    try:
+                        if len(candle) >= 6:
+                            unix_ts = candle[0]
+                            if isinstance(unix_ts, (int, float)):
+                                time_obj = dt.fromtimestamp(unix_ts)
+                                time_part = time_obj.strftime("%H:%M:%S")
+                            else:
+                                time_part = str(unix_ts).split(' ')[1] if ' ' in str(unix_ts) else str(unix_ts)
+                            
+                            formatted_5min.append({
+                                "time": time_part,
+                                "o": float(candle[1]),
+                                "h": float(candle[2]),
+                                "l": float(candle[3]),
+                                "c": float(candle[4]),
+                                "v": int(candle[5]) if len(candle) > 5 else 0
+                            })
+                    except (IndexError, ValueError, TypeError):
+                        continue
+                
+                if formatted_5min:
+                    logger.info(f"✓ Secondary fallback: Fetched {len(formatted_5min)} 5-minute candles for {symbol}")
+                    return jsonify({"candles": formatted_5min, "symbol": symbol, "count": len(formatted_5min), "interval": "5min", "source": "Groww API Fallback"}), 200
+        
+        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "Groww API"}), 200
         
     except Exception as e:
-        logger.exception(f"Error fetching 1-minute candles: {e}")
+        logger.exception(f"Error fetching 5-minute candles: {e}")
         return jsonify({"candles": [], "error": str(e)}), 200
 
 
 @app.route("/api/5min-candles", methods=["GET"])
 def get_5min_candles():
     """
-    Get today's 5-minute candles as fallback when 1-minute isn't available.
-    FIRST tries PostgreSQL DB (if stored), then falls back to live Groww API.
+    Get 5-minute candles as fallback when 1-minute isn't available.
+    Can fetch for a specific trading_date (YYYY-MM-DD) or today.
+    FIRST tries PostgreSQL DB (IntradayCandle table), then falls back to live Groww API.
     """
     try:
         symbol = request.args.get('symbol', '').upper()
+        trading_date = request.args.get('trading_date', '')  # "2026-04-05"
         start_time = request.args.get('start_time', '')
         end_time = request.args.get('end_time', '')
         
@@ -4066,18 +5036,24 @@ def get_5min_candles():
         
         from datetime import datetime, date
         
+        # Determine which date to fetch for
+        if trading_date:
+            # Use provided trading date
+            target_date = trading_date
+        else:
+            # Default to today
+            target_date = date.today().strftime("%Y-%m-%d")
+        
         # Try database first
         try:
             from db_manager import get_db, IntradayCandle
             db_inst = get_db(DB_URL)
             session = db_inst.Session()
             
-            today_str = date.today().strftime("%Y-%m-%d")
-            
-            # Query candles from DB for today (5-minute)
+            # Query candles from DB for the target date (5-minute)
             db_candles = session.query(IntradayCandle).filter(
                 IntradayCandle.symbol == symbol,
-                IntradayCandle.trading_date == today_str,
+                IntradayCandle.trading_date == target_date,
                 IntradayCandle.interval == "5min"
             ).order_by(IntradayCandle.time).all()
             
@@ -4095,12 +5071,12 @@ def get_5min_candles():
                     }
                     for c in db_candles
                 ]
-                logger.info(f"✓ Fetched {len(formatted)} 5-minute candles for {symbol} from PostgreSQL")
-                return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "PostgreSQL"}), 200
+                logger.info(f"✓ Fetched {len(formatted)} 5-minute candles for {symbol} on {target_date} from PostgreSQL")
+                return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "PostgreSQL", "date": target_date}), 200
         except Exception as e:
-            logger.debug(f"Database fetch failed, falling back to API: {e}")
+            logger.debug(f"Database fetch failed for {target_date}, trying API: {e}")
         
-        # Fallback: Fetch from Groww API
+        # Fallback: Fetch from Groww API (only works for recent/today dates)
         from datetime import timedelta
         import os
         from growwapi import GrowwAPI
@@ -4113,19 +5089,24 @@ def get_5min_candles():
         
         groww = GrowwAPI(token)
         
-        # Use provided times or default to today's trading hours
+        # Use provided times or default to trading hours for the target date
         if not start_time or not end_time:
-            today = datetime.now()
-            start_dt = today.replace(hour=9, minute=15, second=0, microsecond=0)
-            end_dt = today.replace(hour=15, minute=30, second=0, microsecond=0)
+            # Parse target_date and build trading hours
+            try:
+                target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            except:
+                target_dt = datetime.today()
+            
+            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
         else:
             try:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                 end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
             except:
-                today = datetime.now()
-                start_dt = today.replace(hour=9, minute=15, second=0, microsecond=0)
-                end_dt = today.replace(hour=15, minute=30, second=0, microsecond=0)
+                target_dt = datetime.today()
+                start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+                end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
         
         start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
         end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")

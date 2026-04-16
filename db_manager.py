@@ -204,7 +204,7 @@ class Stock(Base):
 # ── Trade Journal (replaces trade_journal.json) ─────────────────────────────
 
 class TradeJournalEntry(Base):
-    """Persistent trade journal — pre-trade and post-trade reports."""
+    """Unified trade journal — all trades (actual + paper) with full pre/post analysis."""
     __tablename__ = "trade_journal"
 
     id = Column(Integer, primary_key=True)
@@ -213,17 +213,36 @@ class TradeJournalEntry(Base):
     symbol = Column(String(20), nullable=False, index=True)
     side = Column(String(4), nullable=False)      # BUY / SELL
     quantity = Column(Integer, nullable=False)
-    trigger = Column(String(20), default="auto")
+    trigger = Column(String(20), default="auto")  # auto / manual
+    is_paper = Column(Boolean, default=True)      # True for paper trades, False for actual
+    
+    # Entry details
     entry_time = Column(DateTime, nullable=False)
     entry_price = Column(Float, nullable=False)
+    
+    # Exit details
     exit_time = Column(DateTime)
     exit_price = Column(Float)
-    pre_trade_json = Column(Text, default="{}")   # Full pre-trade report as JSON
-    post_trade_json = Column(Text)                # Full post-trade report as JSON
+    exit_reason = Column(String(100))  # TARGET_HIT, STOP_LOSS, MANUAL, etc.
+    
+    # Paper trading specific fields
+    signal = Column(String(20))        # BUY / SELL
+    confidence = Column(Float)          # ML confidence 0-1
+    stop_loss = Column(Float)
+    projected_exit = Column(Float)
+    peak_pnl = Column(Float)            # Best P&L during trade
+    actual_profit_pct = Column(Float)   # Final P&L %
+    breakeven_price = Column(Float)
+    
+    # Analysis documents (JSON format)
+    pre_trade_json = Column(Text, default="{}")   # Full pre-trade report
+    post_trade_json = Column(Text)                # Full post-trade report
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
+        """Convert ORM object to dictionary matching JSON format."""
         pre = {}
         post = None
         try:
@@ -234,23 +253,35 @@ class TradeJournalEntry(Base):
             post = json.loads(self.post_trade_json) if self.post_trade_json else None
         except Exception:
             pass
-        return {
+        
+        result = {
             "trade_id": self.trade_id,
             "status": self.status,
             "symbol": self.symbol,
             "side": self.side,
             "quantity": self.quantity,
             "trigger": self.trigger,
+            "is_paper": self.is_paper,
             "entry_time": self.entry_time.isoformat() if self.entry_time else None,
             "entry_price": self.entry_price,
             "exit_time": self.exit_time.isoformat() if self.exit_time else None,
             "exit_price": self.exit_price,
+            "exit_reason": self.exit_reason,
+            "signal": self.signal,
+            "confidence": self.confidence,
+            "stop_loss": self.stop_loss,
+            "projected_exit": self.projected_exit,
+            "peak_pnl": self.peak_pnl,
+            "actual_profit_pct": self.actual_profit_pct,
+            "breakeven_price": self.breakeven_price,
             "pre_trade": pre,
             "post_trade": post,
         }
+        return result
 
     __table_args__ = (
         Index("idx_journal_symbol_status", "symbol", "status"),
+        Index("idx_journal_is_paper", "is_paper"),
     )
 
 
@@ -438,6 +469,41 @@ class TradeSnapshot(Base):
             "sources": _parse(self.sources_json),
             "market_context": _parse(self.market_context_json),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ── P&L Snapshots (track unrealised profit over time) ────────────────────────
+
+class PnLSnapshot(Base):
+    """Record unrealised P&L at regular intervals (every 5 seconds during market)."""
+    __tablename__ = "pnl_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, index=True, default=datetime.utcnow)
+    total_pnl = Column(Float, nullable=False)           # Total unrealised P&L (₹)
+    total_pnl_pct = Column(Float, nullable=False)       # Total unrealised P&L (%)
+    trades_count = Column(Integer, default=0)           # Number of open trades
+    peak_pnl = Column(Float, default=0)                 # Peak P&L reached in this session
+    peak_pnl_pct = Column(Float, default=0)             # Peak P&L % 
+    profit_trades = Column(Integer, default=0)          # Count of profitable trades
+    loss_trades = Column(Integer, default=0)            # Count of losing trades
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_pnl_timestamp", "timestamp"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "total_pnl": self.total_pnl,
+            "total_pnl_pct": self.total_pnl_pct,
+            "trades_count": self.trades_count,
+            "peak_pnl": self.peak_pnl,
+            "peak_pnl_pct": self.peak_pnl_pct,
+            "profit_trades": self.profit_trades,
+            "loss_trades": self.loss_trades,
         }
 
 

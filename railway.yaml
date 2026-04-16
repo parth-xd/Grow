@@ -1,0 +1,59 @@
+name: Grow Trading API
+description: ML-powered trading platform with Groww integration
+runtime: python
+buildCommand: pip install -r requirements.txt
+startCommand: python app.py
+
+variables:
+  FLASK_ENV:
+    description: Flask environment
+    value: production
+  DATABASE_URL:
+    description: PostgreSQL database URL
+    value: ${{ DATABASE_URL }}
+  FLASK_SECRET_KEY:
+    description: Flask secret key
+    value: ${{ FLASK_SECRET_KEY }}
+  JWT_SECRET:
+    description: JWT signing secret
+    value: ${{ JWT_SECRET }}
+  ENCRYPTION_KEY:
+    description: Fernet encryption key for API credentials
+    value: ${{ ENCRYPTION_KEY }}
+  GOOGLE_CLIENT_ID:
+    description: Google OAuth client ID
+    value: ${{ GOOGLE_CLIENT_ID }}
+  GOOGLE_CLIENT_SECRET:
+    description: Google OAuth client secret
+    value: ${{ GOOGLE_CLIENT_SECRET }}
+  GOOGLE_REDIRECT_URI:
+    description: Google OAuth redirect URI
+    value: https://grow-api.railway.app/api/auth/google/callback
+
+services:
+  api:
+    builder: dockerfile
+    port: 8000
+    healthCheck:
+      path: /api/health
+      interval: 10
+    deploy:
+      startCommand: python app.py
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: grow
+      POSTGRES_USER: grow
+      POSTGRES_PASSWORD: ${{ POSTGRES_PASSWORD }}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    port: 5432
+
+volumes:
+  postgres_data:
+
+plugins:
+  - id: vg3h5
+    config:
+      POSTGRES_PASSWORD: ${{ POSTGRES_PASSWORD }}

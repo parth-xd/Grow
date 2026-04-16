@@ -122,7 +122,9 @@ def _get_groww():
     if _groww is None or _groww_token_cache != current_token:
         _groww = GrowwAPI(current_token)
         _groww_token_cache = current_token
+        logger.info("Created new GrowwAPI instance: %s", type(_groww).__name__)
     
+    logger.info("Returning groww instance: %s (is None: %s)", type(_groww).__name__ if _groww else "None", _groww is None)
     return _groww
 
 
@@ -168,9 +170,10 @@ def sync_candles_from_api(symbol, days=None, interval=None):
     
     end_time = datetime.utcnow()
     
-    # Only sync if there's time gaps (avoid fetching same recent data)
-    if (end_time - start_time).total_seconds() < 300:  # Less than 5 minutes gap
-        logger.debug(f"↷ {symbol}: No new data to sync (< 5 min gap)")
+    # Always sync if there's a gap > 1 day (handles stale data gracefully)
+    gap_seconds = (end_time - start_time).total_seconds()
+    if gap_seconds < 86400:  # Less than 1 day gap - skip to avoid excessive API calls
+        logger.debug(f"↷ {symbol}: No new data to sync (gap only {gap_seconds/3600:.1f} hours)")
         return 0
     
     groww = _get_groww()
@@ -519,13 +522,72 @@ def _capture_trade_snapshot(symbol, side, price, quantity, segment, paper_order_
         logger.warning("Trade snapshot capture failed for %s: %s", symbol, e)
 
 
-def get_prediction(symbol):
+def fetch_intraday_candles_for_today(symbol):
+    """
+    Fetch today's fresh intraday candles from IntradayCandle table.
+    Returns a pandas DataFrame with OHLCV columns, or None if no data available.
+    
+    These are real-time 1-minute candles from the trading session (09:15-15:30).
+    """
+    try:
+        from datetime import datetime
+        from db_manager import get_db, IntradayCandle
+        import pandas as pd
+        
+        db = get_db()
+        if not db or not db.Session:
+            return None
+        
+        session = db.Session()
+        today_str = datetime.now().date().isoformat()  # "2026-04-11"
+        
+        # Query today's candles for this symbol
+        candles = session.query(IntradayCandle).filter(
+            IntradayCandle.symbol == symbol,
+            IntradayCandle.trading_date == today_str,
+            IntradayCandle.interval == "1min"  # Fetch 1-min candles for precision
+        ).order_by(IntradayCandle.time).all()
+        
+        session.close()
+        
+        if not candles or len(candles) < 2:
+            # Not enough data for analysis
+            return None
+        
+        # Convert to DataFrame format compatible with ML model
+        data = []
+        for candle in candles:
+            data.append({
+                "datetime": f"{candle.trading_date} {candle.time}",
+                "timestamp": int(datetime.fromisoformat(f"{candle.trading_date}T{candle.time}").timestamp()),
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume,
+            })
+        
+        df = pd.DataFrame(data)
+        logger.debug(f"↷ {symbol}: Fetched {len(df)} fresh intraday candles for today")
+        return df
+        
+    except Exception as e:
+        logger.debug(f"Could not fetch intraday candles for {symbol}: {e}")
+        return None
+
+
+def get_prediction(symbol, intraday_candles=None):
     """
     Get a combined prediction using ALL available knowledge:
-      1. ML model (technical indicators from historical data)
+      1. ML model (technical indicators from historical data or fresh intraday candles)
       2. News sentiment (financial headlines from multiple sources)
       3. Market context (Nifty trend, sector strength, multi-TF, volatility)
       4. Trading costs (only signal profitable trades)
+
+    Args:
+        symbol: Stock symbol
+        intraday_candles: Optional DataFrame of fresh intraday candles (for portfolio analysis)
+                         If provided, will be prioritized over historical data
 
     Final signal is a weighted consensus of all sources.
     """
@@ -541,7 +603,15 @@ def get_prediction(symbol):
                     "reason": train_result.get("message", "Training failed"),
                 }
 
-    df = fetch_historical(symbol)
+    # ── Prioritize fresh intraday candles if available (portfolio analysis) ──
+    if intraday_candles is not None and not intraday_candles.empty and len(intraday_candles) > 2:
+        df = intraday_candles
+        logger.debug(f"↷ {symbol}: Using {len(df)} fresh intraday candles for prediction")
+    else:
+        df = fetch_historical(symbol)
+        if intraday_candles is not None:
+            logger.debug(f"↷ {symbol}: Intraday candles insufficient ({len(intraday_candles) if intraday_candles is not None else 0}), falling back to historical data")
+    
     if df.empty:
         return {"symbol": symbol, "signal": "HOLD", "confidence": 0, "reason": "No data"}
 
@@ -759,8 +829,10 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
     """
     Record a simulated paper trade using the unified paper_trader system.
     Integrates with paper_trader.py for trailing stop management.
+    ALSO syncs to trade_journal for complete trade history.
     """
     from paper_trader import PaperTradeTracker
+    import trade_journal
     
     # Initialize paper trader
     tracker = PaperTradeTracker()
@@ -828,6 +900,35 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
     _trade_log.append(entry)
     _persist_trade_log_entry(entry)
 
+    # 🔥 NEW: SYNC TO TRADE JOURNAL — so new paper trades appear in the journal!
+    try:
+        # Build a safe prediction structure for the journal
+        safe_prediction = {
+            "sources": {
+                "ml": prediction.get('sources', {}).get('ml', {}) if prediction else {},
+                "news": prediction.get('sources', {}).get('news', {}) if prediction else {},
+                "market_context": prediction.get('sources', {}).get('market_context', {}) if prediction else {},
+            },
+            "costs": prediction.get('costs', {}) if prediction else {},
+            "indicators": prediction.get('indicators', {}) if prediction else {},
+            "confidence": prediction.get('confidence', 0) if prediction else 0,
+            "combined_score": prediction.get('combined_score', 0) if prediction else 0,
+            "reason": prediction.get('reason', 'Paper trade') if prediction else 'Paper trade',
+        }
+        
+        journal_entry = trade_journal.create_pre_trade_report(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=price,
+            prediction=safe_prediction,
+            trigger="auto",
+            is_paper=True,
+        )
+        logger.info(f"✓ Synced paper trade {trade['id']} to trade journal as {journal_entry.get('trade_id')}")
+    except Exception as e:
+        logger.warning(f"Failed to sync paper trade to journal: {e}")
+
     # Telegram alert for paper trade
     try:
         import telegram_alerts
@@ -856,14 +957,25 @@ def place_buy(symbol, quantity=None, price=None, reason="", prediction=None):
     if price is None:
         price = fetch_live_price(symbol)
     if quantity is None:
-        # Use available capital if in trader mode, otherwise use high default limit
+        # Calculate quantity based on available capital
+        # For paper trading: use 10% of capital per trade to allow multiple concurrent positions
         try:
             from fno_trader import get_available_capital as get_trader_capital
             available = get_trader_capital()
-            trade_budget = available if available > 0 else MAX_TRADE_VALUE
+            if available > 0:
+                # In F&O trading: use 10% of available capital per trade
+                trade_budget = available * 0.10
+            else:
+                # Fall back to higher limit if no F&O capital
+                trade_budget = MAX_TRADE_VALUE * 0.05  # Use 5% of max to keep it reasonable
         except:
-            trade_budget = MAX_TRADE_VALUE
+            # Paper trading mode: allocate reasonable per-trade budget
+            trade_budget = MAX_TRADE_VALUE * 0.05  # 5% of max value = ~₹50M per trade
+        
         quantity = int(trade_budget / price) if price > 0 else 1
+        # Cap at MAX_TRADE_QUANTITY (1000 shares) per trade
+        quantity = min(quantity, MAX_TRADE_QUANTITY)
+    
     quantity = max(1, quantity)
 
     # Paper trading intercept
@@ -927,11 +1039,14 @@ def place_buy(symbol, quantity=None, price=None, reason="", prediction=None):
 
 
 def place_sell(symbol, quantity=None, price=None, reason="", prediction=None):
-    """Place a SELL order via Groww API."""
+    """Place a SELL order via Groww API (or paper trade if paper mode active)."""
     if price is None:
         price = fetch_live_price(symbol)
     if quantity is None:
+        # Default to MAX_TRADE_QUANTITY, but could be overridden
+        # For consistency with place_buy, use similar capital-based calculation
         quantity = MAX_TRADE_QUANTITY
+    
     quantity = max(1, quantity)
 
     # Paper trading intercept
@@ -1159,7 +1274,8 @@ def auto_trade():
                     entry_price=price, prediction=pred, trigger="auto",
                 )
 
-                trade = place_buy(symbol, price=price,
+                # 🔥 Pass the calculated quantity to place_buy to ensure consistent qty
+                trade = place_buy(symbol, quantity=qty, price=price,
                                   reason=pred.get("reason", ""),
                                   prediction=pred)
 
@@ -1259,11 +1375,65 @@ def analyze_portfolio():
     """
     Run full AI analysis on every holding/position in the Groww portfolio.
     No trades are placed — purely read-only.
+    Gracefully handles errors by returning empty analysis.
+    
+    Enhanced with fresh intraday candles for accurate daily predictions.
     """
-    import portfolio_analyzer
-    groww = _get_groww()
-    result = portfolio_analyzer.analyze_portfolio(groww, get_prediction, fetch_live_price)
-    return result
+    try:
+        import portfolio_analyzer
+        groww = _get_groww()
+        logger.info("analyze_portfolio got groww: %s (is None: %s)", type(groww).__name__ if groww else "None", groww is None)
+        
+        if groww is None:
+            logger.warning("Groww API not available for portfolio analysis")
+            return {
+                "error": "Groww API not available",
+                "holdings": [],
+                "positions": [],
+                "portfolio": [],
+                "summary": {}
+            }
+        
+        # Create a wrapper function that fetches intraday candles for each symbol
+        def get_prediction_with_fresh_candles(symbol):
+            """Get prediction using fresh intraday candles if available."""
+            intraday_df = fetch_intraday_candles_for_today(symbol)
+            return get_prediction(symbol, intraday_candles=intraday_df)
+        
+        logger.info("Passing groww to portfolio_analyzer: %s", type(groww).__name__)
+        result = portfolio_analyzer.analyze_portfolio(groww, get_prediction_with_fresh_candles, fetch_live_price)
+        
+        if result is None:
+            logger.warning("Portfolio analysis returned None")
+            return {
+                "error": "Portfolio analysis returned no data",
+                "holdings": [],
+                "positions": [],
+                "portfolio": [],
+                "summary": {}
+            }
+        
+        return result
+        
+    except ImportError as ie:
+        logger.error(f"Portfolio analyzer import failed: {ie}")
+        return {
+            "error": "Portfolio analyzer module not found",
+            "holdings": [],
+            "positions": [],
+            "portfolio": [],
+            "summary": {}
+        }
+    except Exception as e:
+        logger.error(f"Portfolio analysis error: {e}", exc_info=True)
+        return {
+            "error": "Portfolio analysis failed",
+            "message": str(e),
+            "holdings": [],
+            "positions": [],
+            "portfolio": [],
+            "summary": {}
+        }
 
 
 def mark_portfolio_reviewed():

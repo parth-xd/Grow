@@ -42,16 +42,21 @@ def _load():
             rows = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at).all()
             if rows:
                 _journal = [r.to_dict() for r in rows]
+                logger.info(f"Loaded {len(_journal)} trades from database")
                 return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to load from DB, falling back to JSON: {e}")
     # Fallback to JSON file
     if os.path.exists(JOURNAL_FILE):
         try:
             with open(JOURNAL_FILE, "r") as f:
                 _journal = json.load(f)
-        except Exception:
+                logger.info(f"Loaded {len(_journal)} trades from JSON file")
+        except Exception as e:
+            logger.warning(f"Failed to load trade journal: {e}")
             _journal = []
+    else:
+        _journal = []
 
 
 def _save():
@@ -60,40 +65,48 @@ def _save():
     try:
         with open(JOURNAL_FILE, "w") as f:
             json.dump(_journal, f, indent=2, default=str)
+        logger.info(f"Trade journal saved to disk ({len(_journal)} trades)")
     except Exception as e:
         logger.warning("Failed to save trade journal to file: %s", e)
-    # Also persist latest entry to DB
+    # Persist ALL trades to DB (not just latest) to avoid status loss on restart
     if not _journal:
         return
-    latest = _journal[-1]
     try:
         from db_manager import get_db, TradeJournalEntry
         db = get_db()
         with db.Session() as session:
-            existing = session.query(TradeJournalEntry).filter_by(trade_id=latest["trade_id"]).first()
-            if existing:
-                existing.status = latest.get("status", "OPEN")
-                existing.exit_price = latest.get("exit_price")
-                existing.post_trade_json = json.dumps(latest.get("post_trade")) if latest.get("post_trade") else None
-            else:
-                entry = TradeJournalEntry(
-                    trade_id=latest["trade_id"],
-                    status=latest.get("status", "OPEN"),
-                    symbol=latest.get("symbol", ""),
-                    side=latest.get("side", ""),
-                    quantity=latest.get("quantity", 0),
-                    trigger=latest.get("trigger", "auto"),
-                    entry_time=datetime.fromisoformat(latest["entry_time"]) if latest.get("entry_time") else datetime.now(),
-                    entry_price=latest.get("entry_price", 0),
-                    exit_price=latest.get("exit_price"),
-                    exit_time=datetime.fromisoformat(latest["exit_time"]) if latest.get("exit_time") else None,
-                    pre_trade_json=json.dumps(latest.get("pre_trade")),
-                    post_trade_json=json.dumps(latest.get("post_trade")) if latest.get("post_trade") else None,
-                )
-                session.add(entry)
+            saved_count = 0
+            for trade in _journal:
+                existing = session.query(TradeJournalEntry).filter_by(trade_id=trade["trade_id"]).first()
+                if existing:
+                    # Update existing trade with latest status and post_trade data
+                    existing.status = trade.get("status", "OPEN")
+                    existing.exit_price = trade.get("exit_price")
+                    existing.exit_time = datetime.fromisoformat(trade["exit_time"]) if trade.get("exit_time") else None
+                    existing.post_trade_json = json.dumps(trade.get("post_trade")) if trade.get("post_trade") else None
+                    saved_count += 1
+                else:
+                    # Create new DB entry if it doesn't exist
+                    entry = TradeJournalEntry(
+                        trade_id=trade["trade_id"],
+                        status=trade.get("status", "OPEN"),
+                        symbol=trade.get("symbol", ""),
+                        side=trade.get("side", ""),
+                        quantity=trade.get("quantity", 0),
+                        trigger=trade.get("trigger", "auto"),
+                        entry_time=datetime.fromisoformat(trade["entry_time"]) if trade.get("entry_time") else datetime.now(),
+                        entry_price=trade.get("entry_price", 0),
+                        exit_price=trade.get("exit_price"),
+                        exit_time=datetime.fromisoformat(trade["exit_time"]) if trade.get("exit_time") else None,
+                        pre_trade_json=json.dumps(trade.get("pre_trade")),
+                        post_trade_json=json.dumps(trade.get("post_trade")) if trade.get("post_trade") else None,
+                    )
+                    session.add(entry)
+                    saved_count += 1
             session.commit()
+            logger.info(f"Trade journal saved to database ({saved_count} trades)")
     except Exception as e:
-        logger.debug("DB save for trade journal failed (non-fatal): %s", e)
+        logger.error("DB save for trade journal failed: %s", e)
 
 
 # ── Pre-Trade Report ─────────────────────────────────────────────────────────

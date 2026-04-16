@@ -309,7 +309,11 @@ def _get_groww_quote_fundamentals(groww_api, symbol):
     """Extract fundamental data from Groww quote API."""
     data = {}
     try:
-        quote = groww_api.get_quote(exchange="NSE", trading_symbol=symbol)
+        if groww_api is None:
+            logger.warning("Groww API instance is None for symbol %s", symbol)
+            return data
+            
+        quote = groww_api.get_quote(exchange="NSE", trading_symbol=symbol, segment="CASH")
         if quote:
             data["ltp"] = quote.get("ltp", 0)
             data["open"] = quote.get("open", 0)
@@ -492,9 +496,13 @@ def _fetch_competitor_prices(groww_api, symbol):
     peers = _get_competitors(symbol)
     peer_data = []
     
+    if groww_api is None:
+        logger.warning("Groww API is None when fetching competitors for %s", symbol)
+        return peer_data
+    
     for peer in peers[:5]:  # Max 5 competitors
         try:
-            quote = groww_api.get_quote(exchange="NSE", trading_symbol=peer)
+            quote = groww_api.get_quote(exchange="NSE", trading_symbol=peer, segment="CASH")
             if quote:
                 ltp = quote.get("ltp", 0)
                 prev = quote.get("prev_close", 0)

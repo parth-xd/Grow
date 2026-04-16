@@ -111,19 +111,27 @@ except Exception:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _fetch_candles_from_db(symbol):
-    """Fetch all 1-hour candles for a symbol from the candles table."""
+    """
+    Fetch all 1-hour candles for a symbol from the candles table.
+    Enhanced: Uses fresh IntradayCandle data for recent dates (after March 30th).
+    """
     try:
-        from db_manager import CandleDatabase, Candle
+        from db_manager import CandleDatabase, Candle, get_db, IntradayCandle
+        from datetime import datetime
+        
         db = CandleDatabase()
         session = db.Session()
+        candles = []
+        
         try:
+            # 1. Fetch historical candles from old table (up to March 30th)
             rows = (
                 session.query(Candle)
                 .filter(Candle.symbol == symbol)
                 .order_by(Candle.timestamp)
                 .all()
             )
-            candles = []
+            
             for r in rows:
                 ts = r.timestamp
                 candles.append({
@@ -137,9 +145,80 @@ def _fetch_candles_from_db(symbol):
                     "close": float(r.close),
                     "volume": int(r.volume) if r.volume else 0,
                 })
-            return candles
+            
+            # Get latest date from historical data
+            latest_hist_date = candles[-1]["date"] if candles else "2026-03-30"
+            
+            # 2. Fetch fresh intraday candles for dates AFTER the last historical date
+            # IntradayCandle has 1-minute data, aggregate to 1-hour for consistency
+            from datetime import date as dateobj
+            db_session = get_db().Session()
+            
+            intraday_rows = (
+                db_session.query(IntradayCandle)
+                .filter(IntradayCandle.symbol == symbol)
+                .order_by(IntradayCandle.trading_date, IntradayCandle.time)
+                .all()
+            )
+            
+            if intraday_rows:
+                # Group by hour to create hourly candles from 1-minute data
+                hourly_map = {}
+                for row in intraday_rows:
+                    # Only use dates after the latest historical date
+                    if row.trading_date > latest_hist_date:
+                        hour_key = f"{row.trading_date}_{row.time[:2]}"  # "2026-04-11_14"
+                        if hour_key not in hourly_map:
+                            hourly_map[hour_key] = {
+                                "date": row.trading_date,
+                                "hour": row.time[:2],
+                                "opens": [],
+                                "highs": [],
+                                "lows": [],
+                                "closes": [],
+                                "volumes": 0,
+                                "first_time": row.time,
+                                "last_time": row.time,
+                            }
+                        hourly_map[hour_key]["opens"].append(row.open)
+                        hourly_map[hour_key]["highs"].append(row.high)
+                        hourly_map[hour_key]["lows"].append(row.low)
+                        hourly_map[hour_key]["closes"].append(row.close)
+                        hourly_map[hour_key]["volumes"] += row.volume or 0
+                        hourly_map[hour_key]["last_time"] = row.time
+                
+                # Convert hourly aggregates to candle format
+                for hour_key in sorted(hourly_map.keys()):
+                    h_data = hourly_map[hour_key]
+                    if h_data["opens"]:  # Only if we have data
+                        try:
+                            ts_str = f"{h_data['date']} {h_data['hour']}:00:00"
+                            ts = datetime.fromisoformat(ts_str)
+                            candles.append({
+                                "timestamp": ts.timestamp(),
+                                "date": h_data["date"],
+                                "time": f"{h_data['hour']}:00",
+                                "datetime_label": ts.strftime("%b %d %H:%M"),
+                                "open": float(h_data["opens"][0]),
+                                "high": max(h_data["highs"]),
+                                "low": min(h_data["lows"]),
+                                "close": float(h_data["closes"][-1]),
+                                "volume": int(h_data["volumes"]),
+                            })
+                        except Exception:
+                            pass
+            
+            db_session.close()
+            
         finally:
             session.close()
+        
+        # Sort all candles by timestamp
+        candles.sort(key=lambda x: x["timestamp"])
+        
+        logger.debug(f"Loaded {len(candles)} candles for {symbol} (historical + fresh intraday)")
+        return candles
+        
     except Exception as e:
         logger.error("Failed to fetch candles for %s: %s", symbol, e)
         return []
