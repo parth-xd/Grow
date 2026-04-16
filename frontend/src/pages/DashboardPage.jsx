@@ -11,10 +11,32 @@ function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [trades, setTrades] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [hasCredentials, setHasCredentials] = useState(false);
+  const [checkingCredentials, setCheckingCredentials] = useState(true);
 
   useEffect(() => {
-    fetchDashboardData();
+    checkCredentialsAndFetch();
   }, []);
+
+  const checkCredentialsAndFetch = async () => {
+    try {
+      // Check if user has API credentials
+      const credResponse = await api.get('/api/credentials/status');
+      setHasCredentials(credResponse.data.has_credentials);
+      setCheckingCredentials(false);
+
+      // Only fetch data if they have credentials
+      if (credResponse.data.has_credentials) {
+        fetchDashboardData();
+      } else {
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error('Failed to check credentials:', error);
+      setCheckingCredentials(false);
+      setLoading(false);
+    }
+  };
 
   const fetchDashboardData = async () => {
     try {
@@ -31,12 +53,49 @@ function DashboardPage() {
     }
   };
 
-  if (loading) {
+  if (checkingCredentials || loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-300 border-t-gray-900 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading your dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show setup message if no credentials
+  if (!hasCredentials) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="max-w-2xl mx-auto px-6 py-20">
+          <div className="text-center">
+            <h1 className="text-4xl font-semibold text-gray-900 mb-4">Welcome, {user?.name?.split(' ')[0]}! 👋</h1>
+            <p className="text-lg text-gray-600 mb-8">To get started with trading, you need to connect your Groww account.</p>
+            
+            <div className="bg-white rounded-2xl p-8 border border-gray-200 shadow-sm mb-8">
+              <div className="text-5xl mb-4">🔗</div>
+              <h2 className="text-2xl font-semibold text-gray-900 mb-3">Connect Your Groww Account</h2>
+              <p className="text-gray-600 mb-6">Add your Groww API credentials to enable trading features and access your portfolio data.</p>
+              <button
+                onClick={() => navigate('/settings')}
+                className="bg-gray-900 hover:bg-gray-800 text-white font-semibold py-3 px-8 rounded-lg transition-colors inline-block"
+              >
+                Add API Credentials
+              </button>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6 text-left">
+              <h3 className="text-sm font-semibold text-blue-900 mb-3">ℹ️ How to get your API credentials:</h3>
+              <ol className="text-blue-700 text-sm space-y-2 list-decimal list-inside">
+                <li>Go to <a href="https://groww.in" target="_blank" rel="noopener noreferrer" className="underline">Groww.in</a></li>
+                <li>Navigate to Developer Settings or API section</li>
+                <li>Create a new API key with trading permissions</li>
+                <li>Copy your API Key and API Secret</li>
+                <li>Return here and paste them securely</li>
+              </ol>
+            </div>
+          </div>
         </div>
       </div>
     );

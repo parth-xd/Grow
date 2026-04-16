@@ -12,8 +12,35 @@ function LoginPage() {
     if (response.token) {
       const success = await handleGoogleAuth(response);
       if (success) {
-        toast.success('Welcome to Grow! 📈');
-        navigate('/dashboard');
+        // Check if user has API credentials
+        try {
+          const credResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/credentials/status`, {
+            headers: {
+              'Authorization': `Bearer ${response.token}`
+            }
+          });
+          
+          if (credResponse.ok) {
+            const credData = await credResponse.json();
+            if (credData.has_credentials) {
+              // User has credentials, go to dashboard
+              toast.success('Welcome to Grow! 📈');
+              navigate('/dashboard');
+            } else {
+              // No credentials, go to settings to add them
+              toast.success('Welcome! Please add your Groww credentials');
+              navigate('/settings');
+            }
+          } else {
+            // If we can't check, just go to dashboard
+            toast.success('Welcome to Grow! 📈');
+            navigate('/dashboard');
+          }
+        } catch (err) {
+          console.error('Credentials check failed:', err);
+          toast.success('Welcome to Grow! 📈');
+          navigate('/dashboard');
+        }
       } else {
         toast.error('Authentication failed');
       }

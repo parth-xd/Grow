@@ -211,6 +211,74 @@ def verify_auth():
         return jsonify({'error': 'Verification failed'}), 500
 
 
+# ── API Credentials Management ───────────────────────────────────────────────
+
+@app.route("/api/credentials/status", methods=["GET"])
+def credentials_status():
+    """Check if user has API credentials configured"""
+    try:
+        from auth import AuthManager
+        
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing authorization header'}), 401
+        
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+        
+        if not user_info:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        user_id = user_info['user_id']
+        creds = auth_manager.get_api_credentials(user_id)
+        
+        return jsonify({
+            'has_credentials': creds is not None,
+            'api_key_exists': creds is not None and bool(creds.get('api_key')),
+            'api_secret_exists': creds is not None and bool(creds.get('api_secret'))
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Credentials status error: {e}")
+        return jsonify({'error': 'Failed to check credentials'}), 500
+
+
+@app.route("/api/credentials/save", methods=["POST"])
+def save_credentials():
+    """Save user's Groww API credentials"""
+    try:
+        from auth import AuthManager
+        
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing authorization header'}), 401
+        
+        token = auth_header.split(' ')[1]
+        data = request.get_json()
+        
+        if not data.get('api_key') or not data.get('api_secret'):
+            return jsonify({'error': 'Missing api_key or api_secret'}), 400
+        
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+        
+        if not user_info:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        user_id = user_info['user_id']
+        
+        # Save credentials (encrypted in database)
+        auth_manager.save_api_credentials(user_id, data['api_key'], data['api_secret'])
+        
+        logger.info(f"✓ Credentials saved for user: {user_id}")
+        return jsonify({'success': True, 'message': 'Credentials saved successfully'}), 200
+        
+    except Exception as e:
+        logger.error(f"Save credentials error: {e}")
+        return jsonify({'error': 'Failed to save credentials', 'detail': str(e)}), 500
+
+
 # ── Manual Trade Management ──────────────────────────────────────────────────
 
 @app.route("/api/close-trade", methods=["POST", "GET"])
