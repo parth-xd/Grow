@@ -670,7 +670,7 @@ def _task_auto_close_trades():
         if not market_open:
             return
         
-        trades_json_path = os.path.join('/Users/parthsharma/Desktop/Grow', 'paper_trades.json')
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             return
         
@@ -726,7 +726,7 @@ def _task_record_pnl():
         # if not market_open:
         #     return
         
-        trades_json_path = os.path.join('/Users/parthsharma/Desktop/Grow', 'paper_trades.json')
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             return
         

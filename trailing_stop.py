@@ -12,6 +12,9 @@ import os
 from datetime import datetime
 import pytz
 
+# Get project root for relative paths (works both locally and in production)
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 ist = pytz.timezone('Asia/Kolkata')
 
 def calculate_breakeven_price(entry_price, signal='BUY', charges_pct=0.06, tax_buffer_pct=0.10):
@@ -121,7 +124,7 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
     if live_prices is None:
         live_prices = {}
     
-    filepath = os.path.join('/Users/parthsharma/Desktop/Grow', paper_trades_file)
+    filepath = os.path.join(PROJECT_ROOT, paper_trades_file)
     
     try:
         with open(filepath, 'r') as f:
@@ -389,7 +392,7 @@ def manage_loss_positions(paper_trades_file='paper_trades.json', live_prices=Non
     if live_prices is None:
         live_prices = {}
     
-    filepath = os.path.join('/Users/parthsharma/Desktop/Grow', paper_trades_file)
+    filepath = os.path.join(PROJECT_ROOT, paper_trades_file)
     
     try:
         with open(filepath, 'r') as f:

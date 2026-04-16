@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 import pytz
 
-sys.path.insert(0, '/Users/parthsharma/Desktop/Grow')
+sys.path.insert(0, PROJECT_ROOT)
 
 import bot
 from config import WATCHLIST, CONFIDENCE_THRESHOLD, TARGET_PCT, STOP_LOSS_PCT
@@ -36,7 +36,7 @@ class PaperTradeTracker:
     """Track paper trades with entry, exit targets, and actual results"""
     
     def __init__(self, filename='paper_trades.json'):
-        self.filename = os.path.join('/Users/parthsharma/Desktop/Grow', filename)
+        self.filename = os.path.join(PROJECT_ROOT, filename)
         self.trades = self._load_trades()
     
     def _load_trades(self):

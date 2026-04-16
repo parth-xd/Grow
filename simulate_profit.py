@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 import pytz
 
-sys.path.insert(0, '/Users/parthsharma/Desktop/Grow')
+sys.path.insert(0, PROJECT_ROOT)
 
 import bot
 from config import WATCHLIST
