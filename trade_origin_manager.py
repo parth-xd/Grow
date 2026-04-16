@@ -173,7 +173,7 @@ def log_trade_boundary_event(event_type, trade_id, symbol, message):
         'message': message
     }
     
-    log_file = '/Users/parthsharma/Desktop/Grow/trade_boundary_log.json'
+    log_file = os.path.join(PROJECT_ROOT, 'trade_boundary_log.json')
     try:
         if os.path.exists(log_file):
             with open(log_file, 'r') as f:

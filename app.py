@@ -117,6 +117,83 @@ def index(path):
     return send_file("frontend/dist/index.html")
 
 
+# ── Authentication ───────────────────────────────────────────────────────────
+
+@app.route("/api/auth/google", methods=["POST"])
+def google_auth():
+    """Handle Google OAuth - exchange JWT credential for app JWT token"""
+    try:
+        from auth import AuthManager
+        import jwt as pyjwt
+        
+        data = request.get_json()
+        credential_jwt = data.get('auth_code')
+        
+        if not credential_jwt:
+            return jsonify({'error': 'No credential provided'}), 400
+        
+        # Decode Google's ID token (without verification - trust Google)
+        try:
+            google_info = pyjwt.decode(credential_jwt, options={"verify_signature": False})
+        except Exception as e:
+            logger.error(f"Failed to decode Google JWT: {e}")
+            return jsonify({'error': 'Invalid Google token'}), 401
+        
+        # Initialize auth manager
+        auth_manager = AuthManager(app.db)
+        
+        # Get or create user in our database
+        user = auth_manager.get_or_create_user({
+            'id': google_info.get('sub'),
+            'email': google_info.get('email'),
+            'name': google_info.get('name'),
+            'picture': google_info.get('picture')
+        })
+        
+        if not user:
+            return jsonify({'error': 'Failed to create/get user'}), 500
+        
+        # Generate JWT token for frontend
+        token = auth_manager.generate_jwt(user['id'], user['email'])
+        
+        return jsonify({
+            'token': token,
+            'user': {
+                'id': user['id'],
+                'email': user['email'],
+                'name': user['name']
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Google auth error: {e}")
+        return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
+
+
+@app.route("/api/auth/verify", methods=["GET"])
+def verify_auth():
+    """Verify JWT token"""
+    try:
+        from auth import AuthManager, token_required
+        auth_header = request.headers.get('Authorization', '')
+        
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing authorization header'}), 401
+        
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user = auth_manager.get_user_from_token(token)
+        
+        if not user:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        return jsonify({'user': user}), 200
+        
+    except Exception as e:
+        logger.error(f"Token verify error: {e}")
+        return jsonify({'error': 'Verification failed'}), 500
+
+
 # ── Manual Trade Management ──────────────────────────────────────────────────
 
 @app.route("/api/close-trade", methods=["POST", "GET"])
