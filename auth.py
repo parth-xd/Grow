@@ -168,9 +168,10 @@ class AuthManager:
                 user_id = str(uuid.uuid4())
                 
                 try:
+                    # Use CAST to handle UUID conversion properly
                     self.db.session.execute(text("""
                         INSERT INTO users (id, google_id, email, name, profile_picture_url, is_active)
-                        VALUES (:id::uuid, :google_id, :email, :name, :picture, TRUE)
+                        VALUES (CAST(:id AS uuid), :google_id, :email, :name, :picture, TRUE)
                     """), {
                         'id': user_id,
                         'google_id': google_info['id'],
