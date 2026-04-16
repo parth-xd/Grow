@@ -48,25 +48,25 @@ function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 flex items-center justify-center px-4 sm:px-6 py-8">
       {/* Decorative elements */}
-      <div className="absolute top-0 left-0 w-96 h-96 bg-blue-50 rounded-full blur-3xl opacity-20 -z-10"></div>
-      <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-50 rounded-full blur-3xl opacity-20 -z-10"></div>
+      <div className="absolute top-0 left-0 w-48 h-48 sm:w-72 sm:h-72 md:w-96 md:h-96 bg-blue-50 rounded-full blur-3xl opacity-20 -z-10"></div>
+      <div className="absolute bottom-0 right-0 w-48 h-48 sm:w-72 sm:h-72 md:w-96 md:h-96 bg-indigo-50 rounded-full blur-3xl opacity-20 -z-10"></div>
 
-      <div className="max-w-md w-full">
+      <div className="w-full max-w-md">
         {/* Branding */}
-        <div className="text-center mb-12 animate-fade-in">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-gray-900 to-gray-800 mb-6 shadow-lg">
-            <span className="text-2xl font-bold text-white">G</span>
+        <div className="text-center mb-8 sm:mb-12 animate-fade-in">
+          <div className="inline-flex items-center justify-center w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-gray-900 to-gray-800 mb-4 sm:mb-6 shadow-lg">
+            <span className="text-xl sm:text-2xl font-bold text-white">G</span>
           </div>
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">Grow</h1>
-          <p className="text-gray-500 text-base font-medium">Trade smarter, not harder</p>
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-2">Grow</h1>
+          <p className="text-gray-500 text-sm sm:text-base font-medium">Trade smarter, not harder</p>
         </div>
 
         {/* Login Card */}
-        <div className="bg-white rounded-3xl p-8 shadow-xl border border-gray-100 backdrop-blur-sm">
-          <h2 className="text-2xl font-bold text-gray-900 mb-1">Welcome Back</h2>
-          <p className="text-gray-500 text-sm mb-8 font-medium">Sign in to your trading account</p>
+        <div className="bg-white rounded-2xl sm:rounded-3xl p-6 sm:p-8 shadow-xl border border-gray-100 backdrop-blur-sm">
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-1">Welcome Back</h2>
+          <p className="text-gray-500 text-xs sm:text-sm mb-6 sm:mb-8 font-medium">Sign in to your trading account</p>
 
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-4 rounded-2xl mb-6 text-sm animate-pulse">

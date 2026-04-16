@@ -11,16 +11,16 @@ function LandingPage() {
 
       {/* Navigation */}
       <nav className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3 hover-cursor">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center shadow-md">
-              <span className="text-lg font-bold text-white">G</span>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-2 sm:gap-3 hover-cursor">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center shadow-md">
+              <span className="text-base sm:text-lg font-bold text-white">G</span>
             </div>
-            <span className="text-xl font-semibold text-gray-900">Grow</span>
+            <span className="text-base sm:text-xl font-semibold text-gray-900">Grow</span>
           </div>
           <button
             onClick={() => navigate('/login')}
-            className="px-6 py-2 bg-gray-900 text-white font-medium rounded-xl hover:bg-gray-800 transition-all duration-200 hover-cursor hover:shadow-md active:scale-95"
+            className="px-4 sm:px-6 py-2 text-sm sm:text-base bg-gray-900 text-white font-medium rounded-lg sm:rounded-xl hover:bg-gray-800 transition-all duration-200 hover-cursor hover:shadow-md active:scale-95"
           >
             Sign In
           </button>
@@ -28,25 +28,25 @@ function LandingPage() {
       </nav>
 
       {/* Hero Section */}
-      <div className="relative max-w-6xl mx-auto px-6 py-32">
-        <div className="text-center mb-16">
-          <h1 className="text-5xl md:text-6xl font-bold mb-6 leading-tight text-gray-900 animate-fade-in">
+      <div className="relative max-w-6xl mx-auto px-4 sm:px-6 py-16 sm:py-24 md:py-32">
+        <div className="text-center mb-12 sm:mb-16">
+          <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold mb-4 sm:mb-6 leading-tight text-gray-900 animate-fade-in">
             Trade Smarter<br />Not Harder
           </h1>
-          <p className="text-lg text-gray-600 mb-12 max-w-2xl mx-auto leading-relaxed">
+          <p className="text-sm sm:text-base md:text-lg text-gray-600 mb-8 sm:mb-12 max-w-2xl mx-auto leading-relaxed">
             AI-powered trading platform built for serious traders. Real-time analytics, backtesting, and intelligent signals to maximize returns.
           </p>
           <button
             onClick={() => navigate('/login')}
-            className="bg-gray-900 text-white font-semibold py-3 px-10 text-base rounded-xl hover:bg-gray-800 hover:shadow-lg transition-all duration-200 inline-block hover-cursor active:scale-95"
+            className="bg-gray-900 text-white font-semibold py-2.5 sm:py-3 px-6 sm:px-10 text-sm sm:text-base rounded-lg sm:rounded-xl hover:bg-gray-800 hover:shadow-lg transition-all duration-200 inline-block hover-cursor active:scale-95"
           >
             Get Started for Free
           </button>
-          <p className="text-gray-600 text-sm mt-6">No credit card. No BS. Just results.</p>
+          <p className="text-gray-600 text-xs sm:text-sm mt-4 sm:mt-6">No credit card. No BS. Just results.</p>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 py-20 border-t border-b border-gray-200">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 sm:gap-8 py-12 sm:py-20 border-t border-b border-gray-200">
           <StatItem value="10K+" label="Active Traders" icon="📈" />
           <StatItem value="₹50Cr+" label="Volume Traded" icon="💰" />
           <StatItem value="24/7" label="AI Monitoring" icon="🤖" />
@@ -54,14 +54,14 @@ function LandingPage() {
       </div>
 
       {/* Featured Work Section */}
-      <div className="relative py-24 border-t border-gray-200">
-        <div className="max-w-6xl mx-auto px-6">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4 text-gray-900">See It In Action</h2>
-            <p className="text-lg text-gray-600">Real traders, real results</p>
+      <div className="relative py-16 sm:py-24 border-t border-gray-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6">
+          <div className="text-center mb-12 sm:mb-16">
+            <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold mb-3 sm:mb-4 text-gray-900">See It In Action</h2>
+            <p className="text-sm sm:text-base md:text-lg text-gray-600">Real traders, real results</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
             <FeaturedWork
               title="AI Dashboard"
               description="Real-time P&L tracking with AI-powered insights"
@@ -85,14 +85,14 @@ function LandingPage() {
       </div>
 
       {/* Features Section */}
-      <div className="relative py-24">
-        <div className="max-w-6xl mx-auto px-6">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4 text-gray-900">Why Choose Grow?</h2>
-            <p className="text-lg text-gray-600">Everything you need to trade like a pro</p>
+      <div className="relative py-16 sm:py-24">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6">
+          <div className="text-center mb-12 sm:mb-16">
+            <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold mb-3 sm:mb-4 text-gray-900">Why Choose Grow?</h2>
+            <p className="text-sm sm:text-base md:text-lg text-gray-600">Everything you need to trade like a pro</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
             <Feature
               icon="🧠"
               title="AI Signals"
