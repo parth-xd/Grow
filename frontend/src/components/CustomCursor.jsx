@@ -30,29 +30,107 @@ function CustomCursor() {
       cursor?.classList.toggle('active', isInteractive);
     };
 
-    // Create particle elements
+    // Create particle elements with proper SVG
     const createParticles = () => {
       particles.length = 0;
-      const particleCount = 4; // Reduced from 6 for better performance
+      const particleCount = 4;
       
       for (let i = 0; i < particleCount; i++) {
         const element = document.createElement('div');
         element.className = 'custom-cursor-particle';
-        element.innerHTML = DollarBillSVG();
         element.style.position = 'fixed';
         element.style.pointerEvents = 'none';
         element.style.zIndex = '9998';
         element.style.width = '24px';
         element.style.height = '32px';
         element.style.willChange = 'transform';
+        element.style.display = 'flex';
+        element.style.alignItems = 'center';
+        element.style.justifyContent = 'center';
+        
+        // Create SVG element properly
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 32');
+        svg.setAttribute('width', '24');
+        svg.setAttribute('height', '32');
+        svg.setAttribute('style', 'width: 100%; height: 100%;');
+        
+        // Define gradient
+        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        const gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+        gradient.setAttribute('id', `billGradient${i}`);
+        gradient.setAttribute('x1', '0%');
+        gradient.setAttribute('y1', '0%');
+        gradient.setAttribute('x2', '100%');
+        gradient.setAttribute('y2', '100%');
+        
+        const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        stop1.setAttribute('offset', '0%');
+        stop1.setAttribute('style', 'stop-color:#34d399;stop-opacity:1');
+        
+        const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        stop2.setAttribute('offset', '100%');
+        stop2.setAttribute('style', 'stop-color:#10b981;stop-opacity:1');
+        
+        gradient.appendChild(stop1);
+        gradient.appendChild(stop2);
+        defs.appendChild(gradient);
+        svg.appendChild(defs);
+        
+        // Bill background
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', '1');
+        rect.setAttribute('y', '1');
+        rect.setAttribute('width', '22');
+        rect.setAttribute('height', '30');
+        rect.setAttribute('rx', '2');
+        rect.setAttribute('fill', `url(#billGradient${i})`);
+        rect.setAttribute('stroke', '#059669');
+        rect.setAttribute('stroke-width', '1');
+        svg.appendChild(rect);
+        
+        // Dollar sign
+        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', '12');
+        text.setAttribute('y', '22');
+        text.setAttribute('font-size', '22');
+        text.setAttribute('font-weight', '900');
+        text.setAttribute('fill', '#ffffff');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'middle');
+        text.setAttribute('font-family', 'Arial, sans-serif');
+        text.textContent = '$';
+        svg.appendChild(text);
+        
+        // Top line
+        const line1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line1.setAttribute('x1', '3');
+        line1.setAttribute('y1', '4');
+        line1.setAttribute('x2', '21');
+        line1.setAttribute('y2', '4');
+        line1.setAttribute('stroke', '#ffffff');
+        line1.setAttribute('stroke-width', '0.8');
+        line1.setAttribute('opacity', '0.4');
+        svg.appendChild(line1);
+        
+        // Bottom line
+        const line2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line2.setAttribute('x1', '3');
+        line2.setAttribute('y1', '28');
+        line2.setAttribute('x2', '21');
+        line2.setAttribute('y2', '28');
+        line2.setAttribute('stroke', '#ffffff');
+        line2.setAttribute('stroke-width', '0.8');
+        line2.setAttribute('opacity', '0.4');
+        svg.appendChild(line2);
+        
+        element.appendChild(svg);
         document.body.appendChild(element);
         
         particles.push({
           element,
           x: 0,
           y: 0,
-          vx: 0,
-          vy: 0,
           rotation: 0,
           angle: (i / particleCount) * Math.PI * 2,
         });
@@ -67,7 +145,7 @@ function CustomCursor() {
       const time = now / 1000;
 
       particles.forEach((particle, index) => {
-        const angle = particle.angle + time * 0.5; // Orbital speed
+        const angle = particle.angle + time * 0.5;
         const distance = 45 + Math.sin(time * 1.5 + index) * 8;
         
         particle.x = mousePos.current.x + Math.cos(angle) * distance;
@@ -76,13 +154,11 @@ function CustomCursor() {
 
         if (particle.element) {
           const isHovering = cursorRef.current?.classList.contains('active');
-          particle.element.style.transform = `
-            translate(${particle.x}px, ${particle.y}px) 
-            translate(-50%, -50%) 
-            rotate(${particle.rotation}deg) 
-            scale(${isHovering ? 1.2 : 0.8})
-          `;
-          particle.element.style.opacity = isHovering ? '1' : '0.65';
+          const scale = isHovering ? 1.2 : 0.8;
+          const opacity = isHovering ? '1' : '0.65';
+          
+          particle.element.style.transform = `translate(${particle.x}px, ${particle.y}px) translate(-50%, -50%) rotate(${particle.rotation}deg) scale(${scale})`;
+          particle.element.style.opacity = opacity;
         }
       });
 
@@ -203,35 +279,6 @@ function CustomCursor() {
       `}</style>
     </>
   );
-}
-
-function DollarBillSVG() {
-  return `
-    <svg viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
-      <defs>
-        <linearGradient id="billGradient${Math.random()}" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color:#34d399;stop-opacity:1" />
-          <stop offset="100%" style="stop-color:#10b981;stop-opacity:1" />
-        </linearGradient>
-      </defs>
-      
-      <!-- Bill background with gradient -->
-      <rect x="1" y="1" width="22" height="30" rx="2" fill="url(#billGradient${Math.random()})" stroke="#059669" stroke-width="1"/>
-      
-      <!-- Dollar sign - larger and bolder -->
-      <text x="12" y="22" font-size="22" font-weight="900" fill="#ffffff" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif">$</text>
-      
-      <!-- Top decorative line -->
-      <line x1="3" y1="4" x2="21" y2="4" stroke="#ffffff" stroke-width="0.8" opacity="0.4"/>
-      
-      <!-- Bottom decorative line -->
-      <line x1="3" y1="28" x2="21" y2="28" stroke="#ffffff" stroke-width="0.8" opacity="0.4"/>
-      
-      <!-- Corner dots for authenticity -->
-      <circle cx="4" cy="5" r="0.8" fill="#ffffff" opacity="0.6"/>
-      <circle cx="20" cy="27" r="0.8" fill="#ffffff" opacity="0.6"/>
-    </svg>
-  `;
 }
 
 export default CustomCursor;
