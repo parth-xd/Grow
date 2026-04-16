@@ -33,8 +33,8 @@ TARGET_PCT = float(os.getenv("TARGET_PCT", "4.0"))
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 
 # Server
-FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
-FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+FLASK_HOST = os.getenv("FLASK_HOST", "0.0.0.0")  # Listen on all interfaces for production
+FLASK_PORT = int(os.getenv("PORT") or os.getenv("FLASK_PORT", "5000"))  # Render uses PORT env var
 
 # Database settings
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -42,7 +42,8 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "grow_trading_bot")
-DB_URL = os.getenv("DB_URL", f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
+# Support both DB_URL and DATABASE_URL (Render uses DATABASE_URL)
+DB_URL = os.getenv("DATABASE_URL") or os.getenv("DB_URL") or f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # News API (optional — get free key at https://newsapi.org)
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
