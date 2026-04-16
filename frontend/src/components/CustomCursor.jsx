@@ -80,9 +80,9 @@ function CustomCursor() {
             translate(${particle.x}px, ${particle.y}px) 
             translate(-50%, -50%) 
             rotate(${particle.rotation}deg) 
-            scale(${isHovering ? 1 : 0.6})
+            scale(${isHovering ? 1.2 : 0.8})
           `;
-          particle.element.style.opacity = isHovering ? '0.85' : '0.4';
+          particle.element.style.opacity = isHovering ? '1' : '0.65';
         }
       });
 
@@ -208,29 +208,28 @@ function CustomCursor() {
 function DollarBillSVG() {
   return `
     <svg viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
-      <!-- Bill background -->
-      <rect x="2" y="2" width="20" height="28" rx="2" fill="#10b981" stroke="#059669" stroke-width="1.5"/>
-      
-      <!-- Security pattern -->
-      <g opacity="0.15">
-        <circle cx="8" cy="8" r="1.5" fill="#000"/>
-        <circle cx="16" cy="8" r="1.5" fill="#000"/>
-        <circle cx="8" cy="24" r="1.5" fill="#000"/>
-        <circle cx="16" cy="24" r="1.5" fill="#000"/>
-      </g>
-      
-      <!-- Dollar sign -->
-      <text x="12" y="20" font-size="18" font-weight="bold" fill="#fff" text-anchor="middle" font-family="system-ui">$</text>
-      
-      <!-- Shimmer effect -->
       <defs>
-        <linearGradient id="shimmer" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color:#fff;stop-opacity:0" />
-          <stop offset="50%" style="stop-color:#fff;stop-opacity:0.3" />
-          <stop offset="100%" style="stop-color:#fff;stop-opacity:0" />
+        <linearGradient id="billGradient${Math.random()}" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#34d399;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#10b981;stop-opacity:1" />
         </linearGradient>
       </defs>
-      <rect x="2" y="2" width="20" height="28" rx="2" fill="url(#shimmer)" stroke="none"/>
+      
+      <!-- Bill background with gradient -->
+      <rect x="1" y="1" width="22" height="30" rx="2" fill="url(#billGradient${Math.random()})" stroke="#059669" stroke-width="1"/>
+      
+      <!-- Dollar sign - larger and bolder -->
+      <text x="12" y="22" font-size="22" font-weight="900" fill="#ffffff" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif">$</text>
+      
+      <!-- Top decorative line -->
+      <line x1="3" y1="4" x2="21" y2="4" stroke="#ffffff" stroke-width="0.8" opacity="0.4"/>
+      
+      <!-- Bottom decorative line -->
+      <line x1="3" y1="28" x2="21" y2="28" stroke="#ffffff" stroke-width="0.8" opacity="0.4"/>
+      
+      <!-- Corner dots for authenticity -->
+      <circle cx="4" cy="5" r="0.8" fill="#ffffff" opacity="0.6"/>
+      <circle cx="20" cy="27" r="0.8" fill="#ffffff" opacity="0.6"/>
     </svg>
   `;
 }
