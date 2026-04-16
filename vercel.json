@@ -1,14 +1,10 @@
 {
-  "buildCommand": "cd frontend && npm run build",
-  "outputDirectory": "frontend/dist",
+  "root": "frontend",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "framework": "vite",
   "env": {
     "VITE_API_URL": "https://groww-api-m853.onrender.com",
     "VITE_GOOGLE_CLIENT_ID": "909946700089-5fr10qa7c51cl88ofmft1gp9f6eldsv1.apps.googleusercontent.com"
-  },
-  "git": {
-    "deploymentEnabled": {
-      "main": true
-    }
   }
 }
