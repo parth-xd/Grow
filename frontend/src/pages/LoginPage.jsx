@@ -9,39 +9,45 @@ function LoginPage() {
   const { handleGoogleAuth, loading, error, clearError } = useAuthStore();
 
   const handleGoogleSuccess = async (response) => {
-    // response should contain { token, user }
     if (response.token) {
-      // Store token in auth store
       const success = await handleGoogleAuth(response);
       if (success) {
-        toast.success('Login successful!');
+        toast.success('Welcome to Grow! 📈');
         navigate('/dashboard');
       } else {
-        toast.error('Login failed. Please try again.');
+        toast.error('Authentication failed');
       }
     }
   };
 
   return (
-    <div className="min-h-screen bg-white flex items-center justify-center px-4">
-      <div className="max-w-md w-full">
-        {/* Logo */}
-        <div className="text-center mb-10">
-          <h1 className="text-5xl font-bold text-gray-900 mb-2">Groww AI</h1>
-          <p className="text-gray-600 text-lg">Intelligent Trading Platform</p>
+    <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-black flex items-center justify-center px-4 relative overflow-hidden">
+      {/* Animated background elements */}
+      <div className="absolute top-0 left-0 w-96 h-96 bg-yellow-400/5 rounded-full blur-3xl"></div>
+      <div className="absolute bottom-0 right-0 w-96 h-96 bg-yellow-400/5 rounded-full blur-3xl"></div>
+
+      <div className="max-w-md w-full relative z-10">
+        {/* Branding */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-yellow-400 to-yellow-500 mb-6 shadow-lg shadow-yellow-400/50">
+            <span className="text-2xl font-bold text-black">G</span>
+          </div>
+          <h1 className="text-4xl font-black text-white mb-2">Grow</h1>
+          <p className="text-gray-400 text-base font-light tracking-wide">Trade smarter, not harder</p>
         </div>
 
         {/* Login Card */}
-        <div className="card p-8">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-8">Welcome back</h2>
+        <div className="backdrop-blur-md bg-gray-900/80 border border-gray-800 rounded-2xl p-8 shadow-2xl">
+          <h2 className="text-xl font-semibold text-white mb-2">Get Started</h2>
+          <p className="text-gray-400 text-sm mb-8">Sign in to access your trading dashboard</p>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
+            <div className="bg-red-900/30 border border-red-800/50 text-red-300 px-4 py-3 rounded-lg mb-6 text-sm">
               <div className="flex justify-between items-start">
                 <span>{error}</span>
                 <button
                   onClick={clearError}
-                  className="text-red-700 hover:text-red-900 font-semibold"
+                  className="text-red-300 hover:text-red-100 font-semibold ml-4"
                 >
                   ×
                 </button>
@@ -55,53 +61,52 @@ function LoginPage() {
             loading={loading}
           />
 
-          {/* Or Divider */}
+          {/* Divider */}
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200"></div>
+              <div className="w-full border-t border-gray-800"></div>
             </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-white text-gray-600 font-medium">Or</span>
+            <div className="relative flex justify-center">
+              <span className="px-3 bg-gray-900/80 text-gray-500 text-xs tracking-widest uppercase">Or continue with</span>
             </div>
           </div>
 
-          {/* Email/Password Form (Optional) */}
-          <p className="text-gray-500 text-sm text-center">
-            Email/password authentication coming soon
+          {/* Email signup info */}
+          <p className="text-gray-500 text-xs text-center">
+            Email authentication coming soon
           </p>
         </div>
 
-        {/* Footer */}
-        <div className="mt-8 text-center text-gray-600 text-sm">
-          <p>
+        {/* Footer Links */}
+        <div className="mt-8 text-center">
+          <p className="text-gray-500 text-xs">
             By signing in, you agree to our{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-700 font-medium">
-              Terms of Service
-            </a>{' '}
-            and{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-700 font-medium">
+            <a href="#" className="text-yellow-400 hover:text-yellow-300 transition-colors">
+              Terms
+            </a>
+            {' '}and{' '}
+            <a href="#" className="text-yellow-400 hover:text-yellow-300 transition-colors">
               Privacy Policy
             </a>
           </p>
         </div>
 
-        {/* Features Preview */}
-        <div className="mt-12 grid grid-cols-3 gap-4">
-          <FeatureItem number="01" label="ML Models" description="Intelligent algorithms" />
-          <FeatureItem number="02" label="Analytics" description="Deep insights" />
-          <FeatureItem number="03" label="Real-time" description="Live updates" />
+        {/* Stats/Features */}
+        <div className="mt-12 grid grid-cols-3 gap-3">
+          <StatCard number="10K+" label="Traders" />
+          <StatCard number="₹50Cr" label="Traded" />
+          <StatCard number="24/7" label="Support" />
         </div>
       </div>
     </div>
   );
 }
 
-function FeatureItem({ number, label, description }) {
+function StatCard({ number, label }) {
   return (
-    <div className="card p-4 text-center hover:shadow-md transition-shadow">
-      <div className="text-2xl font-bold text-blue-500 mb-2">{number}</div>
-      <p className="text-gray-900 font-semibold text-sm">{label}</p>
-      <p className="text-gray-500 text-xs mt-1">{description}</p>
+    <div className="text-center">
+      <div className="text-lg font-bold text-yellow-400 mb-1">{number}</div>
+      <p className="text-gray-500 text-xs">{label}</p>
     </div>
   );
 }

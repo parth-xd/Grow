@@ -16,12 +16,40 @@ function GoogleLoginButton({ onSuccess, loading }) {
       window.google.accounts.id.renderButton(
         document.getElementById('google-signin-button'),
         {
-          theme: 'outline',
+          theme: 'filled_black',
           size: 'large',
           width: '100%',
           text: 'signin_with',
         }
       );
+
+      // Apply custom styling to match black & yellow theme
+      setTimeout(() => {
+        const button = document.getElementById('google-signin-button')?.querySelector('button');
+        if (button) {
+          button.style.background = '#FBBF24';
+          button.style.color = '#000000';
+          button.style.borderRadius = '10px';
+          button.style.height = '50px';
+          button.style.fontWeight = '600';
+          button.style.fontSize = '15px';
+          button.style.width = '100%';
+          button.style.border = 'none';
+          button.style.boxShadow = '0 4px 15px rgba(251, 191, 36, 0.3)';
+          button.style.transition = 'all 0.3s ease';
+          
+          button.onmouseover = () => {
+            button.style.background = '#FCD34D';
+            button.style.boxShadow = '0 6px 20px rgba(251, 191, 36, 0.4)';
+            button.style.transform = 'translateY(-2px)';
+          };
+          button.onmouseout = () => {
+            button.style.background = '#FBBF24';
+            button.style.boxShadow = '0 4px 15px rgba(251, 191, 36, 0.3)';
+            button.style.transform = 'translateY(0)';
+          };
+        }
+      }, 500);
     }
   }, []);
 
@@ -49,8 +77,8 @@ function GoogleLoginButton({ onSuccess, loading }) {
 
   if (!GOOGLE_CLIENT_ID) {
     return (
-      <div className="bg-yellow-900 border border-yellow-700 text-yellow-100 px-4 py-3 rounded">
-        Google Client ID not configured. Please set VITE_GOOGLE_CLIENT_ID in .env
+      <div className="bg-red-900/30 border border-red-800/50 text-red-300 px-4 py-3 rounded-lg text-sm">
+        Google Client ID not configured
       </div>
     );
   }
