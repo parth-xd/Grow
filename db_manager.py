@@ -566,6 +566,11 @@ class CandleDatabase:
         Session = scoped_session(sessionmaker(bind=self.engine, expire_on_commit=False))
         self.Session = Session
 
+    @property
+    def session(self):
+        """Get a database session (for backward compatibility with auth.py)"""
+        return self.Session()
+
     def init_db(self):
         """Create tables if they don't exist."""
         Base.metadata.create_all(self.engine)
