@@ -24,37 +24,37 @@ function GoogleLoginButton({ onSuccess, loading }) {
       window.google.accounts.id.renderButton(
         document.getElementById('google-signin-button'),
         {
-          theme: 'filled_black',
+          theme: 'outline',
           size: 'large',
           width: '100%',
           text: 'signin_with',
         }
       );
 
-      // Apply custom styling to match black & yellow theme
+      // Apply custom styling to match minimalist design
       setTimeout(() => {
         const button = document.getElementById('google-signin-button')?.querySelector('button');
         if (button) {
-          button.style.background = '#FBBF24';
-          button.style.color = '#000000';
-          button.style.borderRadius = '10px';
-          button.style.height = '50px';
-          button.style.fontWeight = '600';
-          button.style.fontSize = '15px';
+          button.style.background = '#ffffff';
+          button.style.color = '#1f2937';
+          button.style.borderRadius = '8px';
+          button.style.height = '48px';
+          button.style.fontWeight = '500';
+          button.style.fontSize = '14px';
           button.style.width = '100%';
-          button.style.border = 'none';
-          button.style.boxShadow = '0 4px 15px rgba(251, 191, 36, 0.3)';
+          button.style.border = '1px solid #e5e7eb';
+          button.style.boxShadow = 'none';
           button.style.transition = 'all 0.3s ease';
           
           button.onmouseover = () => {
-            button.style.background = '#FCD34D';
-            button.style.boxShadow = '0 6px 20px rgba(251, 191, 36, 0.4)';
-            button.style.transform = 'translateY(-2px)';
+            button.style.background = '#f9fafb';
+            button.style.borderColor = '#d1d5db';
+            button.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
           };
           button.onmouseout = () => {
-            button.style.background = '#FBBF24';
-            button.style.boxShadow = '0 4px 15px rgba(251, 191, 36, 0.3)';
-            button.style.transform = 'translateY(0)';
+            button.style.background = '#ffffff';
+            button.style.borderColor = '#e5e7eb';
+            button.style.boxShadow = 'none';
           };
         }
       }, 500);

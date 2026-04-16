@@ -21,33 +21,29 @@ function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-black flex items-center justify-center px-4 relative overflow-hidden">
-      {/* Animated background elements */}
-      <div className="absolute top-0 left-0 w-96 h-96 bg-yellow-400/5 rounded-full blur-3xl"></div>
-      <div className="absolute bottom-0 right-0 w-96 h-96 bg-yellow-400/5 rounded-full blur-3xl"></div>
-
-      <div className="max-w-md w-full relative z-10">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="max-w-md w-full">
         {/* Branding */}
         <div className="text-center mb-12">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-yellow-400 to-yellow-500 mb-6 shadow-lg shadow-yellow-400/50">
-            <span className="text-2xl font-bold text-black">G</span>
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-gray-900 mb-6">
+            <span className="text-xl font-bold text-white">G</span>
           </div>
-          <h1 className="text-4xl font-black text-white mb-2">Grow</h1>
-          <p className="text-gray-400 text-base font-light tracking-wide">Trade smarter, not harder</p>
+          <h1 className="text-3xl font-semibold text-gray-900 mb-2">Grow</h1>
+          <p className="text-gray-600 text-sm">Trade smarter, not harder</p>
         </div>
 
         {/* Login Card */}
-        <div className="backdrop-blur-md bg-gray-900/80 border border-gray-800 rounded-2xl p-8 shadow-2xl">
-          <h2 className="text-xl font-semibold text-white mb-2">Get Started</h2>
-          <p className="text-gray-400 text-sm mb-8">Sign in to access your trading dashboard</p>
+        <div className="bg-white rounded-2xl p-8 border border-gray-200 shadow-sm">
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Welcome Back</h2>
+          <p className="text-gray-600 text-sm mb-8">Sign in to your account</p>
 
           {error && (
-            <div className="bg-red-900/30 border border-red-800/50 text-red-300 px-4 py-3 rounded-lg mb-6 text-sm">
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
               <div className="flex justify-between items-start">
                 <span>{error}</span>
                 <button
                   onClick={clearError}
-                  className="text-red-300 hover:text-red-100 font-semibold ml-4"
+                  className="text-red-600 hover:text-red-800 font-semibold ml-4"
                 >
                   ×
                 </button>
@@ -64,15 +60,15 @@ function LoginPage() {
           {/* Divider */}
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-800"></div>
+              <div className="w-full border-t border-gray-200"></div>
             </div>
             <div className="relative flex justify-center">
-              <span className="px-3 bg-gray-900/80 text-gray-500 text-xs tracking-widest uppercase">Or continue with</span>
+              <span className="px-3 bg-white text-gray-500 text-xs">Or</span>
             </div>
           </div>
 
           {/* Email signup info */}
-          <p className="text-gray-500 text-xs text-center">
+          <p className="text-gray-600 text-xs text-center">
             Email authentication coming soon
           </p>
         </div>
