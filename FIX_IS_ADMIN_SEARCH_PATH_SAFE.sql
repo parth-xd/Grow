@@ -1,9 +1,8 @@
 -- ============================================================================
--- FIX: Add fixed search_path to is_admin function (Security Advisor fix)
+-- SAFE FIX: Update is_admin function without dropping dependent policies
 -- ============================================================================
--- This fixes the Supabase Security Advisor warning about the is_admin function
--- not having a fixed search_path. SECURITY DEFINER + search_path prevents SQL injection.
--- Uses CREATE OR REPLACE (no DROP) to avoid breaking dependent RLS policies
+-- This updates the is_admin function in-place to add fixed search_path
+-- No need to drop - just use CREATE OR REPLACE with same signature
 
 CREATE OR REPLACE FUNCTION public.is_admin(user_id UUID DEFAULT NULL)
 RETURNS BOOLEAN AS $$
@@ -16,5 +15,5 @@ RETURNS BOOLEAN AS $$
   )
 $$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
 
--- Verify the function works correctly
--- Test: SELECT public.is_admin(); -- should return true if admin, false otherwise
+-- Test the function
+-- SELECT public.is_admin(); -- should return true if admin, false otherwise
