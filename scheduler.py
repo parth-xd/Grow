@@ -931,6 +931,7 @@ def _task_build_daily_snapshots():
     """Build comprehensive end-of-day trading snapshots with REAL market data (1-min candles) after 4 PM."""
     try:
         from datetime import timezone, timedelta
+        from config import PROJECT_ROOT
         ist = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(ist)
         
