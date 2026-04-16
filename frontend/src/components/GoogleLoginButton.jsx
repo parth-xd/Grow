@@ -1,28 +1,50 @@
-import { useState } from 'react';
-import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
+import { useEffect } from 'react';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 function GoogleLoginButton({ onSuccess, loading }) {
-  const [localLoading, setLocalLoading] = useState(false);
+  useEffect(() => {
+    // Initialize Google Sign-In button
+    if (window.google?.accounts?.id) {
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleCredentialResponse,
+        ux_mode: 'popup',
+      });
 
-  const handleSuccess = async (credentialResponse) => {
-    if (!credentialResponse.credential) {
-      console.error('No credential received');
-      return;
+      window.google.accounts.id.renderButton(
+        document.getElementById('google-signin-button'),
+        {
+          theme: 'outline',
+          size: 'large',
+          width: '100%',
+          text: 'signin_with',
+        }
+      );
     }
+  }, []);
 
-    setLocalLoading(true);
+  const handleCredentialResponse = async (response) => {
     try {
-      // Decode the JWT to get the auth code (or send the credential directly)
-      onSuccess(credentialResponse.credential);
-    } finally {
-      setLocalLoading(false);
-    }
-  };
+      // Send the ID token to backend for verification
+      const result = await fetch(`${API_URL}/api/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_token: response.credential }),
+      });
 
-  const handleError = (error) => {
-    console.error('Login failed:', error);
+      if (!result.ok) {
+        const error = await result.json();
+        console.error('Auth error:', error);
+        return;
+      }
+
+      const data = await result.json();
+      onSuccess(data);
+    } catch (error) {
+      console.error('Login failed:', error);
+    }
   };
 
   if (!GOOGLE_CLIENT_ID) {
@@ -33,19 +55,7 @@ function GoogleLoginButton({ onSuccess, loading }) {
     );
   }
 
-  return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <div className="w-full">
-        <GoogleLogin
-          onSuccess={handleSuccess}
-          onError={handleError}
-          theme="dark"
-          size="large"
-          width="100%"
-        />
-      </div>
-    </GoogleOAuthProvider>
-  );
+  return <div id="google-signin-button" className="w-full"></div>;
 }
 
 export default GoogleLoginButton;

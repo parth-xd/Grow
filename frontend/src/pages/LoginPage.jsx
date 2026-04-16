@@ -1,29 +1,24 @@
 import { useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 import GoogleLoginButton from '../components/GoogleLoginButton';
 
 function LoginPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const { handleGoogleAuth, loading, error, clearError } = useAuthStore();
 
-  useEffect(() => {
-    // Check for Google OAuth callback
-    const code = searchParams.get('code');
-    if (code) {
-      handleGoogleAuthCallback(code);
-    }
-  }, [searchParams]);
-
-  const handleGoogleAuthCallback = async (code) => {
-    const success = await handleGoogleAuth(code);
-    if (success) {
-      toast.success('Login successful!');
-      navigate('/dashboard');
-    } else {
-      toast.error('Login failed. Please try again.');
+  const handleGoogleSuccess = async (response) => {
+    // response should contain { token, user }
+    if (response.token) {
+      // Store token in auth store
+      const success = await handleGoogleAuth(response);
+      if (success) {
+        toast.success('Login successful!');
+        navigate('/dashboard');
+      } else {
+        toast.error('Login failed. Please try again.');
+      }
     }
   };
 
@@ -56,8 +51,9 @@ function LoginPage() {
 
           {/* Google Login Button */}
           <GoogleLoginButton
-            onSuccess={handleGoogleAuthCallback}
+            onSuccess={handleGoogleSuccess}
             loading={loading}
+          />
           />
 
           {/* Or Divider */}

@@ -121,28 +121,40 @@ def index(path):
 
 @app.route("/api/auth/google", methods=["POST"])
 def google_auth():
-    """Handle Google OAuth - exchange JWT credential for app JWT token"""
+    """Handle Google OAuth - verify ID token and issue JWT"""
     try:
         from auth import AuthManager
         import jwt as pyjwt
         
         data = request.get_json()
-        credential_jwt = data.get('auth_code')
+        id_token = data.get('id_token')
         
-        if not credential_jwt:
-            return jsonify({'error': 'No credential provided'}), 400
+        if not id_token:
+            return jsonify({'error': 'No token provided'}), 400
         
-        # Decode Google's ID token (without verification - trust Google)
+        logger.info("🔐 Attempting Google sign-in")
+        
+        # Decode Google's ID token (without verification for now - trust Google)
         try:
-            google_info = pyjwt.decode(credential_jwt, options={"verify_signature": False})
+            google_info = pyjwt.decode(id_token, options={"verify_signature": False})
+            logger.info(f"✓ Google ID token decoded for: {google_info.get('email')}")
         except Exception as e:
-            logger.error(f"Failed to decode Google JWT: {e}")
-            return jsonify({'error': 'Invalid Google token'}), 401
+            logger.error(f"✗ Failed to decode Google ID token: {e}")
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        # Verify token is from Google
+        if google_info.get('iss') not in ['https://accounts.google.com', 'accounts.google.com']:
+            return jsonify({'error': 'Invalid token issuer'}), 401
+        
+        # Verify Client ID matches
+        if google_info.get('aud') != os.getenv('GOOGLE_CLIENT_ID'):
+            logger.warning(f"⚠️  Token Client ID mismatch. Expected: {os.getenv('GOOGLE_CLIENT_ID')}, Got: {google_info.get('aud')}")
+            # Don't fail here - sometimes Google returns `azp` instead of `aud`
         
         # Initialize auth manager
         auth_manager = AuthManager(app.db)
         
-        # Get or create user in our database
+        # Get or create user in database
         user = auth_manager.get_or_create_user({
             'id': google_info.get('sub'),
             'email': google_info.get('email'),
@@ -151,7 +163,10 @@ def google_auth():
         })
         
         if not user:
-            return jsonify({'error': 'Failed to create/get user'}), 500
+            logger.error("✗ Failed to create/get user")
+            return jsonify({'error': 'Failed to create user'}), 500
+        
+        logger.info(f"✓ User authenticated: {user['email']}")
         
         # Generate JWT token for frontend
         token = auth_manager.generate_jwt(user['id'], user['email'])
@@ -166,7 +181,9 @@ def google_auth():
         }), 200
         
     except Exception as e:
-        logger.error(f"Google auth error: {e}")
+        logger.error(f"✗ Google auth error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
 
 

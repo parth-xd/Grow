@@ -39,14 +39,11 @@ const useAuthStore = create(
       },
 
       // Handle Google OAuth callback
-      handleGoogleAuth: async (authCode) => {
+      handleGoogleAuth: async (response) => {
         set({ loading: true, error: null });
         try {
-          const response = await api.post('/api/auth/google', {
-            auth_code: authCode
-          });
-
-          const { token, user } = response.data;
+          // response already has { token, user } from backend
+          const { token, user } = response;
 
           // Save token
           localStorage.setItem('auth_token', token);
