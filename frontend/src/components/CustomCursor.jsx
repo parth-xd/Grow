@@ -84,17 +84,7 @@ function CustomCursor() {
     };
   }, []);
 
-  return (
-    <style>{`
-      * {
-        cursor: none !important;
-      }
-      
-      html, body {
-        cursor: none !important;
-      }
-    `}</style>
-  );
+  return null;
 }
 
 export default CustomCursor;
