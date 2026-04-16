@@ -4,10 +4,7 @@ function CustomCursor() {
   const cursorRef = useRef(null);
   const particlesRef = useRef([]);
   const mousePos = useRef({ x: 0, y: 0 });
-  const lastPos = useRef({ x: 0, y: 0 });
   const rafRef = useRef(null);
-  const particleCanvasRef = useRef(null);
-  const contextRef = useRef(null);
 
   useEffect(() => {
     const cursor = cursorRef.current;
@@ -19,8 +16,7 @@ function CustomCursor() {
 
       // Update cursor position
       if (cursor) {
-        cursor.style.left = e.clientX + 'px';
-        cursor.style.top = e.clientY + 'px';
+        cursor.style.transform = `translate(calc(-50% + ${e.clientX}px), calc(-50% + ${e.clientY}px))`;
       }
 
       // Check if hovering over interactive elements
@@ -32,14 +28,6 @@ function CustomCursor() {
                            target.tagName === 'A';
       
       cursor?.classList.toggle('active', isInteractive);
-    };
-
-    const handleMouseEnter = () => {
-      cursor?.classList.remove('hidden');
-    };
-
-    const handleMouseLeave = () => {
-      cursor?.classList.add('hidden');
     };
 
     // Create particle elements
@@ -104,13 +92,9 @@ function CustomCursor() {
     animate();
 
     window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseenter', handleMouseEnter);
-    window.addEventListener('mouseleave', handleMouseLeave);
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseenter', handleMouseEnter);
-      window.removeEventListener('mouseleave', handleMouseLeave);
       
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
@@ -130,7 +114,7 @@ function CustomCursor() {
       {/* Main cursor */}
       <div
         ref={cursorRef}
-        className="custom-cursor hidden"
+        className="custom-cursor"
         style={{
           position: 'fixed',
           pointerEvents: 'none',
@@ -138,6 +122,8 @@ function CustomCursor() {
           width: '32px',
           height: '32px',
           willChange: 'transform',
+          top: 0,
+          left: 0,
         }}
       >
         <div className="cursor-ring">
@@ -153,21 +139,17 @@ function CustomCursor() {
       <style>{`
         .custom-cursor {
           color: rgb(59, 130, 246);
-          transition: color 0.3s ease;
         }
 
         .custom-cursor.active {
           color: rgb(59, 130, 246);
-        }
-
-        .custom-cursor.hidden {
-          display: none;
+          filter: drop-shadow(0 0 16px rgba(59, 130, 246, 0.6));
         }
 
         .cursor-ring {
           position: absolute;
-          top: -50%;
-          left: -50%;
+          top: 0;
+          left: 0;
           width: 100%;
           height: 100%;
         }
