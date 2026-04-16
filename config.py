@@ -1,6 +1,9 @@
 import os
 from dotenv import load_dotenv
 
+# Project root directory (works both locally and in production)
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 load_dotenv(override=True)  # Override existing env vars with .env file (handles token refresh)
 
 # Groww API credentials

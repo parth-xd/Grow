@@ -21,7 +21,7 @@ from typing import Optional, List, Dict, Tuple
 logger = logging.getLogger(__name__)
 
 # Cache file paths
-CHART_CACHE_DIR = '/Users/parthsharma/Desktop/Grow/chart_cache'
+CHART_CACHE_DIR = os.path.join(os.path.dirname(__file__), 'chart_cache')
 os.makedirs(CHART_CACHE_DIR, exist_ok=True)
 
 

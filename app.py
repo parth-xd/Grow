@@ -16,7 +16,7 @@ from datetime import datetime
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
-from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL
+from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL, PROJECT_ROOT
 import bot
 import costs
 import news_sentiment
@@ -141,7 +141,7 @@ def api_close_trade():
             return jsonify({"success": False, "message": "exit_price must be a number"}), 400
         
         import json
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         
         if not os.path.exists(trades_json_path):
             return jsonify({"success": False, "message": "Trades file not found"}), 500
@@ -3023,7 +3023,7 @@ def update_trailing_stops():
         current_prices = data.get('prices', {})  # dict: {symbol: price}
         
         # Load trades from JSON
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         
         if not os.path.exists(trades_json_path):
             return jsonify({"error": "No paper trades file", "trades": []}), 404
@@ -3176,7 +3176,7 @@ def build_daily_snapshots():
         
         groww = GrowwAPI(token)
         
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             return jsonify({"success": False, "message": "No trades to snapshot"}), 404
         
@@ -3269,7 +3269,7 @@ def build_daily_snapshots():
                 }
         
         # Save snapshots to file for caching
-        snapshots_path = '/Users/parthsharma/Desktop/Grow/daily_snapshots.json'
+        snapshots_path = os.path.join(PROJECT_ROOT, 'daily_snapshots.json')
         with open(snapshots_path, 'w') as f:
             json.dump(snapshots, f, indent=2)
         
@@ -3316,7 +3316,7 @@ def build_daily_snapshots_with_candles():
             logger.warning(f"Database not available for candle storage: {e}")
             session = None
         
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             if session:
                 session.close()
@@ -3635,7 +3635,7 @@ def build_daily_snapshots_with_candles():
                     logger.warning(f"Could not fetch fresh data for index {index_symbol}: {e}")
         
         # Save snapshots to JSON file as backup
-        snapshots_path = '/Users/parthsharma/Desktop/Grow/daily_snapshots.json'
+        snapshots_path = os.path.join(PROJECT_ROOT, 'daily_snapshots.json')
         with open(snapshots_path, 'w') as f:
             json.dump(snapshots, f, indent=2, default=str)
         
@@ -3672,7 +3672,7 @@ def check_trailing_stop_exits():
         from paper_trader import get_live_price
         import json
         
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             return jsonify({"success": False, "message": "No paper trades file found"})
         
@@ -3877,7 +3877,7 @@ def enable_real_trading():
         available_capital = calculate_available_capital_for_auto_trading(total_capital, list(holdings.values()))
         
         # Store configuration files
-        config_file = '/Users/parthsharma/Desktop/Grow/real_trading_config.json'
+        config_file = os.path.join(PROJECT_ROOT, 'real_trading_config.json')
         config = {
             'enabled': True,
             'total_capital': total_capital,
@@ -4004,7 +4004,7 @@ def trade_snapshots_list():
     except Exception as e:
         logger.warning("Trade snapshot DB unavailable, using JSON fallback: %s", e)
         import json
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         limit = request.args.get("limit", 50, type=int)
         symbol = request.args.get("symbol", "").upper()
         snapshots = []
@@ -4066,7 +4066,7 @@ def trade_snapshot_detail(snap_id):
     except Exception as e:
         logger.warning("Trade snapshot detail DB unavailable, using JSON fallback: %s", e)
         import json
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         try:
             if os.path.exists(trades_json_path):
                 with open(trades_json_path, 'r') as f:
@@ -4208,7 +4208,7 @@ def pnl_stats():
         import json
         import os
         
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         open_trades = []
         try:
             if os.path.exists(trades_json_path):
@@ -4266,7 +4266,7 @@ def cumulative_pnl():
         import os
         from datetime import datetime
         
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
+        trades_json_path = os.path.join(PROJECT_ROOT, 'paper_trades.json')
         
         if not os.path.exists(trades_json_path):
             return jsonify({"pnl_data": [], "error": "No trades found"}), 200
