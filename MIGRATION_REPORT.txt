@@ -1,0 +1,376 @@
+====================================================================================================
+DATABASE MIGRATION REPORT - LOCAL → SUPABASE
+====================================================================================================
+
+📊 LOCAL DATABASE ANALYSIS
+   Tables: 23
+
+📈 TABLE BREAKDOWN (By Size):
+
+Table Name                     Columns    Rows            Size           
+----------------------------------------------------------------------
+candles                        10         250,102         4815 MB        
+stock_prices                   9          102,657         49 MB          
+global_news                    13         8,975           6904 kB        
+news_articles                  11         2,964           2456 kB        
+intraday_candles               12         2,400           704 kB         
+analysis_cache                 5          104             656 kB         
+trade_journal                  24         56              616 kB         
+pnl_snapshots                  10         1,204           600 kB         
+trade_snapshots                17         35              448 kB         
+shareholding_patterns          13         471             200 kB         
+peer_comparisons               4          34              184 kB         
+disruption_events              13         22              176 kB         
+paper_trades                   13         56              112 kB         
+commodity_snapshots            11         7               88 kB          
+stocks                         13         73              88 kB          
+config_settings                5          45              80 kB          
+candle_training_metadata       10         38              48 kB          
+theses                         10         1               48 kB          
+predictions                    6          0               24 kB          
+stock_theses                   10         0               24 kB          
+watchlist_notes                4          0               24 kB          
+trade_log                      6          0               16 kB          
+thesis_analysis                12         0               16 kB          
+----------------------------------------------------------------------
+TOTAL                          23         369,244         rows
+
+🔍 DETAILED SCHEMA:
+
+TABLE: analysis_cache
+  Columns (5):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('analysis_cache_id_seq'::regclass)]
+    • cache_key                      VARCHAR(100)         NOT NULL
+    • cache_type                     VARCHAR(30)          NOT NULL
+    • data_json                      TEXT                 NOT NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: candle_training_metadata
+  Columns (10):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('candle_training_metadata_id_seq'::regclass)]
+    • event_type                     VARCHAR(50)          NOT NULL
+    • timestamp                      TIMESTAMP            NOT NULL
+    • total_candles                  INTEGER              NULL
+    • instruments_count              INTEGER              NULL
+    • training_samples               INTEGER              NULL
+    • model_version                  VARCHAR(50)          NULL
+    • win_rate_long                  DOUBLE PRECISION     NULL
+    • win_rate_short                 DOUBLE PRECISION     NULL
+    • notes                          TEXT                 NULL
+
+TABLE: candles
+  Columns (10):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('candles_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • timestamp                      TIMESTAMP            NOT NULL
+    • open                           DOUBLE PRECISION     NOT NULL
+    • high                           DOUBLE PRECISION     NOT NULL
+    • low                            DOUBLE PRECISION     NOT NULL
+    • close                          DOUBLE PRECISION     NOT NULL
+    • volume                         DOUBLE PRECISION     NOT NULL
+    • created_at                     TIMESTAMP            NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: commodity_snapshots
+  Columns (11):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('commodity_snapshots_id_seq'::regclass)]
+    • commodity                      VARCHAR(50)          NOT NULL
+    • ticker                         VARCHAR(20)          NOT NULL
+    • current_price                  DOUBLE PRECISION     NULL
+    • price_change_1m                DOUBLE PRECISION     NULL
+    • price_change_3m                DOUBLE PRECISION     NULL
+    • trend                          VARCHAR(10)          NULL
+    • updated_at                     TIMESTAMP            NULL
+    • prev_price                     DOUBLE PRECISION     NULL
+    • price_change_since_last        DOUBLE PRECISION     NULL
+    • prev_trend                     VARCHAR(10)          NULL
+
+TABLE: config_settings
+  Columns (5):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('config_settings_id_seq'::regclass)]
+    • key                            VARCHAR(100)         NOT NULL
+    • value                          TEXT                 NOT NULL
+    • description                    VARCHAR(200)         NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: disruption_events
+  Columns (13):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('disruption_events_id_seq'::regclass)]
+    • commodity                      VARCHAR(50)          NOT NULL
+    • region                         VARCHAR(100)         NOT NULL
+    • iso_a3                         VARCHAR(3)           NULL
+    • iso_n3                         VARCHAR(3)           NULL
+    • severity                       VARCHAR(20)          NULL
+    • description                    VARCHAR(500)         NULL
+    • news_count                     INTEGER              NULL
+    • avg_sentiment                  DOUBLE PRECISION     NULL
+    • sample_headlines               VARCHAR(2000)        NULL
+    • updated_at                     TIMESTAMP            NULL
+    • prev_severity                  VARCHAR(20)          NULL
+    • prev_description               VARCHAR(500)         NULL
+
+TABLE: global_news
+  Columns (13):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('global_news_id_seq'::regclass)]
+    • title_hash                     VARCHAR(64)          NOT NULL
+    • title                          VARCHAR(500)         NOT NULL
+    • source                         VARCHAR(100)         NULL
+    • url                            VARCHAR(1000)        NULL
+    • published                      VARCHAR(60)          NULL
+    • published_at                   TIMESTAMP            NULL
+    • category                       VARCHAR(50)          NULL
+    • tags                           TEXT                 NULL
+    • sentiment_score                DOUBLE PRECISION     NULL [DEFAULT: 0]
+    • sentiment                      VARCHAR(10)          NULL [DEFAULT: 'NEUTRAL'::character varying]
+    • summary                        VARCHAR(500)         NULL
+    • fetched_at                     TIMESTAMP            NULL [DEFAULT: now()]
+  Constraints: [{'column_names': ['title_hash'], 'name': 'global_news_title_hash_key', 'comment': None, 'dialect_options': {'postgresql_include': [], 'postgresql_nulls_not_distinct': False}}]
+
+TABLE: intraday_candles
+  Columns (12):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('intraday_candles_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • trading_date                   VARCHAR(10)          NOT NULL
+    • time                           VARCHAR(8)           NOT NULL
+    • open                           DOUBLE PRECISION     NOT NULL
+    • high                           DOUBLE PRECISION     NOT NULL
+    • low                            DOUBLE PRECISION     NOT NULL
+    • close                          DOUBLE PRECISION     NOT NULL
+    • volume                         INTEGER              NULL
+    • interval                       VARCHAR(10)          NULL
+    • created_at                     TIMESTAMP            NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: news_articles
+  Columns (11):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('news_articles_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • title_hash                     VARCHAR(64)          NOT NULL
+    • title                          VARCHAR(500)         NOT NULL
+    • source                         VARCHAR(100)         NULL
+    • url                            VARCHAR(1000)        NULL
+    • published                      VARCHAR(60)          NULL
+    • published_at                   TIMESTAMP            NULL
+    • sentiment_score                DOUBLE PRECISION     NULL [DEFAULT: 0]
+    • sentiment                      VARCHAR(10)          NULL [DEFAULT: 'NEUTRAL'::character varying]
+    • fetched_at                     TIMESTAMP            NULL [DEFAULT: now()]
+
+TABLE: paper_trades
+  Columns (13):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('paper_trades_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • side                           VARCHAR(4)           NOT NULL
+    • quantity                       INTEGER              NOT NULL
+    • price                          DOUBLE PRECISION     NOT NULL
+    • segment                        VARCHAR(20)          NULL
+    • product                        VARCHAR(10)          NULL
+    • order_type                     VARCHAR(20)          NULL
+    • status                         VARCHAR(20)          NULL
+    • paper_order_id                 VARCHAR(50)          NULL
+    • charges                        DOUBLE PRECISION     NULL
+    • remark                         TEXT                 NULL
+    • created_at                     TIMESTAMP            NULL
+
+TABLE: peer_comparisons
+  Columns (4):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('peer_comparisons_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • data_json                      JSONB                NOT NULL
+    • collected_at                   TIMESTAMP            NULL [DEFAULT: now()]
+  Constraints: [{'column_names': ['symbol'], 'name': 'peer_comparisons_symbol_key', 'comment': None, 'dialect_options': {'postgresql_include': [], 'postgresql_nulls_not_distinct': False}}]
+
+TABLE: pnl_snapshots
+  Columns (10):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('pnl_snapshots_id_seq'::regclass)]
+    • timestamp                      TIMESTAMP            NOT NULL
+    • total_pnl                      DOUBLE PRECISION     NOT NULL
+    • total_pnl_pct                  DOUBLE PRECISION     NOT NULL
+    • trades_count                   INTEGER              NULL
+    • peak_pnl                       DOUBLE PRECISION     NULL
+    • peak_pnl_pct                   DOUBLE PRECISION     NULL
+    • profit_trades                  INTEGER              NULL
+    • loss_trades                    INTEGER              NULL
+    • created_at                     TIMESTAMP            NULL
+
+TABLE: predictions
+  Columns (6):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('predictions_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • signal                         VARCHAR(20)          NULL
+    • confidence                     DOUBLE PRECISION     NULL
+    • timestamp                      TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+    • data                           JSONB                NULL
+
+TABLE: shareholding_patterns
+  Columns (13):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('shareholding_patterns_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • quarter_date                   DATE                 NOT NULL
+    • quarter_label                  VARCHAR(20)          NULL
+    • promoters                      DOUBLE PRECISION     NULL
+    • fiis                           DOUBLE PRECISION     NULL
+    • diis                           DOUBLE PRECISION     NULL
+    • government                     DOUBLE PRECISION     NULL
+    • public_pct                     DOUBLE PRECISION     NULL
+    • others                         DOUBLE PRECISION     NULL
+    • num_shareholders               INTEGER              NULL
+    • created_at                     TIMESTAMP            NULL [DEFAULT: now()]
+    • updated_at                     TIMESTAMP            NULL [DEFAULT: now()]
+  Constraints: [{'column_names': ['symbol', 'quarter_date'], 'name': 'shareholding_patterns_symbol_quarter_date_key', 'comment': None, 'dialect_options': {'postgresql_include': [], 'postgresql_nulls_not_distinct': False}}]
+
+TABLE: stock_prices
+  Columns (9):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('stock_prices_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • date                           DATE                 NOT NULL
+    • open                           DOUBLE PRECISION     NULL
+    • high                           DOUBLE PRECISION     NULL
+    • low                            DOUBLE PRECISION     NULL
+    • close                          DOUBLE PRECISION     NULL
+    • volume                         BIGINT               NULL
+    • timestamp                      TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+  Constraints: [{'column_names': ['symbol', 'date'], 'name': 'stock_prices_symbol_date_key', 'comment': None, 'dialect_options': {'postgresql_include': [], 'postgresql_nulls_not_distinct': False}}]
+
+TABLE: stock_theses
+  Columns (10):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('stock_theses_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • thesis_text                    TEXT                 NULL
+    • target_price                   DOUBLE PRECISION     NULL
+    • entry_price                    DOUBLE PRECISION     NULL
+    • quantity                       INTEGER              NULL
+    • timeframe                      VARCHAR(50)          NULL
+    • comments                       TEXT                 NULL
+    • created_at                     TIMESTAMP            NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: stocks
+  Columns (13):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('stocks_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • company_name                   VARCHAR(200)         NOT NULL
+    • sector                         VARCHAR(50)          NULL
+    • sector_display                 VARCHAR(100)         NULL
+    • competitors_json               TEXT                 NULL
+    • commodity                      VARCHAR(50)          NULL
+    • commodity_ticker               VARCHAR(20)          NULL
+    • commodity_relationship         VARCHAR(10)          NULL
+    • commodity_weight               DOUBLE PRECISION     NULL
+    • is_active                      BOOLEAN              NULL
+    • created_at                     TIMESTAMP            NULL
+    • updated_at                     TIMESTAMP            NULL
+
+TABLE: theses
+  Columns (10):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('theses_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • entry_price                    DOUBLE PRECISION     NULL
+    • target_price                   DOUBLE PRECISION     NULL
+    • quantity                       DOUBLE PRECISION     NULL
+    • comments                       TEXT                 NULL
+    • timestamp                      TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+    • created_date                   DATE                 NULL [DEFAULT: CURRENT_DATE]
+    • current_price                  DOUBLE PRECISION     NULL
+    • last_updated                   TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+  Constraints: [{'column_names': ['symbol'], 'name': 'theses_symbol_key', 'comment': None, 'dialect_options': {'postgresql_include': [], 'postgresql_nulls_not_distinct': False}}]
+
+TABLE: thesis_analysis
+  Columns (12):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('thesis_analysis_id_seq'::regclass)]
+    • thesis_id                      INTEGER              NULL
+    • symbol                         VARCHAR(20)          NULL
+    • entry_date                     DATE                 NULL
+    • entry_price                    DOUBLE PRECISION     NULL
+    • target_price                   DOUBLE PRECISION     NULL
+    • current_price                  DOUBLE PRECISION     NULL
+    • days_held                      INTEGER              NULL
+    • current_return_pct             DOUBLE PRECISION     NULL
+    • max_price                      DOUBLE PRECISION     NULL
+    • min_price                      DOUBLE PRECISION     NULL
+    • last_updated                   TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+
+TABLE: trade_journal
+  Columns (24):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('trade_journal_id_seq'::regclass)]
+    • trade_id                       VARCHAR(50)          NOT NULL
+    • status                         VARCHAR(10)          NULL
+    • symbol                         VARCHAR(20)          NOT NULL
+    • side                           VARCHAR(4)           NOT NULL
+    • quantity                       INTEGER              NOT NULL
+    • trigger                        VARCHAR(20)          NULL
+    • entry_time                     TIMESTAMP            NOT NULL
+    • entry_price                    DOUBLE PRECISION     NOT NULL
+    • exit_time                      TIMESTAMP            NULL
+    • exit_price                     DOUBLE PRECISION     NULL
+    • pre_trade_json                 TEXT                 NULL
+    • post_trade_json                TEXT                 NULL
+    • created_at                     TIMESTAMP            NULL
+    • updated_at                     TIMESTAMP            NULL
+    • is_paper                       BOOLEAN              NULL [DEFAULT: true]
+    • exit_reason                    VARCHAR(100)         NULL
+    • signal                         VARCHAR(20)          NULL
+    • confidence                     DOUBLE PRECISION     NULL
+    • stop_loss                      DOUBLE PRECISION     NULL
+    • projected_exit                 DOUBLE PRECISION     NULL
+    • peak_pnl                       DOUBLE PRECISION     NULL
+    • actual_profit_pct              DOUBLE PRECISION     NULL
+    • breakeven_price                DOUBLE PRECISION     NULL
+
+TABLE: trade_log
+  Columns (6):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('trade_log_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NULL
+    • action                         VARCHAR(10)          NULL
+    • quantity                       DOUBLE PRECISION     NULL
+    • price                          DOUBLE PRECISION     NULL
+    • timestamp                      TIMESTAMP            NULL [DEFAULT: CURRENT_TIMESTAMP]
+
+TABLE: trade_snapshots
+  Columns (17):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('trade_snapshots_id_seq'::regclass)]
+    • paper_order_id                 VARCHAR(50)          NULL
+    • symbol                         VARCHAR(20)          NOT NULL
+    • side                           VARCHAR(4)           NOT NULL
+    • price                          DOUBLE PRECISION     NOT NULL
+    • quantity                       INTEGER              NULL
+    • segment                        VARCHAR(20)          NULL
+    • candles_json                   TEXT                 NULL
+    • indicators_json                TEXT                 NULL
+    • news_json                      TEXT                 NULL
+    • reasoning                      TEXT                 NULL
+    • signal                         VARCHAR(10)          NULL
+    • confidence                     DOUBLE PRECISION     NULL
+    • combined_score                 DOUBLE PRECISION     NULL
+    • sources_json                   TEXT                 NULL
+    • market_context_json            TEXT                 NULL
+    • created_at                     TIMESTAMP            NULL
+
+TABLE: watchlist_notes
+  Columns (4):
+    • id                             INTEGER              NOT NULL [DEFAULT: nextval('watchlist_notes_id_seq'::regclass)]
+    • symbol                         VARCHAR(20)          NOT NULL
+    • note                           TEXT                 NULL
+    • updated_at                     TIMESTAMP            NULL
+
+====================================================================================================
+✅ MIGRATION CHECKLIST
+====================================================================================================
+
+1. ✓ Local database schema analyzed (23 tables)
+2. ✓ Data volume: 269,000+ rows ready to migrate
+3. → CREATE tables in Supabase (via SQL dump)
+4. → IMPORT data from SQL migration file
+5. → VERIFY data integrity
+6. → UPDATE backend to use Supabase (already done via DATABASE_URL)
+
+NEXT STEPS:
+-----------
+1. Go to Supabase Dashboard: https://app.supabase.com
+2. Open SQL Editor
+3. Copy contents of: supabase_migration.sql (43MB)
+4. Run the SQL in Supabase Editor
+5. Wait for completion (may take 5-10 minutes)
+6. Test backend sign-in at: https://grow-ten.vercel.app/login
+
+Your migration file is ready: /Users/parthsharma/Desktop/Grow/supabase_migration.sql
+        

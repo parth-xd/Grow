@@ -34,7 +34,9 @@ function GoogleLoginButton({ onSuccess, loading }) {
           // Create custom button instead of using Google's default
           const customBtn = document.createElement('button');
           customBtn.type = 'button';
-          customBtn.className = 'w-full px-3 sm:px-4 py-2.5 sm:py-3 bg-white border-2 border-gray-200 rounded-lg sm:rounded-xl font-semibold text-sm sm:text-base text-gray-900 hover:border-gray-300 hover:bg-gray-50 transition-all duration-200 flex items-center justify-center gap-2 sm:gap-3 hover:shadow-md active:scale-95';
+          customBtn.style.width = '100%';
+          customBtn.style.minHeight = '44px';
+          customBtn.className = 'px-3 sm:px-4 py-2.5 sm:py-3 bg-white border-2 border-gray-200 rounded-lg sm:rounded-xl font-semibold text-sm sm:text-base text-gray-900 hover:border-gray-300 hover:bg-gray-50 transition-all duration-200 flex items-center justify-center gap-2 sm:gap-3 hover:shadow-md active:scale-95';
           
           customBtn.innerHTML = `
             <svg class="w-5 h-5" viewBox="0 0 24 24">
