@@ -33,7 +33,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
-CORS(app)
+
+# Configure CORS with proper headers for OAuth
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["*"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": True,
+        "max_age": 3600
+    }
+})
 
 # Register blueprints
 app.register_blueprint(pnl_bp)
@@ -119,9 +130,13 @@ def index(path):
 
 # ── Authentication ───────────────────────────────────────────────────────────
 
-@app.route("/api/auth/google", methods=["POST"])
+@app.route("/api/auth/google", methods=["POST", "OPTIONS"])
 def google_auth():
     """Handle Google OAuth - verify ID token and issue JWT"""
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        return "", 200
+    
     try:
         from auth import AuthManager
         import jwt as pyjwt
