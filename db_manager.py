@@ -554,14 +554,18 @@ class CandleDatabase:
             
             db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
 
+        # Ensure Supabase URLs have SSL mode (required for production)
+        if db_url and "supabase" in db_url and "sslmode" not in db_url:
+            db_url = db_url + "?sslmode=require"
+
         self.engine = create_engine(
             db_url,
             pool_size=10,
             max_overflow=20,
             echo=False,
             pool_pre_ping=True,  # Verify connections before using
-            connect_args={"connect_timeout": 3},
-            pool_timeout=5,
+            connect_args={"connect_timeout": 10},
+            pool_timeout=10,
         )
         Session = scoped_session(sessionmaker(bind=self.engine, expire_on_commit=False))
         self.Session = Session
