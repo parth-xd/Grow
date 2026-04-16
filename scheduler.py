@@ -746,10 +746,14 @@ def _task_record_pnl():
         live_prices = {}
         try:
             import requests
-            symbols = list(set([t['symbol'] for t in open_trades]))
+            from config import FLASK_HOST, FLASK_PORT
             
+            # Build API URL (use environment variable if available, otherwise construct from Flask host/port)
+            api_url = os.getenv('API_URL') or f'http://localhost:{FLASK_PORT}/api/live-prices'
+            
+            symbols = list(set([t['symbol'] for t in open_trades]))
             response = requests.post(
-                'http://127.0.0.1:8000/api/live-prices',
+                api_url,
                 json={'symbols': symbols},
                 timeout=5
             )
@@ -962,7 +966,11 @@ def _task_build_daily_snapshots():
         # Call the build endpoint which will attach real market candles
         import requests
         try:
-            response = requests.post('http://localhost:8000/api/paper-trading/build-daily-snapshots-with-candles', timeout=180)
+            # Build API URL from environment or construct from Flask config
+            from config import FLASK_PORT
+            api_url = os.getenv('API_URL') or f'http://localhost:{FLASK_PORT}/api/paper-trading/build-daily-snapshots-with-candles'
+            
+            response = requests.post(api_url, timeout=180)
             if response.status_code == 200:
                 result = response.json()
                 count = result.get('snapshots_count', 0)

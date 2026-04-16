@@ -23,7 +23,16 @@ JWT_SECRET = os.getenv('JWT_SECRET', 'dev-secret-key-change-in-production')
 JWT_EXPIRATION_HOURS = 24
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
-GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:8000/api/auth/google/callback')
+# Support both GOOGLE_REDIRECT_URI and derive from FLASK_HOST/PORT
+GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI')
+if not GOOGLE_REDIRECT_URI:
+    FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
+    FLASK_PORT = os.getenv('PORT', os.getenv('FLASK_PORT', '5000'))
+    # For production, use environment-provided host; for local dev use localhost
+    if FLASK_HOST == '0.0.0.0':
+        GOOGLE_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/api/auth/google/callback'
+    else:
+        GOOGLE_REDIRECT_URI = f'http://{FLASK_HOST}:{FLASK_PORT}/api/auth/google/callback'
 
 # Encryption for API keys
 ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
