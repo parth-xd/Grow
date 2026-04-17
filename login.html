@@ -267,6 +267,13 @@
             <div id="loginForm">
                 <div id="loginError" class="error hidden"></div>
 
+                <!-- Quick Demo Button (Development Only) -->
+                <button type="button" class="btn btn-secondary" onclick="quickDemo()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; margin-bottom: 16px; border: none;">
+                    ⚡ Quick Demo (Skip Auth)
+                </button>
+
+                <div class="divider"><span>or</span></div>
+
                 <!-- Google OAuth Button -->
                 <button class="btn btn-google" onclick="loginWithGoogle()">
                     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -535,6 +542,30 @@
 
         function skipApiKeySetup() {
             window.location.href = '/dashboard';
+        }
+
+        async function quickDemo() {
+            try {
+                const response = await fetch('/api/auth/demo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    alert('Demo mode failed: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                
+                // Go to setup page (next step in flow)
+                window.location.href = '/setup';
+            } catch (err) {
+                alert('Demo mode error: ' + err.message);
+            }
         }
     </script>
 </body>

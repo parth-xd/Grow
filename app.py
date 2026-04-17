@@ -258,6 +258,38 @@ def api_set_api_key():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/auth/demo", methods=["POST"])
+def api_demo():
+    """Create demo user for quick testing. REMOVE IN PRODUCTION."""
+    try:
+        from db_manager import get_db
+        db = get_db()
+        
+        # Check if demo user exists
+        demo_user = db.query(User).filter_by(email="demo@growwai.com").first()
+        
+        if not demo_user:
+            demo_user = User(
+                email="demo@growwai.com",
+                username="demo_user"
+            )
+            demo_user.set_password("demo123")
+            db.add(demo_user)
+            db.commit()
+            db.refresh(demo_user)
+            logger.info("✓ Demo user created")
+        
+        token = generate_jwt(demo_user.id, demo_user.email)
+        
+        return jsonify({
+            "token": token,
+            "user": demo_user.to_dict()
+        }), 201
+    except Exception as e:
+        logger.error(f"Demo user error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Manual Trade Management ──────────────────────────────────────────────────
 
 @app.route("/api/close-trade", methods=["POST", "GET"])
