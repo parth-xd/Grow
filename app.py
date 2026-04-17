@@ -46,6 +46,16 @@ CORS(app, resources={
     }
 })
 
+# Add security headers for OAuth popup communication
+@app.after_request
+def set_security_headers(response):
+    """Set security headers for proper OAuth flow"""
+    # Allow popups to communicate back to parent window
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    # Required for COOP to work properly
+    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    return response
+
 # Register blueprints
 app.register_blueprint(pnl_bp)
 
