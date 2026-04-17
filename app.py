@@ -1549,7 +1549,10 @@ def api_refresh_token():
         if new_token:
             return jsonify({"success": True, "message": "Token refreshed successfully"})
         else:
-            return jsonify({"error": "Token refresh failed. Check GROWW_API_KEY and GROWW_API_SECRET in .env"}), 500
+            return jsonify({
+                "error": "Token refresh requires GROWW_API_KEY and GROWW_API_SECRET",
+                "solution": "Set these environment variables (each deployment should use their own credentials)"
+            }), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

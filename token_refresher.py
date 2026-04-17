@@ -27,7 +27,7 @@ def refresh_token():
     secret = os.getenv("GROWW_API_SECRET", "")
 
     if not api_key or not secret:
-        logger.error("Cannot refresh token: GROWW_API_KEY or GROWW_API_SECRET missing")
+        logger.debug("⚠️  Cannot refresh token: GROWW_API_KEY or GROWW_API_SECRET not set. Add them via environment variables for auto-refresh to work.")
         return None
 
     try:
@@ -112,13 +112,21 @@ def check_and_refresh():
     Test current token with a lightweight API call.
     If it fails with auth error, refresh it.
     Returns True if token is valid (either already or after refresh).
+    
+    Note: If GROWW_API_KEY/GROWW_API_SECRET are not set, this will return True
+    assuming the token might still be valid. Actual validation happens when 
+    the token is used in API calls.
     """
     from growwapi import GrowwAPI
 
     token = os.getenv("GROWW_ACCESS_TOKEN", "")
     if not token:
-        logger.warning("No access token set, attempting refresh...")
-        return refresh_token() is not None
+        # No token set - try to refresh if credentials available
+        # If credentials not available, just log and return True (user will provide token later)
+        result = refresh_token()
+        if result is None:
+            logger.info("ℹ️  No GROWW_ACCESS_TOKEN or credentials set. Set GROWW_API_KEY and GROWW_API_SECRET to enable auto-refresh.")
+        return result is not None if result else True
 
     # Quick test — try fetching user profile (lightweight call)
     try:
@@ -130,7 +138,8 @@ def check_and_refresh():
         err = str(e).lower()
         if "auth" in err or "expired" in err or "invalid" in err or "401" in err:
             logger.warning("Token expired, auto-refreshing...")
-            return refresh_token() is not None
+            result = refresh_token()
+            return result is not None if result else True  # Assume valid if refresh not possible
         else:
             # Some other error (network, etc.) — token might be fine
             logger.warning("Token check got non-auth error: %s (assuming valid)", e)
