@@ -13,7 +13,7 @@ import threading
 import json
 import pytz
 from datetime import datetime
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, current_app
 from flask_cors import CORS
 
 from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL, PROJECT_ROOT
@@ -595,7 +595,11 @@ def credentials_status():
         if not user_info:
             return jsonify({'error': 'Invalid token'}), 401
         
-        user_id = user_info['user_id']
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            logger.error(f"No user_id found in credentials_status JWT: {user_info}")
+            return jsonify({'error': 'Invalid token: no user_id'}), 400
+        
         creds = auth_manager.get_api_credentials(user_id)
         
         return jsonify({
@@ -606,7 +610,9 @@ def credentials_status():
         
     except Exception as e:
         logger.error(f"Credentials status error: {e}")
-        return jsonify({'error': 'Failed to check credentials'}), 500
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Failed to check credentials', 'detail': str(e)}), 500
 
 
 @app.route("/api/credentials/save", methods=["POST"])
@@ -2702,7 +2708,7 @@ def journal_all():
             return jsonify({'error': 'Missing or invalid authorization'}), 401
         
         token = auth_header.split(' ')[1]
-        auth_manager = AuthManager(current_app.db)
+        auth_manager = AuthManager(app.db)
         user_info = auth_manager.verify_jwt(token)
         
         if not user_info:
@@ -2720,8 +2726,9 @@ def journal_all():
         trade_type = request.args.get('type', None)  # 'paper' or 'actual'
         
         db = get_db()
-        with db.Session() as session:
-            try:
+        entries = []
+        try:
+            with db.Session() as session:
                 logger.info(f"Building query for user_id: {user_id}, type: {trade_type}")
                 # Filter by user_id
                 query = session.query(TradeJournalEntry).filter(
@@ -2734,15 +2741,19 @@ def journal_all():
                     query = query.filter(TradeJournalEntry.is_paper == False)
                 
                 logger.info(f"Executing query...")
-                entries = [t.to_dict() for t in query.all()]
-                logger.info(f"Found {len(entries)} trade journal entries for user {user_id}")
-            except Exception as db_err:
-                logger.error(f"Database query error: {db_err}")
-                import traceback
-                logger.error(traceback.format_exc())
-                raise
+                trades = query.all()
+                logger.info(f"Found {len(trades)} trades, converting to dict...")
+                
+                # Convert to dict while still in session context
+                entries = [t.to_dict() for t in trades]
+                logger.info(f"Successfully converted {len(entries)} trades to dict")
+        except Exception as db_err:
+            logger.error(f"Database query error: {db_err}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Database error: {str(db_err)}', 'type': type(db_err).__name__}), 500
         
-        # Attach filtered candles to each entry based on trade status
+        # Attach filtered candles to each entry (outside session context is OK for simple operations)
         try:
             logger.info(f"Attaching candles to {len(entries)} entries...")
             for entry in entries:
@@ -2760,10 +2771,9 @@ def journal_all():
                         entry['intraday_candles'] = filtered_candles
                 except Exception as candle_err:
                     logger.warning(f"Failed to attach candles for trade {trade_id}: {candle_err}")
-                    # Don't fail the whole request if candles fail
                     pass
         except Exception as e:
-            logger.warning(f"Failed to attach candles to journal entries: {e}")
+            logger.warning(f"Failed to attach candles: {e}")
         
         return jsonify(entries)
     except Exception as e:
@@ -2797,7 +2807,7 @@ def journal_stats():
             return jsonify({'error': 'Missing or invalid authorization'}), 401
 
         token = auth_header.split(' ')[1]
-        auth_manager = AuthManager(current_app.db)
+        auth_manager = AuthManager(app.db)
         user_info = auth_manager.verify_jwt(token)
 
         if not user_info:
@@ -2811,7 +2821,7 @@ def journal_stats():
             logger.error(f"No user_id found in JWT payload: {user_info}")
             return jsonify({'error': 'Invalid token: no user_id', 'payload': user_info}), 400
 
-        with current_app.db.Session() as session:
+        with app.db.Session() as session:
             # Filter trades by user_id
             trades = session.query(TradeJournalEntry).filter(
                 TradeJournalEntry.user_id == user_id
