@@ -125,6 +125,8 @@ def get_pnl_analytics():
     try:
         from auth import token_required
         from flask import request
+        import logging
+        logger = logging.getLogger(__name__)
         
         # Get user ID from JWT token
         auth_header = request.headers.get('Authorization', '')
@@ -140,7 +142,13 @@ def get_pnl_analytics():
         if not user_info:
             return jsonify({'error': 'Invalid or expired token'}), 401
         
-        user_id = user_info['user_id']
+        logger.info(f"PnL request - JWT payload keys: {list(user_info.keys())}")
+        
+        # Extract user_id from JWT (key might be 'user_id' or 'sub')
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            logger.error(f"No user_id found in JWT payload: {user_info}")
+            return jsonify({'error': 'Invalid token: no user_id', 'payload': user_info}), 400
         
         session = current_app.db.Session()
         try:

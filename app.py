@@ -2695,52 +2695,68 @@ def journal_all():
     from db_manager import get_db, TradeJournalEntry
     from auth import AuthManager
     
-    # Get user from JWT token
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return jsonify({'error': 'Missing or invalid authorization'}), 401
-    
-    token = auth_header.split(' ')[1]
-    auth_manager = AuthManager(current_app.db)
-    user_info = auth_manager.verify_jwt(token)
-    
-    if not user_info:
-        return jsonify({'error': 'Invalid or expired token'}), 401
-    
-    user_id = user_info['user_id']
-    trade_type = request.args.get('type', None)  # 'paper' or 'actual'
-    
-    db = get_db()
-    with db.Session() as session:
-        # Filter by user_id
-        query = session.query(TradeJournalEntry).filter(
-            TradeJournalEntry.user_id == user_id
-        ).order_by(TradeJournalEntry.created_at.desc())
-        
-        if trade_type == 'paper':
-            query = query.filter(TradeJournalEntry.is_paper == True)
-        elif trade_type == 'actual':
-            query = query.filter(TradeJournalEntry.is_paper == False)
-        
-        entries = [t.to_dict() for t in query.all()]
-    
-    # Attach filtered candles to each entry based on trade status
     try:
-        for entry in entries:
-            trade_id = entry.get('trade_id')
-            cached = trade_chart_manager.get_cached_trade_candles(trade_id)
-            if cached:
-                filtered_candles = cached
-            else:
-                filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
-                    entry.get('intraday_candles', []),
-                    entry
-                )
-            entry['intraday_candles'] = filtered_candles
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+        
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(current_app.db)
+        user_info = auth_manager.verify_jwt(token)
+        
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        
+        logger.info(f"Journal request - JWT payload keys: {list(user_info.keys())}")
+        logger.info(f"Journal request - JWT payload: {user_info}")
+        
+        # Extract user_id from JWT (key might be 'user_id' or 'sub')
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            logger.error(f"No user_id found in JWT payload: {user_info}")
+            return jsonify({'error': 'Invalid token: no user_id', 'payload': user_info}), 400
+        logger.info(f"Fetching trades for user_id: {user_id}")
+        trade_type = request.args.get('type', None)  # 'paper' or 'actual'
+        
+        db = get_db()
+        with db.Session() as session:
+            # Filter by user_id
+            query = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.user_id == user_id
+            ).order_by(TradeJournalEntry.created_at.desc())
+            
+            if trade_type == 'paper':
+                query = query.filter(TradeJournalEntry.is_paper == True)
+            elif trade_type == 'actual':
+                query = query.filter(TradeJournalEntry.is_paper == False)
+            
+            entries = [t.to_dict() for t in query.all()]
+        
+        logger.info(f"Found {len(entries)} trade journal entries for user {user_id}")
+        
+        # Attach filtered candles to each entry based on trade status
+        try:
+            for entry in entries:
+                trade_id = entry.get('trade_id')
+                cached = trade_chart_manager.get_cached_trade_candles(trade_id)
+                if cached:
+                    filtered_candles = cached
+                else:
+                    filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                        entry.get('intraday_candles', []),
+                        entry
+                    )
+                entry['intraday_candles'] = filtered_candles
+        except Exception as e:
+            logger.warning(f"Failed to attach candles to journal entries: {e}")
+        
+        return jsonify(entries)
     except Exception as e:
-        logger.warning(f"Failed to attach candles to journal entries: {e}")
-    
-    return jsonify(entries)
+        logger.error(f"Journal endpoint error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e), 'type': type(e).__name__}), 500
 
 
 @app.route("/api/journal/stats")
@@ -2773,7 +2789,13 @@ def journal_stats():
         if not user_info:
             return jsonify({'error': 'Invalid or expired token'}), 401
 
-        user_id = user_info['user_id']
+        logger.info(f"Journal stats request - JWT payload keys: {list(user_info.keys())}")
+        
+        # Extract user_id from JWT (key might be 'user_id' or 'sub')
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            logger.error(f"No user_id found in JWT payload: {user_info}")
+            return jsonify({'error': 'Invalid token: no user_id', 'payload': user_info}), 400
 
         with current_app.db.Session() as session:
             # Filter trades by user_id
