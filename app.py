@@ -13,7 +13,7 @@ import threading
 import json
 import pytz
 from datetime import datetime
-from flask import Flask, jsonify, request, send_file, current_app
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
 from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL, PROJECT_ROOT
