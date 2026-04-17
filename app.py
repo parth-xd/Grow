@@ -75,9 +75,14 @@ try:
     
     # Run migrations for OAuth refresh tokens
     try:
-        from sqlalchemy import text
-        with db.engine.connect() as conn:
-            # Create refresh_tokens table if not exists
+        from sqlalchemy import text, event
+        
+        # Execute migrations outside of transaction context to avoid rollback
+        # This ensures each statement executes independently
+        engine = db.engine
+        
+        # Create refresh_tokens table
+        with engine.connect() as conn:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS refresh_tokens (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -87,24 +92,44 @@ try:
                     revoked BOOLEAN DEFAULT FALSE,
                     revoked_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_used_at TIMESTAMP,
-                    
-                    INDEX idx_user_id (user_id),
-                    INDEX idx_revoked (revoked),
-                    INDEX idx_expires_at (expires_at)
+                    last_used_at TIMESTAMP
                 )
             """))
-            
-            # Add email_verified column to users if not exists
-            try:
-                conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT TRUE"))
-            except:
-                pass  # Column already exists
-            
             conn.commit()
-        logger.info("✓ OAuth schema migrations completed")
+        
+        # Create indexes (handle errors gracefully if they already exist)
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_revoked ON refresh_tokens(revoked)",
+            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at)"
+        ]
+        
+        for idx_sql in index_statements:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(idx_sql))
+                    conn.commit()
+            except Exception as idx_err:
+                logger.debug(f"Index creation note: {idx_err}")  # Non-critical
+        
+        # Add email_verified column to users table
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT TRUE"))
+                conn.commit()
+            logger.info("✓ Added email_verified column to users")
+        except Exception as col_err:
+            if "already exists" in str(col_err):
+                logger.info("✓ email_verified column already exists")
+            else:
+                logger.warning(f"⚠️  Could not add email_verified: {col_err}")
+        
+        logger.info("✓ OAuth schema migrations completed successfully")
     except Exception as e:
-        logger.warning("⚠️  OAuth schema migration failed (non-critical): %s", e)
+        logger.error(f"⚠️  OAuth schema migration failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Don't fail startup - migrations are not critical if tables already exist
     
     # Seed master stock table on first run (no-op if already populated)
     try:
