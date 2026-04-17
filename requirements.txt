@@ -11,3 +11,5 @@ requests
 psycopg2-binary
 sqlalchemy
 alembic
+PyJWT
+werkzeug

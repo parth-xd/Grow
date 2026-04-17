@@ -13,10 +13,14 @@ import threading
 import json
 import pytz
 from datetime import datetime
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, redirect, url_for
 from flask_cors import CORS
 
 from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL
+from auth_manager import (
+    require_auth, get_current_user, generate_jwt, register_user, authenticate_email,
+    authenticate_google, update_groww_api_key, User
+)
 import bot
 import costs
 import news_sentiment
@@ -27,16 +31,12 @@ import fundamental_analysis
 import stock_search
 import trade_chart_manager
 from thesis_manager import get_manager as get_thesis_manager
-from pnl_analytics import pnl_bp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
-
-# Register blueprints
-app.register_blueprint(pnl_bp)
 
 # Auto-refresh Groww token on startup (before any API calls)
 try:
@@ -49,7 +49,6 @@ except Exception as e:
 try:
     from db_manager import get_db, seed_stocks
     db = get_db(DB_URL)
-    app.db = db  # Attach db to app for use in blueprints
     logger.info("✓ Database initialized and connected")
     # Seed master stock table on first run (no-op if already populated)
     try:
@@ -108,13 +107,145 @@ except Exception as e:
 
 # ── Pages ────────────────────────────────────────────────────────────────────
 
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def index(path):
-    # Serve dashboard for all routes except API
-    if path.startswith("api/"):
-        return {"error": "Not found"}, 404
+@app.route("/")
+def index():
+    """Redirect to login or dashboard based on authentication."""
+    token = request.cookies.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "")
+    if token:
+        try:
+            from auth_manager import verify_jwt
+            verify_jwt(token)
+            return redirect("/dashboard")
+        except:
+            pass
+    return redirect("/login")
+
+
+@app.route("/login")
+def login_page():
+    """Serve login/signup page."""
+    return send_file("login.html")
+
+
+@app.route("/dashboard")
+@require_auth
+def dashboard():
+    """Serve authenticated dashboard."""
     return send_file("index.html")
+
+
+# ── Authentication API Routes ────────────────────────────────────────────────
+
+@app.route("/api/auth/signup", methods=["POST"])
+def api_signup():
+    """Create new user account."""
+    try:
+        data = request.json or {}
+        email = data.get("email", "").strip()
+        password = data.get("password", "").strip()
+        username = data.get("username", "").strip()
+
+        if not email or not password:
+            return jsonify({"error": "Email and password required"}), 400
+
+        user = register_user(email, password, username)
+        token = generate_jwt(user.id, user.email)
+
+        return jsonify({
+            "token": token,
+            "user": user.to_dict()
+        }), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Signup error: {e}")
+        return jsonify({"error": "Signup failed"}), 500
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    """Authenticate user with email/password."""
+    try:
+        data = request.json or {}
+        email = data.get("email", "").strip()
+        password = data.get("password", "").strip()
+
+        if not email or not password:
+            return jsonify({"error": "Email and password required"}), 400
+
+        user = authenticate_email(email, password)
+        token = generate_jwt(user.id, user.email)
+
+        return jsonify({
+            "token": token,
+            "user": user.to_dict()
+        }), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({"error": "Login failed"}), 500
+
+
+@app.route("/api/auth/google", methods=["GET"])
+def api_google_oauth():
+    """Google OAuth callback handler."""
+    try:
+        # Get authorization code from redirect
+        code = request.args.get("code")
+        if not code:
+            return redirect("/login?error=no_code")
+
+        # Exchange code for ID token (simplified - use google-auth-oauthlib in production)
+        # For now, we'll expect the frontend to send us the verified ID token
+        return redirect("/login?code=" + code)
+    except Exception as e:
+        logger.error(f"Google OAuth error: {e}")
+        return redirect("/login?error=oauth_failed")
+
+
+@app.route("/api/auth/verify", methods=["GET"])
+@require_auth
+def api_verify():
+    """Verify current JWT token is valid."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"user": user.to_dict()}), 200
+
+
+@app.route("/api/auth/profile", methods=["GET"])
+@require_auth
+def api_profile():
+    """Get current user profile."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    profile = user.to_dict()
+    profile["has_api_key"] = bool(user.groww_api_key)
+    return jsonify(profile), 200
+
+
+@app.route("/api/auth/set-api-key", methods=["POST"])
+@require_auth
+def api_set_api_key():
+    """Store user's Groww API credentials."""
+    try:
+        data = request.json or {}
+        api_key = data.get("api_key", "").strip()
+        api_secret = data.get("api_secret", "").strip()
+
+        if not api_key:
+            return jsonify({"error": "API key required"}), 400
+
+        user = get_current_user()
+        update_groww_api_key(user.id, api_key, api_secret or None)
+
+        return jsonify({"message": "API key saved successfully"}), 200
+    except Exception as e:
+        logger.error(f"Set API key error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Manual Trade Management ──────────────────────────────────────────────────
