@@ -34,11 +34,22 @@ function App() {
         console.error('Auth check failed:', err);
         setAuthError('Authentication check failed');
       } finally {
+        // Always stop loading, even if auth check fails
         setLoading(false);
       }
     };
     
+    // Set a maximum timeout for auth check to prevent infinite loading
+    const authTimeout = setTimeout(() => {
+      if (loading) {
+        console.warn('Auth check timeout - continuing without auth');
+        setLoading(false);
+      }
+    }, 6000); // 6 seconds (slightly longer than the 5s timeout in authStore)
+    
     initAuth();
+    
+    return () => clearTimeout(authTimeout);
   }, [checkAuth]);
 
   if (loading) {

@@ -20,7 +20,16 @@ const useAuthStore = create(
         }
 
         try {
-          const response = await api.get('/api/auth/verify');
+          // Add a 5 second timeout to prevent hanging indefinitely
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Auth check timeout')), 5000)
+          );
+
+          const response = await Promise.race([
+            api.get('/api/auth/verify'),
+            timeoutPromise
+          ]);
+
           set({
             user: response.data.user,
             token,
@@ -28,12 +37,14 @@ const useAuthStore = create(
             error: null
           });
         } catch (error) {
+          // If auth check fails or times out, clear token and let user login again
+          console.error('Auth check failed:', error.message);
           localStorage.removeItem('auth_token');
           set({
             isAuthenticated: false,
             user: null,
             token: null,
-            error: 'Token expired'
+            error: error.message || 'Token expired'
           });
         }
       },
