@@ -13,7 +13,7 @@ import threading
 import json
 import pytz
 from datetime import datetime
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, render_template
 from flask_cors import CORS
 
 from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL, PROJECT_ROOT
@@ -32,7 +32,7 @@ from pnl_analytics import pnl_bp
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder="frontend/dist", static_url_path="")
+app = Flask(__name__, template_folder="templates")
 
 # Configure CORS with proper headers for OAuth
 CORS(app, resources={
@@ -278,10 +278,10 @@ except Exception as e:
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def index(path):
-    # Serve React app for all routes except API
+    # Serve dashboard for all routes except API
     if path.startswith("api/"):
         return {"error": "Not found"}, 404
-    return send_file("frontend/dist/index.html")
+    return render_template("dashboard.html")
 
 
 # ── Authentication ───────────────────────────────────────────────────────────
