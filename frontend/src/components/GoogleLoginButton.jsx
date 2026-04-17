@@ -54,27 +54,12 @@ function GoogleLoginButton({ onSuccess, loading }) {
             setIsLoading(true);
             setError(null);
             
-            // Try to show the prompt/One Tap UI
-            window.google.accounts.id.prompt((notification) => {
-              console.log('Prompt notification:', {
-                isNotDisplayed: notification.isNotDisplayed?.(),
-                isSkippedMoment: notification.isSkippedMoment?.(),
-                isDismissedMoment: notification.isDismissedMoment?.()
-              });
-              
-              if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-                // Prompt not available - fallback to renderButton
-                // Note: renderButton doesn't accept width: '100%' - it only accepts pixel widths or preset sizes
-                console.log('Prompt not available, using renderButton fallback');
-                setIsLoading(false);
-                window.google.accounts.id.renderButton(buttonContainer, {
-                  theme: 'outline',
-                  size: 'large',
-                  type: 'standard',
-                  text: 'signin_with'
-                  // Removed width - let CSS handle it via container
-                });
-              }
+            // Use renderButton directly (avoids deprecated One Tap prompt)
+            window.google.accounts.id.renderButton(buttonContainer, {
+              theme: 'outline',
+              size: 'large',
+              type: 'standard',
+              text: 'signin_with'
             });
           };
           
