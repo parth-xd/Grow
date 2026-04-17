@@ -66,6 +66,10 @@ let refreshPromise = null;
 api.interceptors.request.use(async (config) => {
   let token = localStorage.getItem('auth_token');
   
+  if (!token) {
+    console.warn('⚠️  No auth token found in localStorage for URL:', config.url);
+  }
+  
   // Check if token is expired and refresh if needed
   if (token && isTokenExpired(token)) {
     console.log('⚠️  Token expiring soon, refreshing...');
@@ -83,6 +87,9 @@ api.interceptors.request.use(async (config) => {
   
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+    console.debug('✓ Authorization header added to request:', config.url);
+  } else {
+    console.error('❌ No token available for authenticated request to:', config.url);
   }
   return config;
 });
