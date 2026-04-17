@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 # Project root directory (works both locally and in production)
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-load_dotenv(override=True)  # Override existing env vars with .env file (handles token refresh)
+# Load .env file ONLY in local development (don't override production env vars)
+# In production (Render), environment variables take priority
+load_dotenv(override=False)  # Fixed: Don't override Render's environment variables!
 
 # Groww API credentials
 GROWW_API_KEY = os.getenv("GROWW_API_KEY", "")
