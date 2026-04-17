@@ -433,11 +433,11 @@
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
 
-                // Redirect to dashboard or API key setup
+                // Redirect to dashboard or setup
                 if (data.user.groww_api_key) {
                     window.location.href = '/dashboard';
                 } else {
-                    showApiKeyForm();
+                    window.location.href = '/setup';
                 }
             } catch (err) {
                 showError('login', err.message);
@@ -474,7 +474,7 @@
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
 
-                showApiKeyForm();
+                window.location.href = '/setup';
             } catch (err) {
                 showError('signup', err.message);
             }

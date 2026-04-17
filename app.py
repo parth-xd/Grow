@@ -131,7 +131,17 @@ def login_page():
 @require_auth
 def dashboard():
     """Serve authenticated dashboard."""
+    user = get_current_user()
+    if not user or not user.groww_api_key:
+        return redirect("/setup")
     return send_file("index.html")
+
+
+@app.route("/setup")
+@require_auth
+def setup():
+    """Serve Groww API setup page."""
+    return send_file("setup.html")
 
 
 # ── Authentication API Routes ────────────────────────────────────────────────
