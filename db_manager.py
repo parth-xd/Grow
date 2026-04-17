@@ -238,6 +238,8 @@ class TradeJournalEntry(Base):
     pre_trade_json = Column(Text, default="{}")   # Full pre-trade report
     post_trade_json = Column(Text)                # Full post-trade report
     
+    user_id = Column(String(36), index=True)  # UUID of the user who owns this trade
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -282,6 +284,7 @@ class TradeJournalEntry(Base):
     __table_args__ = (
         Index("idx_journal_symbol_status", "symbol", "status"),
         Index("idx_journal_is_paper", "is_paper"),
+        Index("idx_journal_user_id", "user_id"),
     )
 
 

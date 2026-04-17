@@ -134,7 +134,34 @@ try:
         import traceback
         logger.error(traceback.format_exc())
         # Don't fail startup - migrations are not critical if tables already exist
-    
+
+    # Add user_id column to trade_journal (and related tables) for multi-user support
+    try:
+        from sqlalchemy import text as _text
+        _engine = db.engine
+        tables_needing_user_id = ['trade_journal', 'pnl_snapshots']
+        for tbl in tables_needing_user_id:
+            try:
+                with _engine.connect() as conn:
+                    conn.execute(_text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_id UUID"))
+                    conn.commit()
+            except Exception as col_err:
+                if "already exists" in str(col_err):
+                    logger.debug(f"✓ user_id column already exists in {tbl}")
+                else:
+                    logger.warning(f"⚠️  Could not add user_id to {tbl}: {col_err}")
+        # Add index for performance (ignore if already exists)
+        for tbl in tables_needing_user_id:
+            try:
+                with _engine.connect() as conn:
+                    conn.execute(_text(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_user_id ON {tbl}(user_id)"))
+                    conn.commit()
+            except Exception as idx_err:
+                logger.debug(f"Index note for {tbl}: {idx_err}")
+        logger.info("✓ user_id column migrations completed")
+    except Exception as e:
+        logger.warning(f"⚠️  user_id migration failed (non-fatal): {e}")
+
     # Seed master stock table on first run (no-op if already populated)
     try:
         seed_stocks(db)
@@ -2719,66 +2746,78 @@ def journal_all():
 @app.route("/api/journal/stats")
 def journal_stats():
     """Get aggregate journal statistics for the authenticated user."""
-    from db_manager import get_db, TradeJournalEntry
-    from auth import AuthManager
-    
-    # Get user from JWT token
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return jsonify({'error': 'Missing or invalid authorization'}), 401
-    
-    token = auth_header.split(' ')[1]
-    auth_manager = AuthManager(current_app.db)
-    user_info = auth_manager.verify_jwt(token)
-    
-    if not user_info:
-        return jsonify({'error': 'Invalid or expired token'}), 401
-    
-    user_id = user_info['user_id']
-    
-    db = get_db()
-    with db.Session() as session:
-        # Filter trades by user_id
-        trades = session.query(TradeJournalEntry).filter(
-            TradeJournalEntry.user_id == user_id
-        ).all()
-        
-        total_trades = len(trades)
-        open_trades = len([t for t in trades if t.status == "OPEN"])
-        closed_trades = len([t for t in trades if t.status == "CLOSED"])
-        
-        # Calculate P&L stats
-        winning_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct > 0])
-        losing_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct < 0])
-        
-        total_profit_pct = sum([t.actual_profit_pct for t in trades if t.actual_profit_pct]) if trades else 0
-        win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
-        
-        # Group by symbol
-        symbols = {}
-        for t in trades:
-            if t.symbol not in symbols:
-                symbols[t.symbol] = {'count': 0, 'winning': 0, 'losing': 0}
-            symbols[t.symbol]['count'] += 1
-            if t.actual_profit_pct:
-                if t.actual_profit_pct > 0:
-                    symbols[t.symbol]['winning'] += 1
-                else:
-                    symbols[t.symbol]['losing'] += 1
-        
-        stats = {
-            "total_trades": total_trades,
-            "open": open_trades,
-            "closed": closed_trades,
-            "winning_trades": winning_trades,
-            "losing_trades": losing_trades,
-            "win_rate": round(win_rate, 2),
-            "total_profit_pct": round(total_profit_pct, 2),
-            "avg_profit_pct": round(total_profit_pct / closed_trades, 2) if closed_trades > 0 else 0,
-            "symbols": symbols,
-        }
-        
-        return jsonify(stats)
+    _default_stats = {
+        "total_trades": 0,
+        "open": 0,
+        "closed": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "win_rate": 0,
+        "total_profit_pct": 0,
+        "avg_profit_pct": 0,
+        "symbols": {},
+    }
+    try:
+        from db_manager import TradeJournalEntry
+        from auth import AuthManager
+
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(current_app.db)
+        user_info = auth_manager.verify_jwt(token)
+
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+
+        user_id = user_info['user_id']
+
+        with current_app.db.Session() as session:
+            # Filter trades by user_id
+            trades = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.user_id == user_id
+            ).all()
+
+            total_trades = len(trades)
+            open_trades = len([t for t in trades if t.status == "OPEN"])
+            closed_trades = len([t for t in trades if t.status == "CLOSED"])
+
+            # Calculate P&L stats
+            winning_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct > 0])
+            losing_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct < 0])
+
+            total_profit_pct = sum([t.actual_profit_pct for t in trades if t.actual_profit_pct]) if trades else 0
+            win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
+
+            # Group by symbol
+            symbols = {}
+            for t in trades:
+                if t.symbol not in symbols:
+                    symbols[t.symbol] = {'count': 0, 'winning': 0, 'losing': 0}
+                symbols[t.symbol]['count'] += 1
+                if t.actual_profit_pct:
+                    if t.actual_profit_pct > 0:
+                        symbols[t.symbol]['winning'] += 1
+                    else:
+                        symbols[t.symbol]['losing'] += 1
+
+            return jsonify({
+                "total_trades": total_trades,
+                "open": open_trades,
+                "closed": closed_trades,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "win_rate": round(win_rate, 2),
+                "total_profit_pct": round(total_profit_pct, 2),
+                "avg_profit_pct": round(total_profit_pct / closed_trades, 2) if closed_trades > 0 else 0,
+                "symbols": symbols,
+            })
+    except Exception as e:
+        logger.error(f"Journal stats error: {e}")
+        return jsonify(_default_stats), 200
 
 
 @app.route("/api/journal/open")
