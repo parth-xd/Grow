@@ -6,17 +6,16 @@ Manages multi-user accounts with encrypted Groww API key storage.
 import os
 import jwt
 import logging
+import hashlib
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import request, jsonify
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
-from werkzeug.security import generate_password_hash, check_password_hash
-
 from db_manager import Base, get_db
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-prod")
+JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-change-in-production-32chars!!")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
@@ -43,14 +42,28 @@ class User(Base):
         return f"<User {self.email}>"
 
     def set_password(self, password):
-        """Hash and store password."""
-        self.password_hash = generate_password_hash(password)
+        """Hash and store password (SHA-256 with salt)."""
+        import secrets
+        import base64
+        salt = secrets.token_bytes(16)
+        pwd_bytes = password.encode('utf-8')
+        hash_bytes = hashlib.sha256(salt + pwd_bytes).digest()
+        self.password_hash = base64.b64encode(salt + hash_bytes).decode('utf-8')
 
     def check_password(self, password):
         """Verify password against hash."""
         if not self.password_hash:
             return False
-        return check_password_hash(self.password_hash, password)
+        import base64
+        try:
+            decoded = base64.b64decode(self.password_hash)
+            salt = decoded[:16]
+            stored_hash = decoded[16:]
+            pwd_bytes = password.encode('utf-8')
+            computed_hash = hashlib.sha256(salt + pwd_bytes).digest()
+            return computed_hash == stored_hash
+        except:
+            return False
 
     def to_dict(self):
         """Serialize user for API responses (no sensitive data)."""

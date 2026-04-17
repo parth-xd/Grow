@@ -262,8 +262,14 @@ def api_set_api_key():
 def api_demo():
     """Create demo user for quick testing. REMOVE IN PRODUCTION."""
     try:
-        from db_manager import get_db
-        db = get_db()
+        from db_manager import Base
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        
+        # Get database connection
+        engine = create_engine(DB_URL)
+        Session = sessionmaker(bind=engine)
+        db = Session()
         
         # Check if demo user exists
         demo_user = db.query(User).filter_by(email="demo@growwai.com").first()
@@ -280,6 +286,7 @@ def api_demo():
             logger.info("✓ Demo user created")
         
         token = generate_jwt(demo_user.id, demo_user.email)
+        db.close()
         
         return jsonify({
             "token": token,
