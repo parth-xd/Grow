@@ -316,7 +316,7 @@ function ensureChronological(prices) {
 // ── JWT Authentication Check ────────────────────
 // Check if user is logged in, redirect to login if not
 (function checkAuth() {
-  const token = localStorage.getItem('jwt_token');
+  const token = localStorage.getItem('auth_token'); // Match React app's key
   
   if (!token) {
     // No token found, redirect to login (React app)
@@ -328,7 +328,7 @@ function ensureChronological(prices) {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) {
-      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('auth_token');
       window.location.href = '/login';
       return;
     }
@@ -338,12 +338,12 @@ function ensureChronological(prices) {
     
     if (Date.now() > exp) {
       // Token expired, redirect to login
-      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('auth_token');
       window.location.href = '/login';
       return;
     }
   } catch (e) {
-    localStorage.removeItem('jwt_token');
+    localStorage.removeItem('auth_token');
     window.location.href = '/login';
     return;
   }
@@ -355,7 +355,7 @@ function ensureChronological(prices) {
 // Override fetch to include JWT in all requests
 const originalFetch = window.fetch;
 window.fetch = function(...args) {
-  const token = window.JWT_TOKEN || localStorage.getItem('jwt_token');
+  const token = window.JWT_TOKEN || localStorage.getItem('auth_token'); // Match React app's key
   if (token && args.length > 0) {
     const options = args[1] || {};
     if (!options.headers) options.headers = {};
@@ -9826,7 +9826,7 @@ function clearPnLChart() {
 // ── Logout Function ────────────────────────────
 function logoutUser() {
   if (confirm('Are you sure you want to logout?')) {
-    localStorage.removeItem('jwt_token');
+    localStorage.removeItem('auth_token'); // Match React app's key
     window.location.href = '/login';
   }
 }
