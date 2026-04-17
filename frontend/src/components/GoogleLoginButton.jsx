@@ -140,6 +140,12 @@ function GoogleLoginButton({ onSuccess, loading }) {
       const data = await result.json();
       console.log('✓ Authentication successful');
       console.log('User:', data.user);
+      
+      // Warn if email not verified
+      if (data.user && !data.user.email_verified) {
+        console.warn('⚠️  Email not verified - user may have limited access');
+      }
+      
       onSuccess(data);
     } catch (err) {
       console.error('Login request failed:', err);

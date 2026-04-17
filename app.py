@@ -142,7 +142,7 @@ def health_check():
 
 @app.route("/api/auth/google", methods=["POST", "OPTIONS"])
 def google_auth():
-    """Handle Google OAuth - verify ID token and issue JWT"""
+    """Handle Google OAuth - verify ID token and issue JWT + refresh token"""
     # Handle CORS preflight
     if request.method == "OPTIONS":
         return "", 200
@@ -182,6 +182,12 @@ def google_auth():
             logger.warning(f"⚠️  Token Client ID mismatch. Expected: {client_id}, Got aud: {token_aud}, azp: {token_azp}")
             # Don't fail - sometimes Google returns `azp` instead of `aud`
         
+        # Check email verified
+        email_verified = google_info.get('email_verified', False)
+        if not email_verified:
+            logger.warning(f"⚠️  Email not verified for {google_info.get('email')}")
+            # Don't fail - let user in but track that email wasn't verified
+        
         # Initialize auth manager - check if db exists
         if not hasattr(app, 'db') or app.db is None:
             logger.error("✗ Database not initialized")
@@ -196,7 +202,8 @@ def google_auth():
                 'id': google_info.get('sub'),
                 'email': google_info.get('email'),
                 'name': google_info.get('name'),
-                'picture': google_info.get('picture')
+                'picture': google_info.get('picture'),
+                'email_verified': email_verified
             })
             logger.info(f"✓ User obtained: {user}")
         except Exception as e:
@@ -235,25 +242,50 @@ def google_auth():
         
         # Generate JWT token for frontend
         try:
-            token = auth_manager.generate_jwt(user['id'], user['email'])
+            access_token = auth_manager.generate_jwt(user['id'], user['email'])
         except Exception as e:
             logger.error(f"✗ Failed to generate JWT: {e}")
             return jsonify({'error': 'Failed to generate token', 'detail': str(e)}), 500
         
-        return jsonify({
-            'token': token,
+        # Generate refresh token
+        try:
+            refresh_token = auth_manager.generate_refresh_token(user['id'])
+            logger.info(f"✓ Refresh token generated for user {user['id']}")
+        except Exception as e:
+            logger.error(f"⚠️  Failed to generate refresh token (non-critical): {e}")
+            refresh_token = None
+        
+        # Build response
+        response_data = {
+            'token': access_token,
             'user': {
                 'id': user['id'],
                 'email': user['email'],
-                'name': user['name']
+                'name': user['name'],
+                'email_verified': user.get('email_verified', False)
             }
-        }), 200
+        }
+        
+        response = jsonify(response_data)
+        
+        # Set refresh token in httpOnly cookie if generated
+        if refresh_token:
+            response.set_cookie(
+                'refresh_token',
+                refresh_token,
+                max_age=7*24*60*60,  # 7 days
+                httponly=True,
+                secure=os.getenv('FLASK_ENV', 'development') == 'production',
+                samesite='Lax' if os.getenv('FLASK_ENV') == 'production' else 'Lax',
+                path='/'
+            )
+            logger.info("✓ Refresh token cookie set")
+        
+        return response, 200
         
     except Exception as e:
         logger.error(f"✗ Google auth error: {e}")
         import traceback
-        logger.error(traceback.format_exc())
-        return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
         logger.error(traceback.format_exc())
         return jsonify({'error': 'Authentication failed', 'detail': str(e)}), 500
 
@@ -280,6 +312,111 @@ def verify_auth():
     except Exception as e:
         logger.error(f"Token verify error: {e}")
         return jsonify({'error': 'Verification failed'}), 500
+
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def refresh_auth():
+    """Refresh access token using refresh token from cookie"""
+    try:
+        from auth import AuthManager
+        
+        # Get refresh token from cookies
+        refresh_token = request.cookies.get('refresh_token')
+        if not refresh_token:
+            logger.warning("No refresh token in request")
+            return jsonify({'error': 'No refresh token provided'}), 401
+        
+        auth_manager = AuthManager(app.db)
+        user_id = auth_manager.validate_refresh_token(refresh_token)
+        
+        if not user_id:
+            logger.warning("Invalid or expired refresh token")
+            return jsonify({'error': 'Invalid or expired refresh token'}), 401
+        
+        # Get user info from database
+        user = auth_manager.get_user_from_token(
+            auth_manager.generate_jwt(user_id, 'temp')  # Temporary JWT just to query user
+        )
+        
+        if not user:
+            # Query directly
+            result = app.db.session.execute(text("""
+                SELECT id, email, name FROM users WHERE id = CAST(:user_id AS uuid)
+            """), {'user_id': user_id})
+            row = result.fetchone()
+            if row:
+                user = {'id': str(row[0]), 'email': row[1], 'name': row[2]}
+        
+        if not user:
+            logger.error(f"User not found for token refresh: {user_id}")
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Generate new access token
+        new_token = auth_manager.generate_jwt(user['id'], user['email'])
+        
+        logger.info(f"✓ Token refreshed for user {user['email']}")
+        
+        return jsonify({
+            'token': new_token,
+            'user': user
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': 'Token refresh failed', 'detail': str(e)}), 500
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def logout_auth():
+    """Logout user - revoke refresh token"""
+    try:
+        from auth import AuthManager
+        
+        # Get refresh token from cookies
+        refresh_token = request.cookies.get('refresh_token')
+        
+        # Get user from JWT in header (if available)
+        auth_header = request.headers.get('Authorization', '')
+        user_id = None
+        
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            auth_manager = AuthManager(app.db)
+            payload = auth_manager.verify_jwt(token)
+            if payload:
+                user_id = payload.get('user_id')
+        
+        # Revoke refresh token if present
+        if refresh_token:
+            auth_manager = AuthManager(app.db)
+            auth_manager.revoke_refresh_token(refresh_token)
+            logger.info(f"Refresh token revoked for logout")
+        
+        # Revoke all tokens if we have user_id
+        if user_id:
+            if not refresh_token:
+                auth_manager = AuthManager(app.db)
+            auth_manager.revoke_all_user_tokens(user_id)
+            logger.info(f"All tokens revoked for user {user_id}")
+        
+        response = jsonify({'message': 'Logged out successfully'}), 200
+        
+        # Clear refresh token cookie
+        resp = jsonify({'message': 'Logged out successfully'})
+        resp.set_cookie('refresh_token', '', max_age=0, path='/')
+        
+        return resp, 200
+        
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Don't fail logout - just clear the cookie
+        resp = jsonify({'message': 'Logged out'})
+        resp.set_cookie('refresh_token', '', max_age=0, path='/')
+        return resp, 200
 
 
 # ── API Credentials Management ───────────────────────────────────────────────

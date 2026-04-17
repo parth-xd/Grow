@@ -72,6 +72,109 @@ class AuthManager:
         except jwt.InvalidTokenError:
             return None
     
+    def generate_refresh_token(self, user_id):
+        """Generate a refresh token for user"""
+        import secrets
+        import hashlib
+        
+        # Generate random token
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        # Refresh token valid for 7 days
+        expires_at = datetime.utcnow() + timedelta(days=7)
+        
+        try:
+            # Store hash in database
+            self.db.session.execute(text("""
+                INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+                VALUES (CAST(:user_id AS uuid), :token_hash, :expires_at)
+            """), {
+                'user_id': str(user_id),
+                'token_hash': token_hash,
+                'expires_at': expires_at
+            })
+            self.db.session.commit()
+            return token  # Return unhashed token to client
+        except Exception as e:
+            self.db.session.rollback()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to store refresh token: {e}")
+            raise
+    
+    def validate_refresh_token(self, token):
+        """Validate refresh token and return user_id if valid"""
+        import hashlib
+        
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        try:
+            result = self.db.session.execute(text("""
+                SELECT user_id FROM refresh_tokens
+                WHERE token_hash = :token_hash
+                AND revoked = FALSE
+                AND expires_at > CURRENT_TIMESTAMP
+                LIMIT 1
+            """), {'token_hash': token_hash})
+            
+            row = result.fetchone()
+            if not row:
+                return None
+            
+            # Update last_used_at
+            self.db.session.execute(text("""
+                UPDATE refresh_tokens
+                SET last_used_at = CURRENT_TIMESTAMP
+                WHERE token_hash = :token_hash
+            """), {'token_hash': token_hash})
+            self.db.session.commit()
+            
+            return str(row[0])
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to validate refresh token: {e}")
+            return None
+    
+    def revoke_refresh_token(self, token):
+        """Revoke a refresh token"""
+        import hashlib
+        
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        
+        try:
+            self.db.session.execute(text("""
+                UPDATE refresh_tokens
+                SET revoked = TRUE, revoked_at = CURRENT_TIMESTAMP
+                WHERE token_hash = :token_hash
+            """), {'token_hash': token_hash})
+            self.db.session.commit()
+            return True
+        except Exception as e:
+            self.db.session.rollback()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to revoke refresh token: {e}")
+            return False
+    
+    def revoke_all_user_tokens(self, user_id):
+        """Revoke all refresh tokens for a user (logout)"""
+        try:
+            self.db.session.execute(text("""
+                UPDATE refresh_tokens
+                SET revoked = TRUE, revoked_at = CURRENT_TIMESTAMP
+                WHERE user_id = CAST(:user_id AS uuid) AND revoked = FALSE
+            """), {'user_id': str(user_id)})
+            self.db.session.commit()
+            return True
+        except Exception as e:
+            self.db.session.rollback()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to revoke all user tokens: {e}")
+            return False
+    
     def get_user_from_token(self, token):
         """Get user object from JWT token"""
         payload = self.verify_jwt(token)
@@ -138,46 +241,56 @@ class AuthManager:
             return None
     
     def get_or_create_user(self, google_info):
-        """Get or create user from Google info"""
+        """Get or create user from Google info
+        
+        Args:
+            google_info: Dict with keys: id, email, name, picture, email_verified
+        
+        Returns:
+            Dict with id, email, name, email_verified
+        """
         try:
             # Check if user exists
             result = self.db.session.execute(text("""
-                SELECT id, email, name FROM users 
+                SELECT id, email, name, email_verified FROM users 
                 WHERE google_id = :google_id
             """), {'google_id': google_info['id']})
             
             user = result.fetchone()
             
             if user:
-                # Update last login
+                # Update last login and email_verified status
                 self.db.session.execute(text("""
-                    UPDATE users SET last_login = CURRENT_TIMESTAMP
+                    UPDATE users SET last_login = CURRENT_TIMESTAMP, email_verified = :email_verified
                     WHERE id = :user_id
-                """), {'user_id': user[0]})
+                """), {'user_id': user[0], 'email_verified': google_info.get('email_verified', True)})
                 self.db.session.commit()
                 
                 return {
                     'id': str(user[0]),
                     'email': user[1],
-                    'name': user[2]
+                    'name': user[2],
+                    'email_verified': user[3]
                 }
             
             else:
                 # Create new user
                 import uuid
                 user_id = str(uuid.uuid4())
+                email_verified = google_info.get('email_verified', False)
                 
                 try:
                     # Use CAST to handle UUID conversion properly
                     self.db.session.execute(text("""
-                        INSERT INTO users (id, google_id, email, name, profile_picture_url, is_active)
-                        VALUES (CAST(:id AS uuid), :google_id, :email, :name, :picture, TRUE)
+                        INSERT INTO users (id, google_id, email, name, profile_picture_url, email_verified, is_active)
+                        VALUES (CAST(:id AS uuid), :google_id, :email, :name, :picture, :email_verified, TRUE)
                     """), {
                         'id': user_id,
                         'google_id': google_info['id'],
                         'email': google_info['email'],
                         'name': google_info['name'],
-                        'picture': google_info.get('picture')
+                        'picture': google_info.get('picture'),
+                        'email_verified': email_verified
                     })
                 except Exception as insert_err:
                     self.db.session.rollback()
@@ -186,7 +299,7 @@ class AuthManager:
                     logger.error(f"User insert failed: {insert_err}")
                     # Try checking if user exists by email instead
                     result = self.db.session.execute(text("""
-                        SELECT id, email, name FROM users 
+                        SELECT id, email, name, email_verified FROM users 
                         WHERE email = :email
                     """), {'email': google_info['email']})
                     existing_user = result.fetchone()
@@ -194,7 +307,8 @@ class AuthManager:
                         return {
                             'id': str(existing_user[0]),
                             'email': existing_user[1],
-                            'name': existing_user[2]
+                            'name': existing_user[2],
+                            'email_verified': existing_user[3]
                         }
                     raise
                 
@@ -215,7 +329,8 @@ class AuthManager:
                 return {
                     'id': user_id,
                     'email': google_info['email'],
-                    'name': google_info['name']
+                    'name': google_info['name'],
+                    'email_verified': email_verified
                 }
         except Exception as e:
             import logging
