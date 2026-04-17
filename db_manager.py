@@ -545,14 +545,18 @@ class CandleDatabase:
     def __init__(self, db_url=None):
         """Initialize database connection."""
         if db_url is None:
-            # Build from environment variables
-            db_user = os.getenv("DB_USER", "postgres")
-            db_pass = os.getenv("DB_PASSWORD", "postgres")
-            db_host = os.getenv("DB_HOST", "localhost")
-            db_port = os.getenv("DB_PORT", "5432")
-            db_name = os.getenv("DB_NAME", "grow_trading_bot")
+            # Priority: DATABASE_URL (Render) > DB_URL (local .env) > Build from individual vars
+            db_url = os.getenv("DATABASE_URL") or os.getenv("DB_URL")
             
-            db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+            if db_url is None:
+                # Only build from individual vars if no full connection string provided
+                db_user = os.getenv("DB_USER", "postgres")
+                db_pass = os.getenv("DB_PASSWORD", "postgres")
+                db_host = os.getenv("DB_HOST", "localhost")
+                db_port = os.getenv("DB_PORT", "5432")
+                db_name = os.getenv("DB_NAME", "grow_trading_bot")
+                
+                db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
 
         # Ensure Supabase URLs have SSL mode (required for production)
         if db_url and "supabase" in db_url and "sslmode" not in db_url:
