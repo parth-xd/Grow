@@ -32,12 +32,13 @@ function GoogleLoginButton({ onSuccess, loading }) {
         const buttonContainer = document.getElementById('google-signin-button');
         if (buttonContainer) {
           // Use Google's official button via renderButton - handles credential flow properly
+          // Note: renderButton doesn't accept 'width' parameter, CSS handles sizing
           window.google.accounts.id.renderButton(buttonContainer, {
             theme: 'outline',
             size: 'large',
             type: 'standard',
-            text: 'signin_with',
-            width: '100%'
+            text: 'signin_with'
+            // Don't set width here - let CSS handle it
           });
           
           setIsInitialized(true);
@@ -75,35 +76,51 @@ function GoogleLoginButton({ onSuccess, loading }) {
       const authUrl = `${API_URL}/api/auth/google`;
       console.log('Auth URL:', authUrl);
       
-      const result = await fetch(authUrl, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        credentials: 'include', // Include credentials for FedCM
-        body: JSON.stringify({ id_token: response.credential }),
-      });
+      let result;
+      try {
+        console.log('📤 Sending POST request...');
+        result = await fetch(authUrl, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          credentials: 'include', // Include credentials for FedCM
+          body: JSON.stringify({ id_token: response.credential }),
+        });
 
-      console.log(`Backend response status: ${result.status}`);
+        console.log(`📨 Backend response status: ${result.status} ${result.statusText}`);
+      } catch (fetchErr) {
+        console.error('❌ Fetch failed:', fetchErr.message);
+        setError(`Network error: ${fetchErr.message}`);
+        setIsLoading(false);
+        return;
+      }
 
       if (!result.ok) {
         let errorData;
         try {
-          errorData = await result.json();
-        } catch {
-          errorData = { error: `HTTP ${result.status}`, detail: `Backend returned ${result.status}. Check API connection.` };
+          const text = await result.text();
+          console.log('Response body:', text);
+          errorData = text ? JSON.parse(text) : { error: `HTTP ${result.status}` };
+        } catch (parseErr) {
+          console.error('Failed to parse error response:', parseErr);
+          errorData = { error: `HTTP ${result.status}`, detail: 'Backend error' };
         }
-        console.error('Auth error:', errorData);
+        console.error('❌ Auth error:', result.status, errorData);
         
         // Provide specific error messages
         let userMessage = errorData.error || 'Authentication failed';
         if (result.status === 404) {
-          userMessage = 'Backend API not found. Please check server status.';
+          userMessage = 'Backend API not found. Is the server running?';
+        } else if (result.status === 401) {
+          userMessage = `Auth error: ${errorData.detail || 'Invalid credentials'}`;
         } else if (result.status === 500) {
           userMessage = `Server error: ${errorData.detail || 'Internal server error'}`;
         } else if (result.status === 503) {
           userMessage = 'Backend service unavailable. Please try again in a moment.';
+        } else if (result.status === 0) {
+          userMessage = 'Network error: Cannot reach backend. Check API_URL configuration.';
         }
         
         setError(userMessage);
@@ -111,22 +128,31 @@ function GoogleLoginButton({ onSuccess, loading }) {
         return;
       }
 
-      const data = await result.json();
-      console.log('✓ Authentication successful');
-      console.log('User:', data.user);
-      
-      // Warn if email not verified
-      if (data.user && !data.user.email_verified) {
-        console.warn('⚠️  Email not verified - user may have limited access');
+      let data;
+      try {
+        data = await result.json();
+        console.log('✅ Authentication successful');
+        console.log('User:', data.user);
+        
+        // Warn if email not verified
+        if (data.user && !data.user.email_verified) {
+          console.warn('⚠️  Email not verified - user may have limited access');
+        }
+        
+        onSuccess(data);
+      } catch (parseErr) {
+        console.error('❌ Failed to parse success response:', parseErr);
+        setError('Invalid server response. Check backend logs.');
+        setIsLoading(false);
       }
-      
-      onSuccess(data);
     } catch (err) {
-      console.error('Login request failed:', err);
+      console.error('❌ Sign-in error:', err);
       
-      // Detect network errors
+      // Detect specific errors
       if (err.message.includes('Failed to fetch')) {
-        setError('Network error: Cannot reach backend server. Check your connection and API URL configuration.');
+        setError('Network error: Cannot reach backend server. Check your connection and VITE_API_URL.');
+      } else if (err.message.includes('CORS')) {
+        setError('CORS error: Backend blocked the request. Check server CORS settings.');
       } else {
         setError(err.message || 'Login failed. Check your connection and try again.');
       }
