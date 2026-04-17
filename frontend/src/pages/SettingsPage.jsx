@@ -27,7 +27,9 @@ function SettingsPage() {
     }
   };
 
-  const handleSaveCredentials = async () => {
+  const handleSaveCredentials = async (e) => {
+    e.preventDefault();
+    
     if (!apiKey || !apiSecret) {
       toast.error('Please fill all fields');
       return;
@@ -89,42 +91,44 @@ function SettingsPage() {
           )}
 
           <div className="space-y-5">
-            <div>
-              <label className="block text-gray-900 font-semibold mb-2 text-sm">API Key</label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Your Groww API key"
-                className="w-full bg-white border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
-              />
-              <p className="text-gray-600 text-xs mt-2">Get your API key from <a href="https://groww.in" target="_blank" rel="noopener noreferrer" className="text-gray-900 hover:underline">Groww dashboard</a></p>
-            </div>
+            <form onSubmit={handleSaveCredentials}>
+              <div>
+                <label className="block text-gray-900 font-semibold mb-2 text-sm">API Key</label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Your Groww API key"
+                  className="w-full bg-white border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                />
+                <p className="text-gray-600 text-xs mt-2">Get your API key from <a href="https://groww.in" target="_blank" rel="noopener noreferrer" className="text-gray-900 hover:underline">Groww dashboard</a></p>
+              </div>
 
-            <div>
-              <label className="block text-gray-900 font-semibold mb-2 text-sm">API Secret</label>
-              <input
-                type="password"
-                value={apiSecret}
-                onChange={(e) => setApiSecret(e.target.value)}
-                placeholder="Your Groww API secret"
-                className="w-full bg-white border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
-              />
-            </div>
+              <div>
+                <label className="block text-gray-900 font-semibold mb-2 text-sm">API Secret</label>
+                <input
+                  type="password"
+                  value={apiSecret}
+                  onChange={(e) => setApiSecret(e.target.value)}
+                  placeholder="Your Groww API secret"
+                  className="w-full bg-white border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                />
+              </div>
 
-            <button
-              onClick={handleSaveCredentials}
-              disabled={loading}
-              className="w-full bg-gray-900 hover:bg-gray-800 disabled:bg-gray-400 text-white font-semibold py-2.5 px-6 rounded-lg transition-colors"
-            >
-              {loading ? 'Saving...' : 'Save Credentials'}
-            </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gray-900 hover:bg-gray-800 disabled:bg-gray-400 text-white font-semibold py-2.5 px-6 rounded-lg transition-colors"
+              >
+                {loading ? 'Saving...' : 'Save Credentials'}
+              </button>
 
-            {!hasCredentials && (
-              <p className="text-gray-600 text-sm text-center">
-                You need to add your API credentials to access trading features.
-              </p>
-            )}
+              {!hasCredentials && (
+                <p className="text-gray-600 text-sm text-center">
+                  You need to add your API credentials to access trading features.
+                </p>
+              )}
+            </form>
           </div>
         </div>
 
