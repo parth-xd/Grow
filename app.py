@@ -211,6 +211,15 @@ def health_check():
         db_status = "not_initialized"
         db_message = "Database not attached to app"
         
+        # Get actual DATABASE_URL being used
+        actual_db_url = os.getenv('DATABASE_URL') or os.getenv('DB_URL') or 'not set'
+        if actual_db_url != 'not set':
+            # Mask password for security
+            import re
+            masked_url = re.sub(r':([^:]+)@', r':***@', actual_db_url)
+        else:
+            masked_url = actual_db_url
+        
         if hasattr(app, 'db') and app.db is not None:
             db_status = "attached"
             db_message = "Database object exists"
@@ -225,7 +234,7 @@ def health_check():
                 db_message = "Database connection working"
             except Exception as db_err:
                 db_status = "error"
-                db_message = f"Connection failed: {str(db_err)}"
+                db_message = f"Connection failed: {str(db_err)[:100]}"
                 logger.error(f"Health check - DB connection failed: {db_err}")
         
         return jsonify({
@@ -234,7 +243,8 @@ def health_check():
             'database': {
                 'status': db_status,
                 'message': db_message,
-                'url_configured': bool(os.getenv('DATABASE_URL'))
+                'url_configured': bool(os.getenv('DATABASE_URL')),
+                'url_preview': masked_url[:60] + '...' if len(masked_url) > 60 else masked_url
             }
         }), 200
     except Exception as e:
