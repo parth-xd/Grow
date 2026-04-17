@@ -202,7 +202,7 @@ class AuthManager:
                 try:
                     self.db.session.execute(text("""
                         INSERT INTO user_settings (user_id)
-                        VALUES (:user_id::uuid)
+                        VALUES (CAST(:user_id AS uuid))
                     """), {'user_id': user_id})
                 except Exception as settings_err:
                     import logging
