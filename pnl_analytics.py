@@ -8,6 +8,25 @@ from datetime import datetime
 
 pnl_bp = Blueprint('pnl', __name__)
 
+# Default responses returned when data is missing or an error occurs
+_EMPTY_PNL_RESPONSE = {
+    "dates": [],
+    "cumulative_pnl_amount": [],
+    "peak_pnl_amount": [],
+    "capital_invested": [],
+    "roi_percentage": [],
+    "trades": [],
+    "summary": {
+        "total_pnl": 0,
+        "peak_pnl": 0,
+        "total_capital": 0,
+        "final_roi": 0,
+        "total_trades": 0,
+    },
+}
+
+_EMPTY_SUMMARY = _EMPTY_PNL_RESPONSE["summary"]
+
 
 def calculate_pnl_with_capital_session(session):
     """
@@ -16,7 +35,7 @@ def calculate_pnl_with_capital_session(session):
     """
     query = """
     SELECT 
-        DATE(entry_date) as trade_date,
+        DATE(entry_time) as trade_date,
         symbol,
         (entry_price * quantity) as capital_in_trade,
         actual_profit_pct,
@@ -27,28 +46,14 @@ def calculate_pnl_with_capital_session(session):
         END as profit_amount
     FROM trade_journal
     WHERE status = 'CLOSED'
-    ORDER BY entry_date ASC
+    ORDER BY entry_time ASC
     """
     
     result = session.execute(text(query))
     trades = result.fetchall()
     
     if not trades:
-        return {
-            "dates": [],
-            "cumulative_pnl_amount": [],
-            "peak_pnl_amount": [],
-            "capital_invested": [],
-            "roi_percentage": [],
-            "trades": [],
-            "summary": {
-                "total_pnl": 0,
-                "peak_pnl": 0,
-                "total_capital": 0,
-                "final_roi": 0,
-                "total_trades": 0
-            }
-        }
+        return _EMPTY_PNL_RESPONSE
     
     # Calculate cumulative metrics
     cumulative_pnl = 0
@@ -142,7 +147,7 @@ def get_pnl_analytics():
             # Query only this user's trades
             result = session.execute(text("""
                 SELECT 
-                    DATE(entry_date) as trade_date,
+                    DATE(entry_time) as trade_date,
                     symbol,
                     (entry_price * quantity) as capital_in_trade,
                     actual_profit_pct,
@@ -153,26 +158,12 @@ def get_pnl_analytics():
                     END as profit_amount
                 FROM trade_journal
                 WHERE status = 'CLOSED' AND user_id = CAST(:user_id AS uuid)
-                ORDER BY entry_date ASC
+                ORDER BY entry_time ASC
             """), {'user_id': user_id})
             trades = result.fetchall()
             
             if not trades:
-                return jsonify({
-                    "dates": [],
-                    "cumulative_pnl_amount": [],
-                    "peak_pnl_amount": [],
-                    "capital_invested": [],
-                    "roi_percentage": [],
-                    "trades": [],
-                    "summary": {
-                        "total_pnl": 0,
-                        "peak_pnl": 0,
-                        "total_capital": 0,
-                        "final_roi": 0,
-                        "total_trades": 0
-                    }
-                })
+                return jsonify(_EMPTY_PNL_RESPONSE)
             
             # Calculate cumulative metrics
             cumulative_pnl = 0
@@ -242,7 +233,7 @@ def get_pnl_analytics():
         import traceback
         traceback.print_exc()
         current_app.logger.error(f"P&L analytics error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify(_EMPTY_PNL_RESPONSE), 200
 
 
 @pnl_bp.route('/api/analytics/pnl/summary', methods=['GET'])
@@ -258,4 +249,4 @@ def get_pnl_summary():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify(_EMPTY_SUMMARY), 200
