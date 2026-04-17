@@ -69,7 +69,11 @@ except Exception as e:
 # Initialize database on startup (optional - not critical if unavailable)
 try:
     from db_manager import get_db, seed_stocks
-    db = get_db(DB_URL)
+    # Get DATABASE_URL directly from environment (not from config which may be stale)
+    # Priority: DATABASE_URL (Render) > DB_URL (local .env) > config fallback
+    database_url = os.getenv('DATABASE_URL') or os.getenv('DB_URL') or DB_URL
+    logger.info(f"🔌 Connecting to database: {database_url[:50]}...")
+    db = get_db(database_url)
     app.db = db  # Attach db to app for use in blueprints
     logger.info("✓ Database initialized and connected")
     
