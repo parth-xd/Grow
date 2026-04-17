@@ -42,9 +42,9 @@ function DashboardPage() {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const statsRes = await api.get('/api/trades/journal/stats');
+      const statsRes = await api.get('/api/journal/stats');
       setStats(statsRes.data);
-      const tradesRes = await api.get('/api/trades/journal?limit=10');
+      const tradesRes = await api.get('/api/journal?limit=10');
       setTrades(tradesRes.data.trades || []);
     } catch (error) {
       toast.error('Failed to load dashboard data');
