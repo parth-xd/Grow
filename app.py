@@ -202,12 +202,43 @@ def index(path):
 # Health check endpoint (no auth required)
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """Health check endpoint - returns server status"""
-    return jsonify({
-        'status': 'ok',
-        'timestamp': datetime.now().isoformat(),
-        'db_connected': hasattr(app, 'db') and app.db is not None
-    }), 200
+    """Health check endpoint - returns server status and database connectivity"""
+    try:
+        db_status = "not_initialized"
+        db_message = "Database not attached to app"
+        
+        if hasattr(app, 'db') and app.db is not None:
+            db_status = "attached"
+            db_message = "Database object exists"
+            
+            # Try to actually test the connection
+            try:
+                from sqlalchemy import text
+                session = app.db.session
+                result = session.execute(text("SELECT 1"))
+                session.close()
+                db_status = "connected"
+                db_message = "Database connection working"
+            except Exception as db_err:
+                db_status = "error"
+                db_message = f"Connection failed: {str(db_err)}"
+                logger.error(f"Health check - DB connection failed: {db_err}")
+        
+        return jsonify({
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat(),
+            'database': {
+                'status': db_status,
+                'message': db_message,
+                'url_configured': bool(os.getenv('DATABASE_URL'))
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 @app.route("/api/auth/google", methods=["POST", "OPTIONS"])
 def google_auth():
@@ -259,8 +290,24 @@ def google_auth():
         
         # Initialize auth manager - check if db exists
         if not hasattr(app, 'db') or app.db is None:
-            logger.error("✗ Database not initialized")
+            logger.error("✗ Database not initialized at app startup")
             return jsonify({'error': 'Server error - database not available', 'detail': 'Database not initialized'}), 500
+        
+        # Test database connection before attempting auth
+        try:
+            from sqlalchemy import text
+            test_session = app.db.session
+            test_session.execute(text("SELECT 1"))
+            test_session.close()
+            logger.info("✓ Database connection test successful")
+        except Exception as conn_test_err:
+            logger.error(f"✗ Database connection test failed: {conn_test_err}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'error': 'Database connection failed',
+                'detail': f'Cannot connect to database: {str(conn_test_err)}'
+            }), 503
         
         auth_manager = AuthManager(app.db)
         
@@ -292,10 +339,10 @@ def google_auth():
                     'error': 'Database permission error',
                     'detail': 'User service lacks database permissions'
                 }), 403
-            elif 'connection' in error_msg.lower():
+            elif 'connection' in error_msg.lower() or 'timeout' in error_msg.lower():
                 return jsonify({
                     'error': 'Database connection failed',
-                    'detail': 'Cannot connect to database'
+                    'detail': f'Connection issue: {error_msg[:100]}'
                 }), 503
             else:
                 return jsonify({

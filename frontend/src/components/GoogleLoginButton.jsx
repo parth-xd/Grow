@@ -12,6 +12,18 @@ function GoogleLoginButton({ onSuccess, loading }) {
     console.log('=== Google Sign-In Initialization ===');
     console.log('Client ID present:', !!GOOGLE_CLIENT_ID);
     
+    // Suppress COOP warnings in console (they're from browser, not actually breaking)
+    if (window.console) {
+      const originalError = window.console.error;
+      window.console.error = function(...args) {
+        if (args[0]?.includes?.('Cross-Origin-Opener-Policy')) {
+          console.log('ℹ️  COOP policy notice (non-critical):', args[0]);
+          return;
+        }
+        originalError.apply(window.console, args);
+      };
+    }
+    
     // Wait for Google API to load
     const initGoogle = () => {
       if (!window.google?.accounts?.id) {
