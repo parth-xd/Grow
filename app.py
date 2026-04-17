@@ -62,6 +62,40 @@ try:
     db = get_db(DB_URL)
     app.db = db  # Attach db to app for use in blueprints
     logger.info("✓ Database initialized and connected")
+    
+    # Run migrations for OAuth refresh tokens
+    try:
+        from sqlalchemy import text
+        with db.engine.connect() as conn:
+            # Create refresh_tokens table if not exists
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS refresh_tokens (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash VARCHAR(255) NOT NULL UNIQUE,
+                    expires_at TIMESTAMP NOT NULL,
+                    revoked BOOLEAN DEFAULT FALSE,
+                    revoked_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TIMESTAMP,
+                    
+                    INDEX idx_user_id (user_id),
+                    INDEX idx_revoked (revoked),
+                    INDEX idx_expires_at (expires_at)
+                )
+            """))
+            
+            # Add email_verified column to users if not exists
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT TRUE"))
+            except:
+                pass  # Column already exists
+            
+            conn.commit()
+        logger.info("✓ OAuth schema migrations completed")
+    except Exception as e:
+        logger.warning("⚠️  OAuth schema migration failed (non-critical): %s", e)
+    
     # Seed master stock table on first run (no-op if already populated)
     try:
         seed_stocks(db)
