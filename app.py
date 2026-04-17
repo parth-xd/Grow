@@ -2663,15 +2663,32 @@ def quote(symbol):
 
 @app.route("/api/journal")
 def journal_all():
-    """Get all trade journal entries (newest first) from database."""
+    """Get all trade journal entries for the authenticated user (newest first)."""
     from flask import request
     from db_manager import get_db, TradeJournalEntry
+    from auth import AuthManager
     
+    # Get user from JWT token
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'error': 'Missing or invalid authorization'}), 401
+    
+    token = auth_header.split(' ')[1]
+    auth_manager = AuthManager(current_app.db)
+    user_info = auth_manager.verify_jwt(token)
+    
+    if not user_info:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+    
+    user_id = user_info['user_id']
     trade_type = request.args.get('type', None)  # 'paper' or 'actual'
     
     db = get_db()
     with db.Session() as session:
-        query = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at.desc())
+        # Filter by user_id
+        query = session.query(TradeJournalEntry).filter(
+            TradeJournalEntry.user_id == user_id
+        ).order_by(TradeJournalEntry.created_at.desc())
         
         if trade_type == 'paper':
             query = query.filter(TradeJournalEntry.is_paper == True)
@@ -2701,13 +2718,30 @@ def journal_all():
 
 @app.route("/api/journal/stats")
 def journal_stats():
-    """Get aggregate journal statistics from database."""
+    """Get aggregate journal statistics for the authenticated user."""
     from db_manager import get_db, TradeJournalEntry
-    from sqlalchemy import func
+    from auth import AuthManager
+    
+    # Get user from JWT token
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'error': 'Missing or invalid authorization'}), 401
+    
+    token = auth_header.split(' ')[1]
+    auth_manager = AuthManager(current_app.db)
+    user_info = auth_manager.verify_jwt(token)
+    
+    if not user_info:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+    
+    user_id = user_info['user_id']
     
     db = get_db()
     with db.Session() as session:
-        trades = session.query(TradeJournalEntry).all()
+        # Filter trades by user_id
+        trades = session.query(TradeJournalEntry).filter(
+            TradeJournalEntry.user_id == user_id
+        ).all()
         
         total_trades = len(trades)
         open_trades = len([t for t in trades if t.status == "OPEN"])
