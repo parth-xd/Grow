@@ -85,6 +85,26 @@ try:
         # This ensures each statement executes independently
         engine = db.engine
         
+        # First, create users table if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    name VARCHAR(255),
+                    google_id VARCHAR(255) UNIQUE,
+                    profile_picture_url TEXT,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP,
+                    email_verified BOOLEAN DEFAULT TRUE
+                )
+            """))
+            conn.commit()
+            logger.info("✓ Users table created or already exists")
+        
         # Create refresh_tokens table
         with engine.connect() as conn:
             conn.execute(text("""
@@ -137,30 +157,66 @@ try:
 
     # Add user_id column to trade_journal (and related tables) for multi-user support
     try:
-        from sqlalchemy import text as _text
+        from sqlalchemy import text as _text, inspect as sql_inspect
         _engine = db.engine
         tables_needing_user_id = ['trade_journal', 'pnl_snapshots']
+        
         for tbl in tables_needing_user_id:
             try:
+                # Check if table exists
+                inspector = sql_inspect(_engine)
+                if not inspector.has_table(tbl):
+                    logger.debug(f"Table {tbl} does not exist, skipping migration")
+                    continue
+                
+                # Check if user_id column already exists
+                columns = [col['name'] for col in inspector.get_columns(tbl)]
+                if 'user_id' in columns:
+                    logger.debug(f"✓ user_id column already exists in {tbl}")
+                    continue
+                
+                # Add the column (with proper type for UUID)
                 with _engine.connect() as conn:
-                    conn.execute(_text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_id UUID"))
+                    if 'postgresql' in str(_engine.url):
+                        # PostgreSQL has native UUID support
+                        conn.execute(_text(f"ALTER TABLE {tbl} ADD COLUMN user_id UUID"))
+                    else:
+                        # Fallback to VARCHAR for other databases
+                        conn.execute(_text(f"ALTER TABLE {tbl} ADD COLUMN user_id VARCHAR(36)"))
                     conn.commit()
+                    logger.info(f"✓ Added user_id column to {tbl}")
+                    
             except Exception as col_err:
-                if "already exists" in str(col_err):
+                if "already exists" in str(col_err).lower() or "duplicate" in str(col_err).lower():
                     logger.debug(f"✓ user_id column already exists in {tbl}")
                 else:
                     logger.warning(f"⚠️  Could not add user_id to {tbl}: {col_err}")
+        
         # Add index for performance (ignore if already exists)
         for tbl in tables_needing_user_id:
             try:
+                inspector = sql_inspect(_engine)
+                if not inspector.has_table(tbl):
+                    continue
+                    
+                # Check if index already exists
+                indexes = {idx['name'] for idx in inspector.get_indexes(tbl)}
+                if f"idx_{tbl}_user_id" in indexes:
+                    logger.debug(f"✓ Index idx_{tbl}_user_id already exists")
+                    continue
+                
                 with _engine.connect() as conn:
                     conn.execute(_text(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_user_id ON {tbl}(user_id)"))
                     conn.commit()
+                    logger.info(f"✓ Created index for {tbl}.user_id")
             except Exception as idx_err:
                 logger.debug(f"Index note for {tbl}: {idx_err}")
+        
         logger.info("✓ user_id column migrations completed")
     except Exception as e:
         logger.warning(f"⚠️  user_id migration failed (non-fatal): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
 
     # Seed master stock table on first run (no-op if already populated)
     try:
@@ -2868,94 +2924,185 @@ def journal_stats():
 
 @app.route("/api/journal/open")
 def journal_open():
-    """Get only open (active) trades from database."""
+    """Get only open (active) trades for the authenticated user."""
     from db_manager import get_db, TradeJournalEntry
+    from auth import AuthManager
     
-    db = get_db()
-    with db.Session() as session:
-        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
-                   .filter(TradeJournalEntry.status == "OPEN")
-                   .order_by(TradeJournalEntry.created_at.desc()).all()]
-    
-    return jsonify(entries)
+    try:
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            return jsonify({'error': 'Invalid token: no user_id'}), 400
+        
+        db = get_db()
+        with db.Session() as session:
+            entries = [t.to_dict() for t in session.query(TradeJournalEntry)
+                       .filter(TradeJournalEntry.status == "OPEN",
+                              TradeJournalEntry.user_id == user_id)
+                       .order_by(TradeJournalEntry.created_at.desc()).all()]
+        
+        return jsonify(entries)
+    except Exception as e:
+        logger.error(f"Journal open error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route("/api/journal/closed")
 def journal_closed():
-    """Get only closed trades with post-trade reports from database."""
+    """Get only closed trades for the authenticated user."""
     from db_manager import get_db, TradeJournalEntry
+    from auth import AuthManager
     
-    db = get_db()
-    with db.Session() as session:
-        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
-                   .filter(TradeJournalEntry.status == "CLOSED")
-                   .order_by(TradeJournalEntry.created_at.desc()).all()]
-    
-    return jsonify(entries)
+    try:
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            return jsonify({'error': 'Invalid token: no user_id'}), 400
+        
+        db = get_db()
+        with db.Session() as session:
+            entries = [t.to_dict() for t in session.query(TradeJournalEntry)
+                       .filter(TradeJournalEntry.status == "CLOSED",
+                              TradeJournalEntry.user_id == user_id)
+                       .order_by(TradeJournalEntry.created_at.desc()).all()]
+        
+        return jsonify(entries)
+    except Exception as e:
+        logger.error(f"Journal closed error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route("/api/journal/<trade_id>")
 def journal_entry(trade_id):
-    """Get a single trade journal entry with full pre & post trade reports from database."""
+    """Get a single trade journal entry with full pre & post trade reports for the authenticated user."""
     from db_manager import get_db, TradeJournalEntry
+    from auth import AuthManager
     
-    db = get_db()
-    with db.Session() as session:
-        entry = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
-    
-    if entry is None:
-        return jsonify({"error": "Trade not found"}), 404
-    
-    report = entry.to_dict()
-    
-    # Attach filtered candles to the entry
     try:
-        cached = trade_chart_manager.get_cached_trade_candles(trade_id)
-        if cached:
-            filtered_candles = cached
-        else:
-            filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
-                report.get('intraday_candles', []),
-                report
-            )
-        report['intraday_candles'] = filtered_candles
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            return jsonify({'error': 'Invalid token: no user_id'}), 400
+        
+        db = get_db()
+        with db.Session() as session:
+            entry = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.trade_id == trade_id,
+                TradeJournalEntry.user_id == user_id
+            ).first()
+        
+        if entry is None:
+            return jsonify({"error": "Trade not found"}), 404
+        
+        report = entry.to_dict()
+        
+        # Attach filtered candles to the entry
+        try:
+            cached = trade_chart_manager.get_cached_trade_candles(trade_id)
+            if cached:
+                filtered_candles = cached
+            else:
+                filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                    report.get('intraday_candles', []),
+                    report
+                )
+            report['intraday_candles'] = filtered_candles
+        except Exception as e:
+            logger.warning(f"Failed to attach candles to journal entry {trade_id}: {e}")
+        
+        return jsonify(report)
     except Exception as e:
-        logger.warning(f"Failed to attach candles to journal entry {trade_id}: {e}")
-    
-    return jsonify(report)
+        logger.error(f"Journal entry error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route("/api/journal/<trade_id>/close", methods=["POST"])
 def journal_close(trade_id):
-    """Manually close a trade in the database."""
+    """Manually close a trade for the authenticated user."""
     from db_manager import get_db, TradeJournalEntry
+    from auth import AuthManager
     from datetime import datetime
     
-    data = request.get_json(force=True)
-    exit_price = data.get("exit_price")
-    exit_reason = data.get("exit_reason", "manual")
-
-    if not exit_price:
-        # Try to fetch current price if not provided
-        try:
-            db = get_db()
-            with db.Session() as session:
-                trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
-                if trade and trade.status == "OPEN":
-                    try:
-                        exit_price = bot.fetch_live_price(trade.symbol)
-                    except Exception:
-                        return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
-                else:
-                    return jsonify({"error": "Trade not found or already closed"}), 404
-        except Exception:
-            return jsonify({"error": "exit_price is required"}), 400
-
-    # Update trade in database
     try:
+        # Get user from JWT token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Missing or invalid authorization'}), 401
+
+        token = auth_header.split(' ')[1]
+        auth_manager = AuthManager(app.db)
+        user_info = auth_manager.verify_jwt(token)
+
+        if not user_info:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+
+        user_id = user_info.get('user_id') or user_info.get('sub')
+        if not user_id:
+            return jsonify({'error': 'Invalid token: no user_id'}), 400
+        
+        data = request.get_json(force=True)
+        exit_price = data.get("exit_price")
+        exit_reason = data.get("exit_reason", "manual")
+
+        if not exit_price:
+            # Try to fetch current price if not provided
+            try:
+                db = get_db()
+                with db.Session() as session:
+                    trade = session.query(TradeJournalEntry).filter(
+                        TradeJournalEntry.trade_id == trade_id,
+                        TradeJournalEntry.user_id == user_id
+                    ).first()
+                    if trade and trade.status == "OPEN":
+                        try:
+                            exit_price = bot.fetch_live_price(trade.symbol)
+                        except Exception:
+                            return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
+                    else:
+                        return jsonify({"error": "Trade not found or already closed"}), 404
+            except Exception:
+                return jsonify({"error": "exit_price is required"}), 400
+
+        # Update trade in database
         db = get_db()
         with db.Session() as session:
-            trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
+            trade = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.trade_id == trade_id,
+                TradeJournalEntry.user_id == user_id
+            ).first()
             if not trade:
                 return jsonify({"error": "Trade not found"}), 404
             
