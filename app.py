@@ -2721,33 +2721,47 @@ def journal_all():
         
         db = get_db()
         with db.Session() as session:
-            # Filter by user_id
-            query = session.query(TradeJournalEntry).filter(
-                TradeJournalEntry.user_id == user_id
-            ).order_by(TradeJournalEntry.created_at.desc())
-            
-            if trade_type == 'paper':
-                query = query.filter(TradeJournalEntry.is_paper == True)
-            elif trade_type == 'actual':
-                query = query.filter(TradeJournalEntry.is_paper == False)
-            
-            entries = [t.to_dict() for t in query.all()]
-        
-        logger.info(f"Found {len(entries)} trade journal entries for user {user_id}")
+            try:
+                logger.info(f"Building query for user_id: {user_id}, type: {trade_type}")
+                # Filter by user_id
+                query = session.query(TradeJournalEntry).filter(
+                    TradeJournalEntry.user_id == user_id
+                ).order_by(TradeJournalEntry.created_at.desc())
+                
+                if trade_type == 'paper':
+                    query = query.filter(TradeJournalEntry.is_paper == True)
+                elif trade_type == 'actual':
+                    query = query.filter(TradeJournalEntry.is_paper == False)
+                
+                logger.info(f"Executing query...")
+                entries = [t.to_dict() for t in query.all()]
+                logger.info(f"Found {len(entries)} trade journal entries for user {user_id}")
+            except Exception as db_err:
+                logger.error(f"Database query error: {db_err}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
         
         # Attach filtered candles to each entry based on trade status
         try:
+            logger.info(f"Attaching candles to {len(entries)} entries...")
             for entry in entries:
                 trade_id = entry.get('trade_id')
-                cached = trade_chart_manager.get_cached_trade_candles(trade_id)
-                if cached:
-                    filtered_candles = cached
-                else:
-                    filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
-                        entry.get('intraday_candles', []),
-                        entry
-                    )
-                entry['intraday_candles'] = filtered_candles
+                try:
+                    if trade_chart_manager and hasattr(trade_chart_manager, 'get_cached_trade_candles'):
+                        cached = trade_chart_manager.get_cached_trade_candles(trade_id)
+                        if cached:
+                            filtered_candles = cached
+                        else:
+                            filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
+                                entry.get('intraday_candles', []),
+                                entry
+                            )
+                        entry['intraday_candles'] = filtered_candles
+                except Exception as candle_err:
+                    logger.warning(f"Failed to attach candles for trade {trade_id}: {candle_err}")
+                    # Don't fail the whole request if candles fail
+                    pass
         except Exception as e:
             logger.warning(f"Failed to attach candles to journal entries: {e}")
         
