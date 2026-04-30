@@ -10,6 +10,7 @@ PAPER TRADING TRACKER — Unified trading engine with pre/post trade analysis an
 import sys
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 import pytz
 
@@ -19,6 +20,7 @@ import bot
 from config import WATCHLIST, CONFIDENCE_THRESHOLD, TARGET_PCT, STOP_LOSS_PCT
 
 ist = pytz.timezone('Asia/Kolkata')
+logger = logging.getLogger(__name__)
 
 
 def is_paper_trading_enabled():
@@ -76,14 +78,21 @@ class PaperTradeTracker:
         now = datetime.now(ist)
         trade_id = f"{symbol}-{signal[0]}-{now.strftime('%Y%m%d%H%M%S%f')}"
         
+        stop_loss = entry_price * (1 - STOP_LOSS_PCT / 100) if signal == 'BUY' else entry_price * (1 + STOP_LOSS_PCT / 100)
+        projected_exit = entry_price * (1 + TARGET_PCT / 100) if signal == 'BUY' else entry_price * (1 - TARGET_PCT / 100)
+
         trade = {
             'id': trade_id,
             'symbol': symbol,
             'signal': signal,
+            'side': signal,
             'confidence': float(confidence),
             'entry_price': float(entry_price),
             'quantity': quantity,
             'entry_time': now.isoformat(),
+            'stop_loss': round(float(stop_loss), 2),
+            'projected_exit': round(float(projected_exit), 2),
+            'entry_profit_target': TARGET_PCT if signal == 'BUY' else -TARGET_PCT,
             
             # ── TRAILING STOP CONFIGURATION ──
             'cost_coverage_price': float(cost_coverage_price),  # When costs are covered
@@ -135,19 +144,17 @@ class PaperTradeTracker:
                 trade['exit_time'] = datetime.now(ist).isoformat()
                 trade['exit_reason'] = exit_reason
                 
-                # Calculate actual P&L
+                # Calculate actual P&L with the same charge model used by the journal.
                 if trade['signal'] == 'BUY':
                     profit_pct = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
-                    gross_pnl = (exit_price - trade['entry_price']) * trade['quantity']
+                    pnl_info = bot.costs.net_profit(trade['entry_price'], exit_price, trade['quantity'])
                 else:  # SELL
                     profit_pct = ((trade['entry_price'] - exit_price) / trade['entry_price']) * 100
-                    gross_pnl = (trade['entry_price'] - exit_price) * trade['quantity']
-                
-                # Calculate charges: 0.03% entry + 0.03% exit
-                entry_charges = trade['entry_price'] * trade['quantity'] * 0.0003
-                exit_charges = exit_price * trade['quantity'] * 0.0003
-                total_charges = entry_charges + exit_charges
-                net_pnl = gross_pnl - total_charges
+                    pnl_info = bot.costs.net_profit(exit_price, trade['entry_price'], trade['quantity'])
+
+                gross_pnl = pnl_info['gross_profit']
+                total_charges = pnl_info['total_charges']
+                net_pnl = pnl_info['net_profit']
                 
                 trade['actual_profit_pct'] = round(profit_pct, 2)
                 trade['gross_pnl'] = round(gross_pnl, 2)
@@ -200,13 +207,20 @@ class PaperTradeTracker:
                         journal_exit_reason = 'SIGNAL_REVERSED'
                     
                     # Find and close the corresponding trade journal entry
-                    journal_entry = trade_journal.close_trade_report(
+                    journal_entry = trade_journal.close_matching_paper_trade(
                         trade_id=trade_id,
+                        symbol=trade.get('symbol'),
+                        side=trade.get('side') or trade.get('signal'),
+                        quantity=trade.get('quantity'),
+                        entry_price=trade.get('entry_price'),
+                        entry_time=trade.get('entry_time'),
                         exit_price=float(exit_price),
                         exit_reason=journal_exit_reason,
-                        pnl=trade.get('net_pnl', trade.get('gross_pnl', 0)),
                     )
-                    logger.info(f"✓ Synced paper trade closure {trade_id} to trade journal")
+                    if journal_entry:
+                        logger.info("Synced paper trade closure %s to trade journal", trade_id)
+                    else:
+                        logger.warning("Paper trade closure %s could not be synced to the trade journal", trade_id)
                 except Exception as e:
                     logger.warning(f"Failed to sync paper trade closure to journal: {e}")
                 
@@ -217,7 +231,12 @@ class PaperTradeTracker:
     def update_trailing_stop(self, trade_id, current_price):
         """
         Update trailing stop for an open trade based on current price.
-        Simple logic: If profitable, set trailing stop 1.5 points below current price.
+        
+        The trailing stop only ever moves in the profit-protecting direction:
+        - BUY:  stop ratchets UP   (uses max so it never drops back down)
+        - SELL: stop ratchets DOWN (uses min so it never rises back up)
+        
+        Buffer: 1.5 rupees below/above current price.
         """
         TRAILING_BUFFER = 1.5  # Buffer in rupees
         
@@ -226,24 +245,25 @@ class PaperTradeTracker:
                 entry_price = trade.get('entry_price', 0)
                 signal = trade.get('signal', 'BUY')
                 
-                # Calculate if trade is profitable
                 if signal == 'BUY':
                     pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
-                    # If profitable, set trailing stop below current price
                     if pnl_pct > 0.5:  # More than 0.5% profit
-                        trade['trailing_stop'] = round(current_price - TRAILING_BUFFER, 2)
+                        new_stop = round(current_price - TRAILING_BUFFER, 2)
+                        old_stop = trade.get('trailing_stop')
+                        # Only move the stop UP, never down
+                        trade['trailing_stop'] = max(new_stop, old_stop) if old_stop is not None else new_stop
                         trade['highest_price_reached'] = max(trade.get('highest_price_reached', entry_price), current_price)
                 else:  # SELL
                     pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price else 0
-                    # If profitable, set trailing stop above current price
                     if pnl_pct > 0.5:  # More than 0.5% profit
-                        trade['trailing_stop'] = round(current_price + TRAILING_BUFFER, 2)
+                        new_stop = round(current_price + TRAILING_BUFFER, 2)
+                        old_stop = trade.get('trailing_stop')
+                        # Only move the stop DOWN, never up
+                        trade['trailing_stop'] = min(new_stop, old_stop) if old_stop is not None else new_stop
                         trade['lowest_price_reached'] = min(trade.get('lowest_price_reached', entry_price), current_price)
                 
                 self._save_trades()
                 return 'trailing_updated'
-        
-        return None
         
         return None
     

@@ -18,7 +18,7 @@ source .venv/bin/activate
 
 if [[ "$1" == "--once" ]]; then
     echo "$(date): Starting Groww Trading Bot (single run)" | tee -a "$LOG"
-    exec python3 app.py 2>&1 | tee -a "$LOG"
+    exec .venv/bin/python3 app.py 2>&1 | tee -a "$LOG"
 fi
 
 restart_count=0
@@ -30,7 +30,7 @@ while true; do
     start_time=$(date +%s)
     echo "$(date): Starting server (restart #$restart_count)" | tee -a "$LOG"
 
-    python3 app.py 2>&1 | tee -a "$LOG"
+    .venv/bin/python3 app.py 2>&1 | tee -a "$LOG"
     exit_code=$?
     end_time=$(date +%s)
     runtime=$((end_time - start_time))

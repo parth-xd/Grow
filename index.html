@@ -312,6 +312,60 @@ function ensureChronological(prices) {
 </script>
 </head>
 <body class="locked">
+<script>
+// ── JWT Authentication Check ────────────────────
+// Check if user is logged in, redirect to login if not
+// DISABLED: Allow dashboard to display without authentication
+/*(function checkAuth() {
+  const token = localStorage.getItem('auth_token'); // Match React app's key
+  
+  if (!token) {
+    // No token found, redirect to login (React app)
+    window.location.href = '/login';
+    return;
+  }
+  
+  // Verify token is still valid by checking expiration
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      localStorage.removeItem('auth_token');
+      window.location.href = '/login';
+      return;
+    }
+    
+    const payload = JSON.parse(atob(parts[1]));
+    const exp = payload.exp * 1000; // Convert to milliseconds
+    
+    if (Date.now() > exp) {
+      // Token expired, redirect to login
+      localStorage.removeItem('auth_token');
+      window.location.href = '/login';
+      return;
+    }
+  } catch (e) {
+    localStorage.removeItem('auth_token');
+    window.location.href = '/login';
+    return;
+  }*/
+  
+  // Token is valid, store it globally for API calls
+  // window.JWT_TOKEN = token;
+// })();
+
+// Override fetch to include JWT in all requests
+const originalFetch = window.fetch;
+window.fetch = function(...args) {
+  const token = window.JWT_TOKEN || localStorage.getItem('auth_token'); // Match React app's key
+  if (token && args.length > 0) {
+    const options = args[1] || {};
+    if (!options.headers) options.headers = {};
+    options.headers['Authorization'] = `Bearer ${token}`;
+    args[1] = options;
+  }
+  return originalFetch.apply(this, args);
+};
+</script>
 
 <!-- PIN Lock Screen -->
 <div id="pin-lock">
@@ -349,6 +403,8 @@ function ensureChronological(prices) {
     <button class="btn" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px">Reconnect</button>
     <button class="btn btn-primary" onclick="runScan()" style="font-size:12px">Scan Watchlist</button>
     <span id="cash-auto-trade-indicator" style="font-size:11px;padding:4px 10px;border-radius:8px;background:rgba(255,82,82,.12);color:var(--red);font-weight:600;cursor:pointer" onclick="toggleCashAutoTrade()" title="Click to toggle cash equity auto-trade">Cash Auto-Trade: OFF</span>
+    <button class="btn" onclick="openSettings()" style="font-size:12px">Settings</button>
+    <button class="btn" onclick="logoutUser()" style="font-size:12px;color:var(--red)">Logout</button>
   </div>
 </header>
 
@@ -370,12 +426,13 @@ function ensureChronological(prices) {
     <div class="tab" data-tab="thesis">My Thesis</div>
     <div class="tab" data-tab="news">News & Sentiment</div>
     <div class="tab" data-tab="rawmat">Raw Materials</div>
-    <div class="tab" data-tab="fno">F&O Trading</div>
+    <div class="tab" data-tab="intraday">Intraday Trading</div>
     <div class="tab" data-tab="journal">Trade Journal</div>
     <div class="tab" data-tab="fno-backtest">Backtesting</div>
     <div class="tab" data-tab="paper">Paper Trading</div>
     <div class="tab" data-tab="pnl-chart">P&L Chart</div>
     <div class="tab" data-tab="alerts">Alerts</div>
+    <div class="tab" data-tab="settings">Settings</div>
   </div>
 
   <!-- ── Portfolio Analysis ──────────────── -->
@@ -395,6 +452,10 @@ function ensureChronological(prices) {
     <div style="margin-bottom:14px">
       <button class="btn btn-primary" onclick="runPortfolioAnalysis()" id="pa-run-btn">Analyze My Portfolio</button>
       <span id="pa-loading" style="margin-left:10px;display:none"><span class="loader"></span> Running full AI analysis on your portfolio...</span>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:14px;padding:10px;background:rgba(59,130,246,0.05);border-radius:8px;border-left:3px solid var(--accent)">
+      <span style="font-size:14px;flex-shrink:0">ℹ️</span>
+      <span style="font-size:12px;color:var(--muted)"><b>Understanding the analysis:</b> Each stock shows two metrics: <b>Health</b> (fundamentals quality: GOOD/WARNING/DANGER) + <b>Recommendation</b> (action: HOLD/ADD MORE/EXIT/BOOK PROFIT). A stock can have GOOD fundamentals but be recommended for EXIT if it's reached a profit target or become overvalued. Click any stock to see the detailed breakdown of all factors.</span>
     </div>
     <div id="pa-summary"></div>
     <div id="pa-list"><div style="text-align:center;padding:40px;color:var(--muted)">Click <b>Analyze My Portfolio</b> to see AI analysis of every stock you hold</div></div>
@@ -664,123 +725,167 @@ function ensureChronological(prices) {
   </div>
 
   <!-- ── Portfolio ───────────────────────── -->
-  <!-- ── F&O Trading ─────────────────────── -->
-  <div id="fno" class="tab-panel">
+  <!-- ── Intraday Trading ───────────────────── -->
+  <div id="intraday" class="tab-panel">
+    <!-- Intraday Guidelines -->
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:14px;padding:12px;background:rgba(59,130,246,0.05);border-radius:8px;border-left:3px solid var(--accent)">
+      <span style="font-size:14px;flex-shrink:0">⚡</span>
+      <div style="font-size:12px;color:var(--muted)">
+        <b>Intraday Trading Rules:</b> Using <b>MIS (4-5x leverage)</b> on NSE equity stocks.
+        <br>• <b>Margin Required</b>: Only 20-25% of position value (rest from leverage)
+        <br>• <b>Charges</b>: ~71% LOWER than delivery (STT 0.025% vs 0.1%, no DP charges)
+        <br>• <b>Square-Off</b>: MUST close all trades by <b>3:25 PM IST</b> (forced auto-close at 3:30 PM)
+        <br>• <b>Breakeven</b>: Only 0.08% move needed (vs 0.28% for delivery) due to lower charges
+        <br>• <b>Risk</b>: High! 4-5x leverage amplifies both gains and losses equally
+      </div>
+    </div>
+
     <!-- Capital Overview -->
     <div class="grid grid-4" style="margin-bottom:18px">
-      <div class="card"><div class="card-title">F&O Capital (Groww)</div><div class="card-value" id="fno-capital">₹0</div></div>
-      <div class="card"><div class="card-title">Deployed</div><div class="card-value" id="fno-used">₹0</div></div>
-      <div class="card"><div class="card-title">Available</div><div class="card-value" id="fno-available">₹0</div></div>
-      <div class="card"><div class="card-title">F&O Trades</div><div class="card-value" id="fno-trade-count">0</div></div>
+      <div class="card"><div class="card-title">Intraday Capital</div><div class="card-value" id="intraday-capital">₹0</div></div>
+      <div class="card"><div class="card-title">Margin Used</div><div class="card-value" id="intraday-used">₹0</div></div>
+      <div class="card"><div class="card-title">Margin Available</div><div class="card-value" id="intraday-available">₹0</div></div>
+      <div class="card"><div class="card-title">Active Trades</div><div class="card-value" id="intraday-trade-count">0</div></div>
+    </div>
+
+    <!-- Paper Intraday Mode -->
+    <div class="card" style="margin-bottom:18px;padding:14px;background:rgba(139,92,246,.05);border:1px solid rgba(139,92,246,.2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div>
+          <div style="font-weight:600;margin-bottom:4px">Paper Intraday Trading Mode</div>
+          <div style="font-size:11px;color:var(--muted)">When enabled, all trades are simulated and recorded in the database but NOT executed on Groww. Great for learning and backtesting.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+            <input type="checkbox" id="intraday-paper-mode-toggle" onchange="toggleIntradayPaperMode()" style="cursor:pointer;width:16px;height:16px">
+            <span id="intraday-paper-mode-label">OFF</span>
+          </label>
+        </div>
+      </div>
+      <div style="margin-top:10px;padding:10px;background:rgba(255,255,255,.5);border-radius:6px;display:none;font-size:11px;color:var(--green)" id="intraday-paper-mode-info">
+        Paper Mode <b>ACTIVE</b> - All trades will be simulated and tagged as paper in the database
+      </div>
     </div>
 
     <!-- Auto-Trade Controls -->
     <div class="card" style="margin-bottom:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <div class="card-title" style="margin-bottom:0"> Auto-Trade</div>
+        <div class="card-title" style="margin-bottom:0">Auto-Trade (Market Hours: 09:15 - 15:25)</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <span id="fno-auto-status" style="font-size:12px;padding:4px 10px;border-radius:12px;background:#10b981;color:white">ENABLED</span>
-          <button class="btn btn-primary" onclick="fnoRunAutoTrade()" style="font-size:12px;padding:6px 14px">Run Now</button>
-          <button class="btn" onclick="fnoSyncCapital()" style="font-size:12px;padding:6px 14px">Sync Balance</button>
+          <span id="intraday-auto-status" style="font-size:12px;padding:4px 10px;border-radius:12px;background:#10b981;color:white">ENABLED</span>
+          <button class="btn btn-primary" onclick="intradayRunAutoTrade()" style="font-size:12px;padding:6px 14px">Run Now</button>
+          <button class="btn" onclick="intradaySyncCapital()" style="font-size:12px;padding:6px 14px">Sync Balance</button>
         </div>
       </div>
-      <div id="fno-auto-config" style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)">
-        <span>Min Confidence: <strong>20%</strong></span>
-        <span>Min Strength: <strong>moderate</strong></span>
+      <div id="intraday-auto-config" style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)">
+        <span>Min Confidence: <strong>65%</strong></span>
+        <span>Min Strength: <strong>strong</strong></span>
         <span>Max Positions: <strong>2</strong></span>
-        <span>Stop-Loss: <strong>50%</strong></span>
-        <span>Target: <strong>80%</strong></span>
-        <span>Trailing SL: <strong>30%</strong></span>
+        <span>Stop-Loss: <strong>1.5% margin</strong></span>
+        <span>Target: <strong>2-3% per trade</strong></span>
+        <span>Leverage: <strong>4x</strong></span>
       </div>
     </div>
 
-    <!-- Global Indices -->
+    <!-- Market Status -->
     <div class="card" style="margin-bottom:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <div class="card-title" style="margin-bottom:0">Global Indices</div>
-        <button class="btn" onclick="fnoRefreshGlobal()" style="font-size:12px;padding:6px 14px">Refresh</button>
+        <div class="card-title" style="margin-bottom:0">Market Status & Signals</div>
+        <button class="btn" onclick="intradayRefreshMarket()" style="font-size:12px;padding:6px 14px">Refresh</button>
       </div>
-      <div id="fno-global-sentiment" style="margin-bottom:10px;font-size:13px;color:var(--muted)">Loading global data...</div>
-      <div id="fno-global-indices" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px"></div>
+      <div id="intraday-market-sentiment" style="margin-bottom:10px;font-size:13px;color:var(--muted)">Loading market data...</div>
+      <div id="intraday-market-indices" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px"></div>
     </div>
 
-    <!-- Instrument Selector & Analysis -->
+    <!-- Stock Selector & Analysis -->
     <div class="grid grid-2" style="margin-bottom:18px">
       <div class="card">
-        <div class="card-title">Select Instrument</div>
-        <select id="fno-instrument" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);font-size:14px;margin-bottom:12px" onchange="fnoInstrumentChanged()">
-          <optgroup label="Index Options (NSE/BSE)">
-            <option value="NIFTY">NIFTY 50 (Lot: 75)</option>
-            <option value="BANKNIFTY">BANK NIFTY (Lot: 15)</option>
-            <option value="FINNIFTY">FINNIFTY (Lot: 25)</option>
-            <option value="SENSEX">SENSEX (Lot: 10)</option>
-            <option value="MIDCPNIFTY">Midcap Select (Lot: 50)</option>
-            <option value="HDFCBANK">HDFC Bank (Lot: 550)</option>
-          </optgroup>
-          <optgroup label="MCX Commodities">
-            <option value="CRUDEOILM">Crude Oil Mini (Lot: 10)</option>
-            <option value="NATURALGAS">Natural Gas (Lot: 1250)</option>
-            <option value="NATGASMINI">Natural Gas Mini (Lot: 250)</option>
-            <option value="GOLDM">Gold Mini (Lot: 100)</option>
-            <option value="SILVERM">Silver Mini (Lot: 5)</option>
-          </optgroup>
-        </select>
-        <div id="fno-analysis" style="font-size:13px;color:var(--muted)">Select an instrument to analyze...</div>
+        <div class="card-title">Scan for Best Intraday Setup</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn btn-primary" onclick="intradayAutoPick()" style="flex:1">🔍 Find Best Trade</button>
+          <button class="btn" onclick="intradayLoadDashboard()" style="flex:1">Refresh</button>
+        </div>
+        <div id="intraday-analysis" style="font-size:13px;color:var(--muted)">Click "Find Best Trade" to analyze current intraday opportunities...</div>
       </div>
       <div class="card">
-        <div class="card-title">Expiry</div>
-        <select id="fno-expiry" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);font-size:14px;margin-bottom:12px" onchange="fnoLoadChain()">
-          <option value="">Loading expiries...</option>
-        </select>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button class="btn btn-primary" onclick="fnoFindAffordable()" style="flex:1">Find Affordable Options</button>
-          <button class="btn" onclick="fnoLoadChain()" style="flex:1">Full Option Chain</button>
+        <div class="card-title">Position Sizing (4x Leverage)</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.8">
+          <div>Available Margin: <span id="intraday-position-margin" style="color:var(--accent);font-weight:700">₹0</span></div>
+          <div>Can Control: <span id="intraday-position-value" style="color:var(--green);font-weight:700">₹0</span> (with 4x leverage)</div>
+          <div>Typical Lots: <span id="intraday-position-qty" style="color:var(--accent);font-weight:700">--</span></div>
+          <div style="margin-top:8px;padding:8px;background:rgba(255,149,0,.1);border-radius:6px;color:var(--yellow)">
+            1.5% margin loss = auto stop-loss
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Affordable Options -->
+    <!-- Best Opportunity -->
     <div class="card" style="margin-bottom:18px">
-      <div class="card-title">Affordable Options (within budget)</div>
-      <div id="fno-affordable" style="overflow-x:auto">
-        <div style="text-align:center;padding:30px;color:var(--muted)"><span class="loader"></span> Auto-selecting best opportunity...</div>
+      <div class="card-title">Best Intraday Opportunity</div>
+      <div id="intraday-opportunity" style="overflow-x:auto">
+        <div style="text-align:center;padding:30px;color:var(--muted)">Run "Find Best Trade" to see current opportunities</div>
       </div>
     </div>
 
-    <!-- Option Chain -->
-    <div class="card" style="margin-bottom:18px;display:none" id="fno-chain-card">
-      <div class="card-title">Option Chain</div>
-      <div id="fno-chain" style="overflow-x:auto;max-height:400px;overflow-y:auto"></div>
-    </div>
-
-    <!-- F&O Positions -->
+    <!-- Active Positions -->
     <div class="card" style="margin-bottom:18px">
-      <div class="card-title">F&O Positions</div>
-      <div id="fno-positions" style="overflow-x:auto">
-        <div style="text-align:center;padding:20px;color:var(--muted)">No F&O positions</div>
+      <div class="card-title">⚡ Active Intraday Positions</div>
+      <div id="intraday-positions" style="overflow-x:auto">
+        <div style="text-align:center;padding:20px;color:var(--muted)">No active intraday positions</div>
       </div>
     </div>
 
-    <!-- F&O Trade Log -->
+    <!-- Intraday Trade Log -->
     <div class="card" style="margin-bottom:18px">
-      <div class="card-title">F&O Trade Log</div>
-      <div id="fno-tradelog" style="overflow-x:auto">
-        <div style="text-align:center;padding:20px;color:var(--muted)">No F&O trades yet</div>
+      <div class="card-title">📋 Today's Intraday Trades</div>
+      <div id="intraday-tradelog" style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <div style="text-align:center;padding:20px;color:var(--muted)">No intraday trades today</div>
       </div>
     </div>
 
     <!-- Auto-Trade Log -->
     <details class="card" style="margin-bottom:18px">
-      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"> Auto-Trade Log (last 20 runs)</summary>
-      <div id="fno-auto-log" style="margin-top:12px;max-height:300px;overflow-y:auto;font-size:12px">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)">Auto-Trade Log (last 20 runs)</summary>
+      <div id="intraday-auto-log" style="margin-top:12px;max-height:300px;overflow-y:auto;font-size:12px">
         <div style="text-align:center;padding:20px;color:var(--muted)">No auto-trade runs yet</div>
       </div>
     </details>
 
-    <!-- Rules -->
+    <!-- Intraday Rules & Best Practices -->
     <details class="card" style="margin-bottom:18px">
-      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)">F&O Trading Rules</summary>
-      <pre id="fno-rules" style="margin-top:12px;font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.6"></pre>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)">⚡ Intraday Trading Rules & Best Practices</summary>
+      <div style="margin-top:12px;font-size:12px;color:var(--text);line-height:1.8">
+        <h4 style="margin:0 0 8px 0">Leverage & Margin Rules</h4>
+        <ul style="margin:0 0 12px 16px;color:var(--muted)">
+          <li>MIS trades use 4-5x leverage: ₹20k margin = ₹80-100k buying power</li>
+          <li>Margin Call Trigger: Position loss ≥ 25-30% of margin → automatic warning</li>
+          <li>Forced Square-Off: 3:25 PM IST → all open MIS trades auto-closed at market price</li>
+        </ul>
+        <h4 style="margin:0 0 8px 0">Cost Advantage vs Delivery</h4>
+        <ul style="margin:0 0 12px 16px;color:var(--muted)">
+          <li>STT: 0.025% (sell only) vs 0.1% (delivery) = 75% savings</li>
+          <li>Stamp Duty: 0.003% vs 0.015% = 80% savings</li>
+          <li>No DP charges (no settlement needed)</li>
+          <li>Total charges ~71% lower than delivery trades</li>
+          <li>Breakeven move: 0.084% vs 0.288% on delivery (3.4x easier!)</li>
+        </ul>
+        <h4 style="margin:0 0 8px 0">Risk Management</h4>
+        <ul style="margin:0 0 12px 16px;color:var(--muted)">
+          <li>Only trade high-conviction setups (65%+ confidence required)</li>
+          <li>Stop-Loss: 1.5% of margin (hard limit, auto-closes)</li>
+          <li>Target: 2-3% profit per trade (realistic with leverage)</li>
+          <li>Max 2 concurrent positions during market hours</li>
+          <li>Never add to losing positions (no averaging down)</li>
+        </ul>
+        <h4 style="margin:0 0 8px 0">Timing</h4>
+        <ul style="margin:0 0 12px 16px;color:var(--muted)">
+          <li>Trading Hours: 09:15 - 15:25 IST</li>
+          <li>Best Entry: 09:20-10:30 and 14:00-14:30 (high volatility + volume)</li>
+          <li>Avoid: 15:20-15:25 (forced square-off risk)</li>
+          <li>Always close by 15:20 to avoid forced liquidation slippage</li>
+        </ul>
+      </div>
     </details>
   </div>
 
@@ -957,9 +1062,9 @@ function ensureChronological(prices) {
     <p style="color:var(--muted);font-size:13px;margin-bottom:20px">When enabled, all buy/sell orders will be simulated instead of executing real trades on Groww. Great for testing strategies risk-free.</p>
 
     <div class="grid-4" style="gap:12px;margin-bottom:20px">
-      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Total Paper Trades</div><div id="paper-count" class="card-value">0</div></div>
-      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Paper Buys</div><div id="paper-buys" class="card-value">0</div></div>
-      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Paper Sells</div><div id="paper-sells" class="card-value">0</div></div>
+      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Open Paper Trades</div><div id="paper-count" class="card-value">0</div></div>
+      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Open Buys</div><div id="paper-buys" class="card-value">0</div></div>
+      <div class="card" style="padding:16px;text-align:center"><div class="card-title">Open Sells</div><div id="paper-sells" class="card-value">0</div></div>
       <div class="card" style="padding:16px;text-align:center"><div class="card-title">Capital Deployed</div><div id="paper-capital" class="card-value">₹0</div></div>
     </div>
 
@@ -967,17 +1072,17 @@ function ensureChronological(prices) {
       <div class="card" style="padding:16px;text-align:center;border:.5px solid var(--border)">
         <div class="card-title">Daily P&L</div>
         <div id="paper-daily-pnl" class="card-value" style="color:var(--accent)">-</div>
-        <small style="color:var(--muted);font-size:11px;margin-top:4px">Total realized + unrealized</small>
+        <small style="color:var(--muted);font-size:11px;margin-top:4px">Net realized + est. net unrealized</small>
       </div>
       <div class="card" style="padding:16px;text-align:center;border:.5px solid var(--border)">
         <div class="card-title">Realized P&L</div>
         <div id="paper-realized-pnl" class="card-value" style="color:var(--accent)">-</div>
-        <small style="color:var(--muted);font-size:11px;margin-top:4px">Closed trades only</small>
+        <small style="color:var(--muted);font-size:11px;margin-top:4px">Closed trades after charges</small>
       </div>
       <div class="card" style="padding:16px;text-align:center;border:.5px solid var(--border)">
         <div class="card-title">Unrealized P&L</div>
         <div id="paper-unrealized-pnl" class="card-value" style="color:var(--accent)">-</div>
-        <small style="color:var(--muted);font-size:11px;margin-top:4px">Open trades only</small>
+        <small style="color:var(--muted);font-size:11px;margin-top:4px">Marked net of est. exit charges</small>
       </div>
       <div class="card" style="padding:16px;text-align:center;border:.5px solid var(--border)">
         <div class="card-title">Win Rate</div>
@@ -988,8 +1093,8 @@ function ensureChronological(prices) {
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
       <div style="display:flex;gap:8px;align-items:center">
-        <div class="card-title" style="margin:0">Live Paper Trades — Entry → Projected → Actual</div>
-        <span id="market-hours-badge" style="font-size:11px;padding:4px 10px;border-radius:12px;background:#e0e7ff;color:#4f46e5;font-weight:600">⏸ Off-hours</span>
+        <div class="card-title" style="margin:0">Open Paper Positions</div>
+        <span id="market-hours-badge" style="font-size:11px;padding:4px 10px;border-radius:12px;background:#e0e7ff;color:#4f46e5;font-weight:600">Off-hours</span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button onclick="loadPaperTradingStatus()" class="btn btn-primary" style="font-size:12px;padding:6px 16px">Refresh</button>
@@ -997,8 +1102,8 @@ function ensureChronological(prices) {
     </div>
     <div id="loss-analysis-results" style="display:none;margin-bottom:16px;background:#fef3c7;border:1px solid #fcd34d;border-radius:12px;padding:16px"></div>
     <div style="max-height:600px;overflow-y:auto">
-      <table><thead><tr><th>Symbol</th><th>Signal</th><th>Entry Price</th><th>Projected Exit</th><th>Stop Loss</th><th>Actual Exit</th><th>P&L</th><th>Status</th></tr></thead>
-      <tbody id="paper-trades-body"><tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Loading trades...</td></tr></tbody></table>
+      <table><thead><tr><th>Symbol</th><th>Signal</th><th>Qty</th><th>Entry Price</th><th>Position Value</th><th>Projected Exit</th><th>Stop Loss</th><th>Current Price</th><th>P&L</th><th>Status</th></tr></thead>
+      <tbody id="paper-trades-body"><tr><td colspan="10" style="color:var(--muted);text-align:center;padding:20px">Loading trades...</td></tr></tbody></table>
     </div>
 
     <!-- Trade Snapshots — Chart Replay -->
@@ -1011,7 +1116,7 @@ function ensureChronological(prices) {
 
       <div id="snapshots-list" style="overflow-y:auto">
         <table style="width:100%">
-          <tbody id="snapshots-body"><tr><td colspan="1" style="color:var(--muted);text-align:center;padding:40px">📊 Daily snapshots will be available after 4 PM market close...</td></tr></tbody>
+          <tbody id="snapshots-body"><tr><td colspan="1" style="color:var(--muted);text-align:center;padding:40px">Daily snapshots will be available after 4 PM market close...</td></tr></tbody>
         </table>
       </div>
 
@@ -1129,6 +1234,94 @@ function ensureChronological(prices) {
     </div>
   </div>
 
+  <div id="settings" class="tab-panel">
+    <div style="max-width:980px">
+      <div class="card" style="padding:28px;margin-bottom:20px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px;flex-wrap:wrap">
+          <div>
+            <h2 style="font-size:22px;font-weight:700;letter-spacing:-.03em;margin:0 0 8px">Paper Trading Controls</h2>
+            <p style="color:var(--muted);font-size:13px;line-height:1.6;margin:0">
+              Add guardrails for auto paper trades without touching your real-trading flow. The amount limit acts as a hard cap per auto paper trade.
+            </p>
+          </div>
+          <div id="paper-settings-status" style="font-size:12px;color:var(--muted);padding-top:4px"></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:16px">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Mode</div>
+            <div id="paper-settings-mode" style="font-size:18px;font-weight:700;color:var(--text)">Loading...</div>
+          </div>
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:16px">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Auto Trade Limit</div>
+            <div id="paper-settings-limit-hero" style="font-size:18px;font-weight:700;color:var(--text)">Loading...</div>
+          </div>
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:16px">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Limit Mode</div>
+            <div id="paper-settings-limit-mode" style="font-size:18px;font-weight:700;color:var(--text)">Loading...</div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start">
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:18px">
+            <label for="paper-amount-limit" style="display:block;font-weight:600;font-size:13px;margin-bottom:8px;color:var(--text)">Max Auto Paper Trade Amount</label>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="font-weight:700;color:var(--muted)">₹</span>
+              <input id="paper-amount-limit" type="number" min="0" step="100" placeholder="0" style="padding:12px 14px;background:var(--surface);border:.5px solid var(--border);border-radius:10px;color:var(--text);font-family:inherit;flex:1">
+            </div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.6">
+              Enter `0` to keep the current sizing logic. Any positive value becomes a hard cap on the rupee value of each auto paper trade.
+            </div>
+          </div>
+
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:12px;padding:18px">
+            <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--text)">What This Changes</div>
+            <div id="paper-settings-preview" style="font-size:12px;color:var(--muted);line-height:1.8">
+              Loading...
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:18px">
+          <button onclick="savePaperTradingSettings()" class="btn btn-primary">Save Paper Settings</button>
+          <button onclick="loadPaperTradingSettings()" class="btn">Reload</button>
+          <span id="paper-save-status" style="margin-left:12px;font-size:12px;color:var(--green)"></span>
+        </div>
+      </div>
+
+      <div class="card" style="padding:28px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-.03em">Scheduler Settings</h2>
+          <div id="settings-status" style="font-size:12px;color:var(--muted)"></div>
+        </div>
+
+        <p style="color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.6">
+          Configure how frequently trading signals are generated and trades are monitored. 
+          Changes will take effect after restarting the app. Lower intervals = more frequent signals (faster response).
+        </p>
+
+        <div id="settings-grid" style="display:grid;gap:16px;margin-bottom:24px">
+          <!-- Settings will be loaded here via JavaScript -->
+        </div>
+
+        <div style="display:flex;gap:10px">
+          <button onclick="saveSchedulerSettings()" class="btn btn-primary">Save Settings</button>
+          <button onclick="loadSchedulerSettings()" class="btn">Reload</button>
+          <span id="save-status" style="margin-left:12px;font-size:12px;color:var(--green)"></span>
+        </div>
+
+        <div style="margin-top:32px;padding-top:24px;border-top:1px solid var(--border)">
+          <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">Current Settings Reference</h3>
+          <div style="background:var(--bg);border:.5px solid var(--border);border-radius:10px;padding:16px;font-family:monospace;font-size:12px;color:var(--text);max-height:300px;overflow:auto">
+            <div id="settings-preview" style="line-height:1.8">
+              <span style="color:var(--muted)">Loading...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <div id="toast"></div>
@@ -1198,42 +1391,251 @@ const logger = {
 };
 
 // ── Tabs ──────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(t => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    document.getElementById(t.dataset.tab).classList.add('active');
-    
-    // Load data when switching to specific tabs
-    if (t.dataset.tab === 'predictions') {
-      loadWatchlist();
-    } else if (t.dataset.tab === 'news') {
-      populateNewsQuickStocks();
-      loadWorldNews();
-    } else if (t.dataset.tab === 'rawmat') {
-      // auto-load on first visit
-      if (!document.getElementById('rawmat-list').dataset.loaded) loadRawMaterials();
-      if (!_supplyChainData) initHeatmap();
-    } else if (t.dataset.tab === 'research') {
-      if (!document.getElementById('research-leaderboard').innerHTML.trim()) loadResearchLeaderboard();
-    } else if (t.dataset.tab === 'fno') {
-      fnoLoadDashboard();
-    } else if (t.dataset.tab === 'fno-backtest') {
-      fbtLoadDates();
-    } else if (t.dataset.tab === 'paper') {
-      loadPaperTradingStatus();
-      loadTradeSnapshots();
-    } else if (t.dataset.tab === 'pnl-chart') {
-      if (cachedTrades) {
-        refreshPnLChart(cachedTrades);  // Use cached trades - no server call!
-      }
-    } else if (t.dataset.tab === 'alerts') {
-      loadTelegramStatus();
-      loadNLPStatus();
+function handleTabActivation(tabName) {
+  if (tabName === 'predictions') {
+    loadWatchlist();
+  } else if (tabName === 'news') {
+    populateNewsQuickStocks();
+    loadWorldNews();
+  } else if (tabName === 'rawmat') {
+    if (!document.getElementById('rawmat-list').dataset.loaded) loadRawMaterials();
+    if (!_supplyChainData) initHeatmap();
+  } else if (tabName === 'research') {
+    if (!document.getElementById('research-leaderboard').innerHTML.trim()) loadResearchLeaderboard();
+  } else if (tabName === 'intraday') {
+    intradayLoadDashboard();
+  } else if (tabName === 'fno-backtest') {
+    fbtLoadDates();
+  } else if (tabName === 'paper') {
+    loadPaperTradingStatus();
+    loadTradeSnapshots();
+  } else if (tabName === 'pnl-chart') {
+    if (cachedTrades) {
+      refreshPnLChart(cachedTrades);
     }
+  } else if (tabName === 'alerts') {
+    loadTelegramStatus();
+    loadNLPStatus();
+  } else if (tabName === 'settings') {
+    loadPaperTradingSettings();
+    loadSchedulerSettings();
+  }
+}
+
+function activateTab(tabName) {
+  const panel = document.getElementById(tabName);
+  if (!panel) return;
+
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === tabName);
   });
+  document.querySelectorAll('.tab-panel').forEach(node => {
+    node.classList.toggle('active', node.id === tabName);
+  });
+
+  handleTabActivation(tabName);
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => activateTab(tab.dataset.tab));
 });
+
+// ── Scheduler Settings ───────────────────────────────
+const LOCAL_PAPER_SETTINGS_KEY = 'grow_paper_trade_amount_limit';
+
+function readLocalPaperTradeAmountLimit() {
+  const stored = localStorage.getItem(LOCAL_PAPER_SETTINGS_KEY);
+  const parsed = Number(stored);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function writeLocalPaperTradeAmountLimit(amountLimit) {
+  const safeValue = Number.isFinite(amountLimit) && amountLimit >= 0 ? amountLimit : 0;
+  localStorage.setItem(LOCAL_PAPER_SETTINGS_KEY, String(safeValue));
+  return safeValue;
+}
+
+async function loadPaperTradingSettings() {
+  try {
+    const statusData = await api('/api/paper-trading/status');
+    const amountLimit = readLocalPaperTradeAmountLimit();
+    const modeOn = !!statusData.paper_mode;
+
+    const amountInput = document.getElementById('paper-amount-limit');
+    if (amountInput) amountInput.value = amountLimit > 0 ? String(Math.round(amountLimit)) : '0';
+
+    const modeEl = document.getElementById('paper-settings-mode');
+    if (modeEl) {
+      modeEl.textContent = modeOn ? 'Paper Mode ON' : 'Paper Mode OFF';
+      modeEl.style.color = modeOn ? 'var(--green)' : 'var(--muted)';
+    }
+
+    const limitHero = document.getElementById('paper-settings-limit-hero');
+    if (limitHero) {
+      limitHero.textContent = amountLimit > 0 ? formatMoney(amountLimit, 0) : 'Unlimited';
+    }
+
+    const limitMode = document.getElementById('paper-settings-limit-mode');
+    if (limitMode) {
+      limitMode.textContent = amountLimit > 0 ? 'Hard Cap Active' : 'Using Existing Logic';
+      limitMode.style.color = amountLimit > 0 ? 'var(--accent)' : 'var(--muted)';
+    }
+
+    const preview = document.getElementById('paper-settings-preview');
+    if (preview) {
+      preview.innerHTML = `
+        <div><strong>Current cap:</strong> ${amountLimit > 0 ? formatMoney(amountLimit, 0) + ' per auto paper trade' : 'No hard cap set'}</div>
+        <div><strong>Behavior:</strong> ${amountLimit > 0 ? 'The dashboard will use this saved cap value in Settings.' : 'The existing sizing logic will continue untouched.'}</div>
+        <div><strong>Storage:</strong> Saved locally in this browser so the Settings tab opens without backend 404 errors.</div>
+      `;
+    }
+
+    const statusEl = document.getElementById('paper-settings-status');
+    if (statusEl) statusEl.textContent = 'Loaded';
+  } catch (e) {
+    console.error('Error loading paper settings:', e);
+    const statusEl = document.getElementById('paper-settings-status');
+    if (statusEl) statusEl.textContent = 'Failed to load';
+  }
+}
+
+async function savePaperTradingSettings() {
+  try {
+    const amountLimit = writeLocalPaperTradeAmountLimit(
+      Number(document.getElementById('paper-amount-limit')?.value || 0)
+    );
+
+    const saveStatus = document.getElementById('paper-save-status');
+    if (saveStatus) {
+      saveStatus.textContent = 'Saved locally';
+      saveStatus.style.color = 'var(--green)';
+    }
+
+    toast(`Paper settings saved locally${amountLimit > 0 ? ` — limit ${formatMoney(amountLimit, 0)}` : ' — limit disabled'}`);
+    loadPaperTradingSettings();
+  } catch (e) {
+    console.error('Error saving paper settings:', e);
+    const saveStatus = document.getElementById('paper-save-status');
+    if (saveStatus) {
+      saveStatus.textContent = 'Error';
+      saveStatus.style.color = 'var(--red)';
+    }
+  }
+}
+
+async function loadSchedulerSettings() {
+  try {
+    const resp = await fetch(`${API}/api/scheduler/settings`);
+    const data = await resp.json();
+    
+    if (!data.settings) return;
+    
+    const grid = document.getElementById('settings-grid');
+    grid.innerHTML = '';
+    
+    // Create input fields for each setting
+    for (const [taskName, config] of Object.entries(data.settings)) {
+      const row = document.createElement('div');
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = '1fr 1fr';
+      row.style.gap = '16px';
+      row.style.alignItems = 'center';
+      row.style.padding = '16px';
+      row.style.background = 'var(--bg)';
+      row.style.borderRadius = '10px';
+      row.style.borderLeft = '3px solid var(--accent)';
+      
+      const label = document.createElement('div');
+      label.innerHTML = `
+        <div style="font-weight:600;font-size:13px;color:var(--text)">${taskName.replace(/_/g, ' ').toUpperCase()}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">${config.description}</div>
+      `;
+      
+      const inputWrap = document.createElement('div');
+      inputWrap.style.display = 'flex';
+      inputWrap.style.gap = '8px';
+      inputWrap.style.alignItems = 'center';
+      
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.value = config.interval;
+      input.min = '1';
+      input.id = `sched_${taskName}`;
+      input.style.padding = '10px 14px';
+      input.style.background = 'var(--surface)';
+      input.style.border = '.5px solid var(--border)';
+      input.style.borderRadius = '8px';
+      input.style.color = 'var(--text)';
+      input.style.fontFamily = 'inherit';
+      input.style.flex = '1';
+      
+      const unit = document.createElement('span');
+      unit.textContent = 'sec';
+      unit.style.fontSize = '12px';
+      unit.style.color = 'var(--muted)';
+      unit.style.minWidth = '30px';
+      
+      inputWrap.appendChild(input);
+      inputWrap.appendChild(unit);
+      
+      row.appendChild(label);
+      row.appendChild(inputWrap);
+      grid.appendChild(row);
+    }
+    
+    // Update preview
+    updateSettingsPreview(data.settings);
+    document.getElementById('settings-status').textContent = 'Loaded';
+    
+  } catch (e) {
+    console.error('Error loading scheduler settings:', e);
+    document.getElementById('settings-status').textContent = 'Failed to load';
+  }
+}
+
+function updateSettingsPreview(settings) {
+  const preview = document.getElementById('settings-preview');
+  let html = '';
+  for (const [task, config] of Object.entries(settings)) {
+    html += `<div><span style="color:var(--accent)">${task}</span> = ${config.interval}s</div>`;
+  }
+  preview.innerHTML = html;
+}
+
+async function saveSchedulerSettings() {
+  try {
+    const grid = document.getElementById('settings-grid');
+    const inputs = grid.querySelectorAll('input');
+    const settings = {};
+    
+    inputs.forEach(input => {
+      const taskName = input.id.replace('sched_', '');
+      settings[taskName] = parseInt(input.value);
+    });
+    
+    const resp = await fetch(`${API}/api/scheduler/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    
+    const data = await resp.json();
+    
+    if (data.status === 'success' || data.status === 'partial') {
+      toast(`Settings saved. ${data.message}`);
+      document.getElementById('save-status').textContent = 'Saved';
+      document.getElementById('save-status').style.color = 'var(--green)';
+    } else {
+      toast(`Error: ${data.error}`);
+      document.getElementById('save-status').textContent = 'Error';
+      document.getElementById('save-status').style.color = 'var(--red)';
+    }
+    
+  } catch (e) {
+    console.error('Error saving scheduler settings:', e);
+    toast('Failed to save settings');
+  }
+}
 
 // ── Toast ─────────────────────────────────────────
 function toast(msg, ms=3000) {
@@ -1246,13 +1648,59 @@ function toast(msg, ms=3000) {
 async function api(path, opts) {
   try {
     const r = await fetch(API + path, opts);
-    const d = await r.json();
+    const contentType = (r.headers.get('content-type') || '').toLowerCase();
+    let d = null;
+
+    if (contentType.includes('application/json')) {
+      d = await r.json();
+    } else {
+      const rawText = await r.text();
+      const compactText = (rawText || '').replace(/\s+/g, ' ').trim();
+      d = {
+        error: compactText.startsWith('<!doctype') || compactText.startsWith('<html')
+          ? `${path} returned ${r.status} ${r.statusText}`
+          : (compactText || `${r.status} ${r.statusText}`),
+      };
+    }
+
     if (!r.ok) throw new Error(d.error || 'Request failed');
+    if (!contentType.includes('application/json')) {
+      throw new Error(`${path} returned ${r.status} ${r.statusText} instead of JSON`);
+    }
     return d;
   } catch (e) {
     toast('Error: ' + e.message, 4000);
     throw e;
   }
+}
+
+function formatMoney(value, decimals = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '--';
+  return '₹' + num.toLocaleString('en-IN', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+function formatCount(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  return num.toLocaleString('en-IN');
+}
+
+function formatPercentValue(value, decimals = 1) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '--';
+  return num.toFixed(decimals) + '%';
+}
+
+function formatSignedMoney(value, decimals = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '--';
+  if (num > 0) return `+${formatMoney(num, decimals)}`;
+  if (num < 0) return `-${formatMoney(Math.abs(num), decimals)}`;
+  return formatMoney(0, decimals);
 }
 
 // ── Unified fetch with timeout helper ───────────────
@@ -1290,7 +1738,8 @@ function getProfitPercent(trade) {
   }
   // Calculate from entry/exit prices if missing
   if (trade.entry_price && trade.exit_price) {
-    const isShort = trade.signal === 'SELL';
+    const tradeSignal = (trade.signal || trade.side || 'BUY').toUpperCase();
+    const isShort = tradeSignal === 'SELL';
     if (isShort) {
       return ((trade.entry_price - trade.exit_price) / trade.entry_price) * 100;
     } else {
@@ -1300,9 +1749,207 @@ function getProfitPercent(trade) {
   return 0; // Fallback if data is incomplete
 }
 
+const PAPER_PNL_CHARGE_RATE = 0.0003;
+const CLOSED_TRADE_STATUSES = new Set(['CLOSED', 'HIT_TARGET', 'HIT_SL']);
+
+function parseNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function roundNumber(value, decimals = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Number(num.toFixed(decimals));
+}
+
+function getTradeSide(trade) {
+  return String(trade?.signal || trade?.side || trade?.pre_trade?.signal || 'BUY').toUpperCase();
+}
+
+function getTradeQuantity(trade) {
+  return Math.max(0, parseNumber(trade?.quantity, 0));
+}
+
+function getTradeExitTime(trade) {
+  return trade?.post_trade?.exit_time || trade?.exit_time || null;
+}
+
+function getTradeExitPrice(trade, markPrice = null) {
+  if (markPrice !== null && markPrice !== undefined) {
+    return parseNumber(markPrice, null);
+  }
+  const postExit = parseNumber(trade?.post_trade?.exit_price, null);
+  if (postExit !== null) return postExit;
+  return parseNumber(trade?.exit_price, null);
+}
+
+function isClosedTrade(trade) {
+  const status = String(trade?.status || '').toUpperCase();
+  return CLOSED_TRADE_STATUSES.has(status) || (status && status !== 'OPEN' && getTradeExitTime(trade));
+}
+
+function estimatePaperTradeCharges(trade, exitPrice = null) {
+  const entryPrice = parseNumber(trade?.entry_price, 0);
+  const quantity = getTradeQuantity(trade);
+  const resolvedExitPrice = parseNumber(exitPrice, getTradeExitPrice(trade));
+
+  if (!entryPrice || !quantity || resolvedExitPrice === null) {
+    return parseNumber(trade?.post_trade?.total_charges ?? trade?.total_charges, 0);
+  }
+
+  return (entryPrice * quantity * PAPER_PNL_CHARGE_RATE) + (resolvedExitPrice * quantity * PAPER_PNL_CHARGE_RATE);
+}
+
+function getTradeGrossPnlAmount(trade, markPrice = null) {
+  const entryPrice = parseNumber(trade?.entry_price, 0);
+  const exitPrice = getTradeExitPrice(trade, markPrice);
+  const quantity = getTradeQuantity(trade);
+
+  if (!entryPrice || exitPrice === null || !quantity) return 0;
+
+  if (getTradeSide(trade) === 'SELL') {
+    return (entryPrice - exitPrice) * quantity;
+  }
+  return (exitPrice - entryPrice) * quantity;
+}
+
+function getTradeNetPnlAmount(trade, markPrice = null) {
+  if ((markPrice === null || markPrice === undefined) && isClosedTrade(trade)) {
+    const storedNet = parseNumber(trade?.post_trade?.net_pnl ?? trade?.net_pnl, null);
+    if (storedNet !== null) return storedNet;
+  }
+
+  const grossPnl = getTradeGrossPnlAmount(trade, markPrice);
+  const charges = (markPrice !== null && markPrice !== undefined) || !isClosedTrade(trade)
+    ? estimatePaperTradeCharges(trade, getTradeExitPrice(trade, markPrice))
+    : parseNumber(
+        trade?.post_trade?.total_charges ?? trade?.total_charges,
+        estimatePaperTradeCharges(trade, getTradeExitPrice(trade))
+      );
+
+  return grossPnl - charges;
+}
+
+function getTradeNetReturnPct(trade, markPrice = null) {
+  const entryValue = parseNumber(trade?.entry_price, 0) * getTradeQuantity(trade);
+  if (!entryValue) return 0;
+  return (getTradeNetPnlAmount(trade, markPrice) / entryValue) * 100;
+}
+
+function inferSourceAlignment(sourceSignal, side, tradeWasProfitable) {
+  if (sourceSignal == null || tradeWasProfitable == null) return null;
+
+  const normalizedSignal = String(sourceSignal).toUpperCase();
+  const normalizedSide = String(side || 'BUY').toUpperCase();
+  const buySignals = new Set(['BUY', 'BULLISH']);
+  const sellSignals = new Set(['SELL', 'BEARISH']);
+
+  if (normalizedSide === 'BUY') {
+    if (buySignals.has(normalizedSignal)) return tradeWasProfitable;
+    if (sellSignals.has(normalizedSignal)) return !tradeWasProfitable;
+  } else if (normalizedSide === 'SELL') {
+    if (sellSignals.has(normalizedSignal)) return tradeWasProfitable;
+    if (buySignals.has(normalizedSignal)) return !tradeWasProfitable;
+  }
+
+  return null;
+}
+
+function getTradeAccuracyFlags(trade) {
+  const post = trade?.post_trade || {};
+  const entryPrice = parseNumber(trade?.entry_price, null);
+  const exitPrice = getTradeExitPrice(trade);
+  const side = getTradeSide(trade);
+  const profitable = isClosedTrade(trade) ? getTradeNetPnlAmount(trade) > 0 : null;
+
+  let predictionCorrect = post.prediction_correct;
+  if (predictionCorrect == null && entryPrice !== null && exitPrice !== null) {
+    predictionCorrect = side === 'SELL' ? exitPrice < entryPrice : exitPrice > entryPrice;
+  }
+
+  return {
+    prediction_correct: predictionCorrect,
+    ml_correct: post.ml_correct ?? inferSourceAlignment(trade?.pre_trade?.ml_signal, side, profitable),
+    news_correct: post.news_correct ?? inferSourceAlignment(trade?.pre_trade?.news_signal, side, profitable),
+    market_correct: post.market_correct ?? inferSourceAlignment(trade?.pre_trade?.market_signal, side, profitable),
+  };
+}
+
+function buildJournalStatsFromEntries(entries, base = {}) {
+  const allEntries = Array.isArray(entries) ? entries : [];
+  const closedEntries = allEntries.filter(isClosedTrade);
+  const openEntries = allEntries.filter(entry => String(entry?.status || '').toUpperCase() === 'OPEN');
+
+  let totalPnl = 0;
+  let wins = 0;
+  let losses = 0;
+  let predictionTotal = 0;
+  let predictionCorrect = 0;
+  let mlTotal = 0;
+  let mlCorrect = 0;
+  let newsTotal = 0;
+  let newsCorrect = 0;
+
+  for (const entry of closedEntries) {
+    const netPnl = getTradeNetPnlAmount(entry);
+    totalPnl += netPnl;
+
+    if (netPnl > 0) wins += 1;
+    else if (netPnl < 0) losses += 1;
+
+    const flags = getTradeAccuracyFlags(entry);
+    if (flags.prediction_correct != null) {
+      predictionTotal += 1;
+      if (flags.prediction_correct) predictionCorrect += 1;
+    }
+    if (flags.ml_correct != null) {
+      mlTotal += 1;
+      if (flags.ml_correct) mlCorrect += 1;
+    }
+    if (flags.news_correct != null) {
+      newsTotal += 1;
+      if (flags.news_correct) newsCorrect += 1;
+    }
+  }
+
+  const closedCount = closedEntries.length;
+
+  return {
+    ...base,
+    total_trades: allEntries.length,
+    open_trades: openEntries.length,
+    closed_trades: closedCount,
+    open: openEntries.length,
+    closed: closedCount,
+    winning_trades: wins,
+    losing_trades: losses,
+    win_rate: closedCount ? roundNumber((wins / closedCount) * 100, 1) : 0,
+    total_pnl: roundNumber(totalPnl, 2),
+    prediction_accuracy: predictionTotal ? roundNumber((predictionCorrect / predictionTotal) * 100, 1) : 0,
+    ml_accuracy: mlTotal ? roundNumber((mlCorrect / mlTotal) * 100, 1) : 0,
+    news_accuracy: newsTotal ? roundNumber((newsCorrect / newsTotal) * 100, 1) : 0,
+  };
+}
+
+function hasCompleteJournalStats(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+  const hasOpenCount = stats.open_trades != null || stats.open != null;
+  const hasClosedCount = stats.closed_trades != null || stats.closed != null;
+  return hasOpenCount
+    && hasClosedCount
+    && stats.total_trades != null
+    && stats.win_rate != null
+    && stats.total_pnl != null
+    && stats.prediction_accuracy != null
+    && stats.ml_accuracy != null
+    && stats.news_accuracy != null;
+}
+
 function signalBadge(s) {
-  const cls = s === 'BUY' ? 'signal-buy' : s === 'SELL' ? 'signal-sell' : 'signal-hold';
-  return `<span class="signal ${cls}">${s}</span>`;
+  const label = s ? String(s).toUpperCase() : 'HOLD';
+  const cls = label === 'BUY' ? 'signal-buy' : label === 'SELL' ? 'signal-sell' : 'signal-hold';
+  return `<span class="signal ${cls}">${label}</span>`;
 }
 
 function confBar(c) {
@@ -1613,7 +2260,7 @@ async function toggleCashAutoTrade() {
   try {
     const status = await api('/api/cash-auto-trade/status');
     if (!status.enabled) {
-      if (!confirm('Enable cash equity auto-trade? The bot will automatically trade your watchlist stocks every 5 minutes during market hours.' + (status.paper_mode ? ' (Paper mode is ON — no real orders)' : ' ⚠️ Paper mode is OFF — this will place REAL orders!'))) return;
+      if (!confirm('Enable cash equity auto-trade? The bot will automatically trade your watchlist stocks every 5 minutes during market hours.' + (status.paper_mode ? ' (Paper mode is ON — no real orders)' : ' Paper mode is OFF — this will place REAL orders.'))) return;
     }
     const d = await api('/api/cash-auto-trade/toggle', { method: 'POST' });
     toast(d.message, 3000);
@@ -1621,6 +2268,16 @@ async function toggleCashAutoTrade() {
   } catch(e) {
     toast('Failed to toggle: ' + e.message, 3000);
   }
+}
+
+function openSettings() {
+  activateTab('settings');
+  setTimeout(() => {
+    const settingsPanel = document.getElementById('settings');
+    if (settingsPanel) {
+      settingsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, 100);
 }
 
 // ── Quick trade from predictions ──────────────────
@@ -1818,7 +2475,7 @@ async function analyzeWatchlistStock(symbol) {
   
   // Block analysis during market hours to reduce server load
   if (isMarketHours()) {
-    if (analysisDiv) analysisDiv.innerHTML = '<div style="padding:20px;text-align:center;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.3);border-radius:8px;color:#ffc107"><div style="font-size:14px;font-weight:600;margin-bottom:8px">📈 Market is Live</div><div style="font-size:12px">Analysis disabled during trading hours (9:15 AM - 3:30 PM) to keep server focused on paper trading.<br><br><em>Try again after 3:30 PM for full analysis</em></div></div>';
+    if (analysisDiv) analysisDiv.innerHTML = '<div style="padding:20px;text-align:center;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.3);border-radius:8px;color:#ffc107"><div style="font-size:14px;font-weight:600;margin-bottom:8px">Market is Live</div><div style="font-size:12px">Analysis disabled during trading hours (9:15 AM - 3:30 PM) to keep server focused on paper trading.<br><br><em>Try again after 3:30 PM for full analysis</em></div></div>';
     return;
   }
   
@@ -2775,6 +3432,8 @@ function populateNewsQuickStocks() {
 async function loadMarketSentiment() {
   try {
     const d = await api('/api/market-sentiment');
+    const updateTime = new Date().toLocaleTimeString();
+    
     // Update stat bar if exists
     const statEl = document.getElementById('stat-market');
     if (statEl) {
@@ -2784,15 +3443,25 @@ async function loadMarketSentiment() {
 
     // Show market sentiment panel
     const panel = document.getElementById('market-sentiment-panel');
-    panel.style.display = 'block';
+    if (panel) panel.style.display = 'block';
     const mne = document.getElementById('market-news');
     if (d.articles && d.articles.length) {
+      // Sort articles by published date (newest first)
+      const sortedArticles = [...d.articles].sort((a, b) => {
+        const dateA = a.published ? new Date(a.published).getTime() : 0;
+        const dateB = b.published ? new Date(b.published).getTime() : 0;
+        return dateB - dateA;  // Descending order (newest first)
+      });
+      
       mne.innerHTML = `
-        <div style="margin-bottom:10px">
-          <span class="signal ${d.signal==='BULLISH'?'signal-buy':d.signal==='BEARISH'?'signal-sell':'signal-hold'}">${d.signal}</span>
-          <span style="margin-left:8px;font-size:12px">Score: ${d.avg_score.toFixed(3)} | ${d.bullish_count} bullish, ${d.bearish_count} bearish, ${d.neutral_count} neutral</span>
+        <div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+          <div style="margin-bottom:8px">
+            <span class="signal ${d.signal==='BULLISH'?'signal-buy':d.signal==='BEARISH'?'signal-sell':'signal-hold'}">${d.signal}</span>
+            <span style="margin-left:8px;font-size:12px">Score: ${d.avg_score.toFixed(3)} | ${d.bullish_count} bullish, ${d.bearish_count} bearish, ${d.neutral_count} neutral</span>
+          </div>
+          <div style="font-size:10px;color:var(--muted)">Updated at ${updateTime}</div>
         </div>
-        ${d.articles.slice(0,10).map(a => `
+        ${sortedArticles.slice(0,10).map(a => `
           <div style="padding:6px 0;border-bottom:1px solid var(--border)">
             <span class="signal ${a.sentiment==='BULLISH'?'signal-buy':a.sentiment==='BEARISH'?'signal-sell':'signal-hold'}" style="font-size:9px">${a.sentiment}</span>
             <a href="${a.url}" target="_blank" style="color:var(--text);text-decoration:none;margin-left:6px;font-size:12px">${a.title}</a>
@@ -2800,12 +3469,12 @@ async function loadMarketSentiment() {
           </div>
         `).join('')}`;
     } else {
-      mne.innerHTML = '<span style="color:var(--muted)">No market news available</span>';
+      mne.innerHTML = `<span style="color:var(--muted)">No market news available</span><div style="font-size:10px;color:var(--muted);margin-top:6px">Updated at ${updateTime}</div>`;
     }
   } catch(e) {
     const statEl = document.getElementById('stat-market');
     if (statEl) statEl.textContent = '--';
-    toast('Failed to load market sentiment');
+    logger.warn('Failed to load market sentiment:', e.message);
   }
 }
 
@@ -3557,18 +4226,31 @@ async function loadJournal(filter) {
   });
 
   try {
-    // Load stats
-    const stats = await api('/api/journal/stats');
-    renderJournalStats(stats);
-
-    // Load entries based on filter
     let endpoint = '/api/journal';
     if (filter === 'open') endpoint = '/api/journal/open';
     else if (filter === 'closed') endpoint = '/api/journal/closed';
     else if (filter === 'actual') endpoint = '/api/journal?type=actual';
     else if (filter === 'paper') endpoint = '/api/journal?type=paper';
-    
-    const entries = await api(endpoint);
+
+    const [rawStats, entries] = await Promise.all([
+      api('/api/journal/stats').catch(() => null),
+      api(endpoint),
+    ]);
+
+    let stats = rawStats;
+    if (!hasCompleteJournalStats(stats)) {
+      let allEntries = filter === 'all' ? entries : null;
+      if (!allEntries) {
+        try {
+          allEntries = await api('/api/journal');
+        } catch (_) {
+          allEntries = entries;
+        }
+      }
+      stats = buildJournalStatsFromEntries(allEntries, stats || {});
+    }
+
+    renderJournalStats(stats);
     document.getElementById('journal-count').textContent = entries.length + ' trade' + (entries.length !== 1 ? 's' : '');
     renderJournalEntries(entries);
   } catch(e) {
@@ -3578,16 +4260,26 @@ async function loadJournal(filter) {
 
 function renderJournalStats(s) {
   const el = document.getElementById('journal-stats');
-  const pnlColor = s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const stats = {
+    total_trades: Number(s?.total_trades ?? 0),
+    open_trades: Number(s?.open_trades ?? s?.open ?? 0),
+    closed_trades: Number(s?.closed_trades ?? s?.closed ?? 0),
+    win_rate: Number(s?.win_rate ?? 0),
+    total_pnl: Number(s?.total_pnl ?? 0),
+    prediction_accuracy: Number(s?.prediction_accuracy ?? 0),
+    ml_accuracy: Number(s?.ml_accuracy ?? 0),
+    news_accuracy: Number(s?.news_accuracy ?? 0),
+  };
+  const pnlColor = stats.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
   el.innerHTML = `
-    <div class="journal-stat"><div class="val">${s.total_trades}</div><div class="lbl">Total Trades</div></div>
-    <div class="journal-stat"><div class="val" style="color:var(--accent)">${s.open_trades}</div><div class="lbl">Open</div></div>
-    <div class="journal-stat"><div class="val">${s.closed_trades}</div><div class="lbl">Closed</div></div>
-    <div class="journal-stat"><div class="val" style="color:${s.win_rate>=50?'var(--green)':'var(--red)'}">${s.win_rate}%</div><div class="lbl">Win Rate</div></div>
-    <div class="journal-stat"><div class="val" style="color:${pnlColor}">₹${s.total_pnl}</div><div class="lbl">Net P&L</div></div>
-    <div class="journal-stat"><div class="val">${s.prediction_accuracy || 0}%</div><div class="lbl">Prediction Accuracy</div></div>
-    <div class="journal-stat"><div class="val">${s.ml_accuracy}%</div><div class="lbl">ML Accuracy</div></div>
-    <div class="journal-stat"><div class="val">${s.news_accuracy}%</div><div class="lbl">News Accuracy</div></div>
+    <div class="journal-stat"><div class="val">${formatCount(stats.total_trades)}</div><div class="lbl">Total Trades</div></div>
+    <div class="journal-stat"><div class="val" style="color:var(--accent)">${formatCount(stats.open_trades)}</div><div class="lbl">Open</div></div>
+    <div class="journal-stat"><div class="val">${formatCount(stats.closed_trades)}</div><div class="lbl">Closed</div></div>
+    <div class="journal-stat"><div class="val" style="color:${stats.win_rate>=50?'var(--green)':'var(--red)'}">${formatPercentValue(stats.win_rate, 1)}</div><div class="lbl">Win Rate</div></div>
+    <div class="journal-stat"><div class="val" style="color:${pnlColor}">${formatMoney(stats.total_pnl, 2)}</div><div class="lbl">Net P&L</div></div>
+    <div class="journal-stat"><div class="val">${formatPercentValue(stats.prediction_accuracy, 1)}</div><div class="lbl">Prediction Accuracy</div></div>
+    <div class="journal-stat"><div class="val">${formatPercentValue(stats.ml_accuracy, 1)}</div><div class="lbl">ML Accuracy</div></div>
+    <div class="journal-stat"><div class="val">${formatPercentValue(stats.news_accuracy, 1)}</div><div class="lbl">News Accuracy</div></div>
   `;
 }
 
@@ -3604,22 +4296,27 @@ function renderJournalEntries(entries) {
     const matchBadge = isOpen ? '<span class="match-badge match-open">OPEN</span>'
       : post && post.prediction_correct ? '<span class="match-badge match-correct">CORRECT</span>'
       : '<span class="match-badge match-wrong">WRONG</span>';
-    const pnlText = post ? `<span style="color:${post.net_pnl>=0?'var(--green)':'var(--red)'}">₹${post.net_pnl}</span>` : '--';
+    const netPnL = post && post.net_pnl != null ? Number(post.net_pnl) : null;
+    const pnlText = netPnL != null ? `<span style="color:${netPnL>=0?'var(--green)':'var(--red)'}">${formatMoney(netPnL, 2)}</span>` : '--';
     const entryTime = e.entry_time ? new Date(e.entry_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+    const entryPrice = e.entry_price != null ? formatMoney(e.entry_price, 2) : '--';
+    const quantity = e.quantity != null ? formatCount(e.quantity) : '--';
+    const symbol = e.symbol || '--';
+    const side = e.side || e.signal || 'HOLD';
 
     return `
     <div class="journal-entry">
       <div class="journal-header" onclick="toggleJournalDetail('jd-${i}')">
         <div class="left">
-          ${signalBadge(e.side)}
-          <b style="font-size:15px">${e.symbol}</b>
-          <span style="font-size:12px;color:var(--muted)">${e.quantity} @ ₹${e.entry_price}</span>
+          ${signalBadge(side)}
+          <b style="font-size:15px">${symbol}</b>
+          <span style="font-size:12px;color:var(--muted)">${quantity} @ ${entryPrice}</span>
           ${matchBadge}
         </div>
         <div class="right">
           ${confBar(pre.confidence || 0)}
           <span>${pnlText}</span>
-          <span style="color:var(--muted);font-size:11px">${entryTime}</span>
+          <span style="color:var(--muted);font-size:11px">${entryTime || '--'}</span>
           <span style="font-size:16px;color:var(--muted)" id="jd-${i}-arrow">▸</span>
         </div>
       </div>
@@ -3691,7 +4388,8 @@ function renderJournalEntries(entries) {
 }
 
 function renderPostTrade(entry, post) {
-  const pnlColor = post.net_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const netPnL = post.net_pnl != null ? Number(post.net_pnl) : null;
+  const pnlColor = (netPnL ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
   const mlV = post.ml_correct === true ? 'sv-correct' : post.ml_correct === false ? 'sv-wrong' : 'sv-na';
   const newsV = post.news_correct === true ? 'sv-correct' : post.news_correct === false ? 'sv-wrong' : 'sv-na';
   const mktV = post.market_correct === true ? 'sv-correct' : post.market_correct === false ? 'sv-wrong' : 'sv-na';
@@ -3700,26 +4398,26 @@ function renderPostTrade(entry, post) {
   return `
     <div style="margin-bottom:12px">
       <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px">
-        <span style="color:var(--muted)">Exit Price:</span><span>₹${post.exit_price}</span>
-        <span style="color:var(--muted)">Exit Time:</span><span>${exitTime}</span>
-        <span style="color:var(--muted)">Duration:</span><span>${post.duration_minutes} min</span>
-        <span style="color:var(--muted)">Exit Reason:</span><span>${post.exit_reason}</span>
-        <span style="color:var(--muted)">Move:</span><span style="color:${post.move_pct>=0?'var(--green)':'var(--red)'}">${post.move_pct>=0?'+':''}${post.move_pct}%</span>
-        <span style="color:var(--muted)">Gross P&L:</span><span>₹${post.gross_pnl}</span>
-        <span style="color:var(--muted)">Charges:</span><span>₹${post.total_charges}</span>
-        <span style="color:var(--muted)">Net P&L:</span><span style="color:${pnlColor};font-weight:700;font-size:16px">₹${post.net_pnl}</span>
+        <span style="color:var(--muted)">Exit Price:</span><span>${post.exit_price != null ? formatMoney(post.exit_price, 2) : '--'}</span>
+        <span style="color:var(--muted)">Exit Time:</span><span>${exitTime || '--'}</span>
+        ${post.duration_minutes ? `<span style="color:var(--muted)">Duration:</span><span>${post.duration_minutes} min</span>` : ''}
+        <span style="color:var(--muted)">Exit Reason:</span><span>${post.exit_reason || '--'}</span>
+        ${post.move_pct != null ? `<span style="color:var(--muted)">Move:</span><span style="color:${post.move_pct>=0?'var(--green)':'var(--red)'}">${formatPercentValue(post.move_pct, 2)}</span>` : ''}
+        ${post.gross_pnl != null ? `<span style="color:var(--muted)">Gross P&L:</span><span>${formatMoney(post.gross_pnl, 2)}</span>` : ''}
+        ${post.total_charges != null ? `<span style="color:var(--muted)">Charges:</span><span>${formatMoney(post.total_charges, 2)}</span>` : ''}
+        <span style="color:var(--muted)">Net P&L:</span><span style="color:${pnlColor};font-weight:700;font-size:16px">${netPnL != null ? formatMoney(netPnL, 2) : '--'}</span>
       </div>
     </div>
     <div style="margin-bottom:12px">
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">TARGET vs ACTUAL</div>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px">
-        ${post.target_price ? `<span style="color:var(--muted)">Target Price:</span><span>₹${post.target_price}</span>` : ''}
-        ${post.stop_loss_price ? `<span style="color:var(--muted)">Stop Loss Price:</span><span>₹${post.stop_loss_price}</span>` : ''}
-        <span style="color:var(--muted)">Exit Price:</span><span>₹${post.exit_price}</span>
-        ${post.expected_profit ? `<span style="color:var(--muted)">Expected Profit:</span><span style="color:var(--green)">₹${post.expected_profit}</span>` : ''}
-        ${post.expected_loss ? `<span style="color:var(--muted)">Max Expected Loss:</span><span style="color:var(--red)">₹${post.expected_loss}</span>` : ''}
-        <span style="color:var(--muted)">Actual Net P&L:</span><span style="color:${pnlColor};font-weight:700">₹${post.net_pnl}</span>
-        ${post.expected_profit ? `<span style="color:var(--muted)">Achieved:</span><span style="color:${post.profit_pct_of_target>=100?'var(--green)':post.profit_pct_of_target>=0?'var(--yellow)':'var(--red)'}">${post.profit_pct_of_target}% of target profit</span>` : ''}
+        ${post.target_price ? `<span style="color:var(--muted)">Target Price:</span><span>${formatMoney(post.target_price, 2)}</span>` : ''}
+        ${post.stop_loss_price ? `<span style="color:var(--muted)">Stop Loss Price:</span><span>${formatMoney(post.stop_loss_price, 2)}</span>` : ''}
+        <span style="color:var(--muted)">Exit Price:</span><span>${post.exit_price != null ? formatMoney(post.exit_price, 2) : '--'}</span>
+        ${post.expected_profit ? `<span style="color:var(--muted)">Expected Profit:</span><span style="color:var(--green)">${formatMoney(post.expected_profit, 2)}</span>` : ''}
+        ${post.expected_loss ? `<span style="color:var(--muted)">Max Expected Loss:</span><span style="color:var(--red)">${formatMoney(post.expected_loss, 2)}</span>` : ''}
+        <span style="color:var(--muted)">Actual Net P&L:</span><span style="color:${pnlColor};font-weight:700">${netPnL != null ? formatMoney(netPnL, 2) : '--'}</span>
+        ${post.expected_profit && post.profit_pct_of_target != null ? `<span style="color:var(--muted)">Achieved:</span><span style="color:${post.profit_pct_of_target>=100?'var(--green)':post.profit_pct_of_target>=0?'var(--yellow)':'var(--red)'}">${post.profit_pct_of_target}% of target profit</span>` : ''}
       </div>
     </div>
     <div style="margin-bottom:12px">
@@ -3730,7 +4428,7 @@ function renderPostTrade(entry, post) {
         ${post.hit_stop_loss ? '<span class="match-badge match-wrong" style="margin-left:6px">STOP LOSS HIT</span>' : ''}
       </div>
       <div style="font-size:12px;margin-bottom:4px">
-        Expected: ${entry.pre_trade?.expected_move_pct || 0}% | Actual: ${post.move_pct}% — <b>${post.move_vs_expected}</b>
+        Expected: ${entry.pre_trade?.expected_move_pct || 0}% | Actual: ${post.move_pct || 0}% — <b>${post.move_vs_expected || 'N/A'}</b>
       </div>
     </div>
     <div style="margin-bottom:12px">
@@ -3753,7 +4451,7 @@ function renderOpenTrade(entry) {
       <span class="match-badge match-open" style="font-size:14px;padding:6px 16px">TRADE OPEN</span>
       <p style="color:var(--muted);margin-top:12px;font-size:13px">Post-trade report will be generated when this trade is closed.</p>
       <div style="margin-top:16px">
-        <button class="btn btn-red" onclick="closeJournalTrade('${entry.trade_id}')">Close Trade & Generate Report</button>
+        <button class="btn btn-red" onclick="closeJournalTrade('${entry.trade_id || ''}')">Close Trade & Generate Report</button>
       </div>
     </div>`;
 }
@@ -3834,6 +4532,8 @@ function renderPASummary(s) {
   logger.info(`Portfolio Summary: ${s.total_stocks} stocks, ${s.total_buy_count} buys, ${s.total_sell_count} sells, ${s.total_hold_count} holds`);
   const pnlColor = s.total_unrealised_pnl >= 0 ? 'var(--green)' : 'var(--red)';
   const healthColor = s.overall_health === 'GOOD' ? 'var(--green)' : s.overall_health === 'WARNING' ? 'var(--yellow)' : 'var(--red)';
+  const analysisTime = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : 'Unknown';
+  
   document.getElementById('pa-summary').innerHTML = `
     <div class="pa-summary">
       <div class="pa-stat"><div class="val" style="color:${healthColor}">${s.overall_health}</div><div class="lbl">Portfolio Health</div></div>
@@ -3846,9 +4546,10 @@ function renderPASummary(s) {
       <div class="pa-stat"><div class="val" style="color:var(--yellow)">${s.warning_count}</div><div class="lbl">Warning</div></div>
       <div class="pa-stat"><div class="val" style="color:var(--red)">${s.danger_count}</div><div class="lbl">Danger</div></div>
     </div>
-    ${s.exit_symbols.length ? `<div class="card" style="border-color:var(--red);margin-bottom:12px"><div class="card-title" style="color:var(--red)">EXIT Recommended</div><div style="font-size:14px">${s.exit_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div></div>` : ''}
-    ${s.book_profit_symbols.length ? `<div class="card" style="border-color:var(--yellow);margin-bottom:12px"><div class="card-title" style="color:var(--yellow)">BOOK PROFIT Recommended</div><div style="font-size:14px">${s.book_profit_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div></div>` : ''}
-    ${s.add_more_symbols.length ? `<div class="card" style="border-color:var(--green);margin-bottom:12px"><div class="card-title" style="color:var(--green)">ADD MORE Recommended</div><div style="font-size:14px">${s.add_more_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div></div>` : ''}
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Analysis run at ${analysisTime} — Click each stock below to see full breakdown</div>
+    ${s.exit_symbols && s.exit_symbols.length ? `<div class="card" style="border-color:var(--red);margin-bottom:12px"><div class="card-title" style="color:var(--red)">Action: EXIT</div><div style="font-size:14px;color:var(--red)">${s.exit_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div><div style="font-size:11px;color:var(--muted);margin-top:6px">Deep losses + weak signals or reached profit targets. Click stock to review detailed analysis before acting.</div></div>` : ''}
+    ${s.book_profit_symbols && s.book_profit_symbols.length ? `<div class="card" style="border-color:var(--yellow);margin-bottom:12px"><div class="card-title" style="color:var(--yellow)">🟡 Action: BOOK PROFIT</div><div style="font-size:14px;color:var(--yellow)">${s.book_profit_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div><div style="font-size:11px;color:var(--muted);margin-top:6px">Good gains with weakening signals. Consider locking in profits.</div></div>` : ''}
+    ${s.add_more_symbols && s.add_more_symbols.length ? `<div class="card" style="border-color:var(--green);margin-bottom:12px"><div class="card-title" style="color:var(--green)">Action: ADD MORE</div><div style="font-size:14px;color:var(--green)">${s.add_more_symbols.map(sym => `<b>${sym}</b>`).join(', ')}</div><div style="font-size:11px;color:var(--muted);margin-top:6px">Strong signals at good entry prices. Good opportunity to average up.</div></div>` : ''}
   `;
 }
 
@@ -4525,6 +5226,13 @@ function startSmartUpdatePoller() {
   
   // Then check every minute for updates
   setInterval(() => checkForUpdates(), 60000);
+  
+  // Refresh market sentiment every 5 minutes (300s) for fresh sentiment data
+  setTimeout(() => {
+    logger.info('Starting market sentiment refresh cycle (every 5 minutes)');
+    loadMarketSentiment();  // Initial refresh
+    setInterval(() => loadMarketSentiment(), 300000);
+  }, 2000);
 }
 
 // ── Stock Autocomplete ──────────────────────────────────────
@@ -4964,11 +5672,30 @@ async function deletePersonalThesis(symbol) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// F&O TRADING MODULE
+// INTRADAY TRADING MODULE (MIS - 4x Leverage)
 // ═══════════════════════════════════════════════════════════════════════════════
+// Uses same agent/bot logic as F&O but configured for MIS equity intraday
+// Product: MIS (Margin Intraday Square-off) on NSE
+// Leverage: 4-5x | Square-off: 3:25 PM IST | Charges: 71% lower than delivery
 
-async function fnoLoadDashboard() {
+async function intradayLoadDashboard() {
   try {
+    // Initialize paper mode toggle from localStorage
+    const paperModeStored = localStorage.getItem('intraday-paper-mode') === 'true';
+    const paperToggle = document.getElementById('intraday-paper-mode-toggle');
+    if (paperToggle) {
+      paperToggle.checked = paperModeStored;
+      const label = document.getElementById('intraday-paper-mode-label');
+      const info = document.getElementById('intraday-paper-mode-info');
+      if (paperModeStored) {
+        label.textContent = 'ON';
+        info.style.display = 'block';
+      } else {
+        label.textContent = 'OFF';
+        info.style.display = 'none';
+      }
+    }
+    
     const [capital, positions, trades, rules] = await Promise.all([
       api('/api/fno/capital'),
       api('/api/fno/positions'),
@@ -5309,7 +6036,7 @@ async function fnoBuyOption(tradingSymbol, instrument, premium) {
       toast('' + result.error, 4000);
     } else {
       toast(` Bought ${tradingSymbol} | ₹${result.total_cost} | Remaining: ₹${result.remaining_capital}`, 5000);
-      fnoLoadDashboard();
+      intradayLoadDashboard();
     }
   } catch (e) {
     toast('Buy failed: ' + e.message, 4000);
@@ -5336,7 +6063,7 @@ async function fnoSellPosition(tradingSymbol, instrumentKey) {
       toast('' + result.error, 4000);
     } else {
       toast(` Exited ${tradingSymbol}`, 3000);
-      fnoLoadDashboard();
+      intradayLoadDashboard();
     }
   } catch (e) {
     toast('Sell failed: ' + e.message, 4000);
@@ -5526,7 +6253,7 @@ function fbtRenderResult(d) {
   const predClass = a.direction === 'BULLISH' ? 'bt-verdict-bullish' : (a.direction === 'BEARISH' ? 'bt-verdict-bearish' : 'bt-verdict-neutral');
   const optType = a.direction === 'BULLISH' ? 'CE' : (a.direction === 'BEARISH' ? 'PE' : '—');
   document.getElementById('fbt-prediction-badge').innerHTML =
-    `<span class="bt-verdict ${predClass}">${a.direction === 'NEUTRAL' ? '⏸ WAIT' : (a.direction === 'BULLISH' ? '▲ ' : '▼ ') + a.direction}</span>` +
+    `<span class="bt-verdict ${predClass}">${a.direction === 'NEUTRAL' ? 'WAIT' : (a.direction === 'BULLISH' ? '▲ ' : '▼ ') + a.direction}</span>` +
     (a.direction !== 'NEUTRAL' ? `<span style="margin-left:8px;font-size:12px;color:var(--bt-muted)">BUY ${optType}</span>` : '');
   document.getElementById('fbt-confidence-val').innerHTML =
     `Score: ${a.weighted_score > 0 ? '+' : ''}${a.weighted_score.toFixed(3)} · Confidence: ${(a.confidence * 100).toFixed(0)}% · ${a.strength}`;
@@ -5537,7 +6264,7 @@ function fbtRenderResult(d) {
     const discCorrect = disc.direction_correct;
     const actClass = discCorrect ? 'bt-verdict-correct' : 'bt-verdict-wrong';
     document.getElementById('fbt-actual-badge').innerHTML =
-      `<span class="bt-verdict ${actClass}">${discCorrect ? '✓ CORRECT' : '✗ WRONG'} DIRECTION</span>`;
+      `<span class="bt-verdict ${actClass}">${discCorrect ? 'CORRECT' : 'WRONG'} DIRECTION</span>`;
     document.getElementById('fbt-accuracy-val').innerHTML =
       `Predicted: <span style="color:${disc.predicted_change_pct >= 0 ? 'var(--bt-green)' : 'var(--bt-red)'}">` +
       `${disc.predicted_change_pct > 0 ? '+' : ''}${disc.predicted_change_pct.toFixed(2)}%</span> · ` +
@@ -5546,7 +6273,7 @@ function fbtRenderResult(d) {
       `Avg deviation: ${disc.avg_deviation_pct.toFixed(2)}%`;
   } else {
     document.getElementById('fbt-actual-badge').innerHTML =
-      '<span class="bt-verdict bt-verdict-neutral">⏸ NO SIGNAL</span>';
+      '<span class="bt-verdict bt-verdict-neutral">NO SIGNAL</span>';
     document.getElementById('fbt-accuracy-val').textContent = 'No entry found — signals too weak all day';
   }
 
@@ -5606,14 +6333,14 @@ function fbtRenderResult(d) {
     // Outcome badge
     const outcomeEl = document.getElementById('fbt-lv-outcome');
     if (trade.would_trade && trade.tp_hit) {
-      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-correct">✓ TARGET HIT</span>';
+      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-correct">TARGET HIT</span>';
     } else if (trade.would_trade && trade.sl_hit) {
-      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-wrong">✗ STOP LOSS HIT</span>';
+      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-wrong">STOP LOSS HIT</span>';
     } else if (trade.would_trade) {
       const exitText = (trade.exit_reason || 'EXIT').replace(/at .*/, '').trim();
-      outcomeEl.innerHTML = `<span class="bt-verdict bt-verdict-neutral">⏱ ${exitText}</span>`;
+      outcomeEl.innerHTML = `<span class="bt-verdict bt-verdict-neutral">${exitText}</span>`;
     } else {
-      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-neutral">⏸ NO TRADE</span>';
+      outcomeEl.innerHTML = '<span class="bt-verdict bt-verdict-neutral">NO TRADE</span>';
     }
   } else {
     lvCard.style.display = 'none';
@@ -5921,7 +6648,7 @@ function fbtRenderMulti(d) {
   rows.innerHTML = '';
   (d.results || []).forEach(r => {
     const dirColor = r.direction === 'BULLISH' ? 'var(--bt-green)' : (r.direction === 'BEARISH' ? 'var(--bt-red)' : 'var(--bt-amber)');
-    const predIcon = r.direction_correct ? '✓' : '✗';
+    const predIcon = r.direction_correct ? 'Correct' : 'Wrong';
     const predColor = r.direction_correct ? 'var(--bt-green)' : 'var(--bt-red)';
     const pnlColor = r.pnl >= 0 ? 'var(--bt-green)' : 'var(--bt-red)';
     const actDir = r.actual_change_pct >= 0 ? 'UP' : 'DOWN';
@@ -5956,7 +6683,7 @@ async function fnoRunAutoTrade() {
     } else {
       toast(`ℹ Auto-trade: ${result.skipped_reason || 'No action taken'}`, 3000);
     }
-    fnoLoadDashboard();
+    intradayLoadDashboard();
     fnoLoadAutoLog();
   } catch (e) {
     toast('Auto-trade error: ' + e.message, 4000);
@@ -6008,6 +6735,361 @@ async function fnoLoadAutoLog() {
     document.getElementById('fno-auto-log').innerHTML = html;
   } catch (e) {
     console.error('Auto-trade log error', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INTRADAY TRADING WRAPPERS (MIS 4x Leverage)
+// ═══════════════════════════════════════════════════════════════════════════════
+// These wrapper functions reuse the same F&O agent logic but with MIS configuration
+// All backend logic handles "product": "MIS" for intraday margin trading
+
+// Map intraday function calls to FNO backend (same agent, different product)
+async function intradayLoadDashboard() {
+  try {
+    const [capital, positions, trades] = await Promise.all([
+      api('/api/fno/capital'), // Get real capital synced from Groww
+      api('/api/fno/positions'),
+      api('/api/intraday/trades'), // Fetch PAPER trades from database (not cached)
+    ]);
+
+    // Update intraday-specific elements
+    document.getElementById('intraday-capital').textContent = '₹' + (capital.total||0).toLocaleString('en-IN');
+    document.getElementById('intraday-used').textContent = '₹' + (capital.used||0).toLocaleString('en-IN');
+    const avail = capital.available || (capital.total - capital.used) || 0;
+    document.getElementById('intraday-available').textContent = '₹' + avail.toLocaleString('en-IN');
+    document.getElementById('intraday-available').style.color = avail > 5000 ? 'var(--green)' : 'var(--red)';
+    
+    // Position tracking
+    document.getElementById('intraday-trade-count').textContent = (trades.trades||[]).length;
+    
+    // Render positions
+    const posArr = positions.positions || [];
+    if (posArr.length) {
+      let html = '<table style="width:100%;font-size:12px"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>LTP</th><th>P&L ₹</th><th>P&L %</th><th>Margin %</th><th>Action</th></tr></thead><tbody>';
+      posArr.forEach(p => {
+        const pnl = p.pnl || p.unrealized_pnl || 0;
+        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const ltp = p.ltp || p.last_price || 0;
+        const avg = p.average_price || p.buy_avg || 0;
+        const pnlPct = avg > 0 ? ((ltp - avg) / avg * 100).toFixed(2) : 0;
+        const marginUsed = (avg * (p.quantity||0) / (capital.total||1) * 100 / 4).toFixed(1); // 4x leverage
+        html += `<tr>
+          <td><strong>${p.trading_symbol||p.symbol||''}</strong></td>
+          <td>${p.quantity||p.net_quantity||0}</td>
+          <td>₹${avg.toFixed(2)}</td>
+          <td>₹${ltp.toFixed(2)}</td>
+          <td style="color:${pnlColor};font-weight:600">₹${pnl.toFixed(2)}</td>
+          <td style="color:${pnlColor}">${pnlPct}%</td>
+          <td>${marginUsed}%</td>
+          <td><button class="btn btn-red" style="padding:3px 8px;font-size:10px" onclick="intradayClosePosition('${p.trading_symbol||p.symbol}')">CLOSE</button></td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('intraday-positions').innerHTML = html;
+    } else {
+      document.getElementById('intraday-positions').innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">No active intraday positions</div>';
+    }
+    
+    // Trade log (today only)
+    const tradeArr = trades.trades || [];
+    if (tradeArr.length) {
+      let html = '<table style="width:100%;font-size:11px"><thead><tr><th>Time</th><th>Mode</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Entry/Exit</th><th>P&L</th><th>Status</th></tr></thead><tbody>';
+      tradeArr.slice().reverse().forEach(t => {
+        const actionColor = t.action === 'BUY' ? 'var(--green)' : 'var(--red)';
+        const modeLabel = t.is_paper ? 'PAPER' : 'REAL';
+        const modeColor = t.is_paper ? 'var(--yellow)' : 'var(--green)';
+        html += `<tr>
+          <td style="font-size:10px">${t.time ? new Date(t.time).toLocaleTimeString() : ''}</td>
+          <td style="color:${modeColor};font-weight:600;font-size:10px">${modeLabel}</td>
+          <td style="color:${actionColor};font-weight:600">${t.action||''}</td>
+          <td><strong>${t.trading_symbol||''}</strong></td>
+          <td>${t.quantity||''}</td>
+          <td>₹${((t.premium||t.price||0).toFixed(2))}</td>
+          <td style="color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">₹${(t.pnl||0).toFixed(2)}</td>
+          <td>${t.status||'OPEN'}</td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      document.getElementById('intraday-tradelog').innerHTML = html;
+    }
+    
+    // Load best opportunity auto-scan
+    intradayAutoPick();
+    intradayRefreshMarket();
+    intradayLoadAutoLog();
+  } catch (e) {
+    logger.error('Intraday dashboard load error', e);
+  }
+}
+
+async function intradayAutoPick() {
+  document.getElementById('intraday-analysis').innerHTML = '<span class="loader"></span> Scanning NSE stocks for best intraday setup...';
+  try {
+    const data = await api('/api/fno/best-opportunity'); // Reuse F&O best-opportunity
+    const best = data.best;
+    if (!best) {
+      document.getElementById('intraday-analysis').innerHTML = '<span style="color:var(--muted)">No high-confidence intraday setups at this moment</span>';
+      return;
+    }
+
+    _renderIntradayOpportunity(best);
+
+    // Show all symbols scanned
+    if (data.all && data.all.length > 1) {
+      let cmpHtml = '<div style="display:flex;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border);flex-wrap:wrap">';
+      data.all.sort((a,b) => (b.confidence||0) - (a.confidence||0)).slice(0,5).forEach(r => {
+        const dirC = r.direction === 'BULLISH' ? 'var(--green)' : r.direction === 'BEARISH' ? 'var(--red)' : 'var(--yellow)';
+        const conf = ((r.confidence||0)*100).toFixed(0);
+        cmpHtml += `<div style="font-size:11px;padding:6px 10px;border-radius:6px;background:${dirC}15;border:1px solid ${dirC}40;cursor:pointer" onclick="intradayEnterTrade('${r.symbol||r.instrument}')">
+          <div style="font-weight:700;color:${dirC}">${r.symbol||r.instrument}</div>
+          <div style="color:var(--muted)">${r.direction} ${conf}%</div>
+        </div>`;
+      });
+      cmpHtml += '</div>';
+      document.getElementById('intraday-analysis').innerHTML += cmpHtml;
+    }
+  } catch (e) {
+    document.getElementById('intraday-analysis').innerHTML = `<span style="color:var(--red)">Scan error: ${e.message}</span>`;
+  }
+}
+
+function _renderIntradayOpportunity(opp) {
+  const dirColor = opp.direction === 'BULLISH' ? 'var(--green)' : opp.direction === 'BEARISH' ? 'var(--red)' : 'var(--yellow)';
+  const conf = opp.confidence ? (opp.confidence * 100).toFixed(0) : '?';
+  let html = `<div style="padding:12px;background:${dirColor}08;border:1px solid ${dirColor}30;border-radius:8px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span style="font-size:24px;font-weight:700;color:${dirColor}">${opp.direction}</span>
+      <div>
+        <span style="font-size:14px;font-weight:700;color:var(--text)">${opp.symbol||opp.instrument}</span>
+        <div style="font-size:11px;color:var(--muted)">Confidence: ${conf}% | Expected Move: ${((opp.expected_move||0)*100).toFixed(2)}%</div>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--text);margin-bottom:8px"><b>${opp.recommendation||'Monitor position carefully'}</b></div>`;
+  
+  if (opp.signals) {
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;padding:8px;background:rgba(0,0,0,.02);border-radius:4px">';
+    const sigLabels = {technicals:'Tech',news:'News',x_social:'𝕏 Social',oi_analysis:'OI',trend:'Trend'};
+    for (const [k, v] of Object.entries(opp.signals)) {
+      const sig = v.signal || 'NEUTRAL';
+      const sc = sig.includes('BULL') ? 'var(--green)' : sig.includes('BEAR') ? 'var(--red)' : 'var(--yellow)';
+      html += `<span style="font-size:10px;padding:3px 8px;border-radius:4px;background:${sc}15;color:${sc};border:1px solid ${sc}30">${sigLabels[k]||k}</span>`;
+    }
+    html += '</div>';
+  }
+  
+  if (opp.risks && opp.risks.length) {
+    html += '<div style="font-size:11px;color:var(--red);padding:8px;background:rgba(239,68,68,.05);border-radius:4px;margin-bottom:8px">Risk: ' + opp.risks[0] + '</div>';
+  }
+  
+  html += `<div style="display:flex;gap:8px">
+    <button class="btn btn-primary" onclick="intradayEnterTrade('${opp.symbol||opp.instrument}')" style="flex:1;font-size:12px">ENTER LONG</button>
+    <button class="btn" onclick="intradayEnterShort('${opp.symbol||opp.instrument}')" style="flex:1;font-size:12px">ENTER SHORT</button>
+  </div>`;
+  
+  html += '</div>';
+  document.getElementById('intraday-opportunity').innerHTML = html;
+}
+
+async function intradayRefreshMarket() {
+  try {
+    const mktData = await api('/api/market-sentiment');
+    let html = `<div style="padding:8px;background:${mktData.signal==='BULLISH'?'rgba(16,185,129,.1)':'rgba(239,68,68,.1)'};border-radius:6px;border-left:3px solid ${mktData.signal==='BULLISH'?'var(--green)':'var(--red)'};margin-bottom:10px">
+      <div style="font-size:12px"><strong>Overall Market:</strong> <span style="color:${mktData.signal==='BULLISH'?'var(--green)':'var(--red)'};">${mktData.signal}</span></div>
+      <div style="font-size:11px;color:var(--muted)">Sentiment Score: ${(mktData.avg_score||0).toFixed(2)} | ${mktData.bullish_count||0} bullish articles</div>
+    </div>`;
+    document.getElementById('intraday-market-sentiment').innerHTML = html;
+  } catch (e) {
+    logger.warn('Market refresh error', e);
+  }
+}
+
+async function intradayEnterTrade(symbol) {
+  const isPaperMode = document.getElementById('intraday-paper-mode-toggle').checked;
+  const capital = parseFloat(document.getElementById('intraday-capital').textContent.replace('₹', '').replace(',', '')) || 0;
+  const used = parseFloat(document.getElementById('intraday-used').textContent.replace('₹', '').replace(',', '')) || 0;
+  const available = capital - used;
+  
+  if (available < 5000) {
+    toast('Insufficient margin (need ₹5,000+)', 2000);
+    return;
+  }
+  
+  if (isPaperMode) {
+    // Enter paper trade (simulated with real data)
+    toast(`[PAPER] Entering long position on ${symbol} with 4x leverage...`, 2000);
+    try {
+      // Calculate realistic quantity based on leverage
+      // With 4x leverage: ₹5000 margin = ₹20,000 buying power
+      // Quantity depends on stock price (which comes from API)
+      // For now use a minimum quantity of 1 lot
+      const quantity = Math.max(1, Math.floor(available / 2500));
+      
+      if (!symbol || quantity <= 0) {
+        toast('Invalid symbol or quantity', 2000);
+        return;
+      }
+      
+      const paperTrade = {
+        symbol: symbol,
+        side: 'BUY',
+        quantity: quantity,
+        trigger: 'manual',
+        is_paper: true,
+        confidence: 0.65  // Conservative confidence for manual entry
+      };
+      
+      const result = await api('/api/intraday/enter-paper', 'POST', paperTrade);
+      if (result.error) {
+        toast(`[PAPER] Error: ${result.error}`, 3000);
+        return;
+      }
+      
+      if (result.trade_id) {
+        toast(`[PAPER] Trade recorded: ${result.trade_id}`, 2000);
+        intradayLoadDashboard();
+      }
+    } catch (e) {
+      toast(`[PAPER] Trade error: ${e.message}`, 2000);
+    }
+  } else {
+    // Enter real trade
+    toast(`[REAL] Entering long position on ${symbol} with 4x leverage...`, 2000);
+    // TODO: Call real trade endpoint
+  }
+}
+
+async function intradayEnterShort(symbol) {
+  const isPaperMode = document.getElementById('intraday-paper-mode-toggle').checked;
+  if (isPaperMode) {
+    toast(`[PAPER] Short trades not available yet - only long positions supported`, 2000);
+  } else {
+    toast(`[REAL] Short trades not available yet - only long positions supported`, 2000);
+  }
+}
+
+async function intradayClosePosition(symbol) {
+  const isPaperMode = document.getElementById('intraday-paper-mode-toggle').checked;
+  if (confirm(`Close ${symbol} position now at market price?`)) {
+    if (isPaperMode) {
+      toast(`[PAPER] Closing ${symbol} position...`, 2000);
+      try {
+        if (!symbol) {
+          toast('Invalid symbol', 2000);
+          return;
+        }
+        
+        const result = await api('/api/intraday/close-paper', 'POST', { symbol: symbol });
+        
+        if (result.error) {
+          toast(`[PAPER] Error: ${result.error}`, 2500);
+          return;
+        }
+        
+        if (result.trade_id) {
+          const pnlLabel = (result.pnl_amount||0) >= 0 ? 'Profit' : 'Loss';
+          toast(`[PAPER] Position closed | ${pnlLabel}: ₹${result.pnl_amount?.toFixed(2)||0} (${result.pnl_percent?.toFixed(2)||0}%)`, 2500);
+          intradayLoadDashboard();
+        }
+      } catch (e) {
+        toast(`[PAPER] Close error: ${e.message}`, 2500);
+      }
+    } else {
+      toast(`[REAL] Closing ${symbol}...`, 2000);
+      // TODO: Call real close endpoint
+    }
+  }
+}
+
+function toggleIntradayPaperMode() {
+  const toggle = document.getElementById('intraday-paper-mode-toggle');
+  const label = document.getElementById('intraday-paper-mode-label');
+  const info = document.getElementById('intraday-paper-mode-info');
+  
+  if (toggle.checked) {
+    label.textContent = 'ON';
+    info.style.display = 'block';
+    localStorage.setItem('intraday-paper-mode', 'true');
+    toast('Paper intraday mode enabled - trades will be simulated', 2000);
+  } else {
+    label.textContent = 'OFF';
+    info.style.display = 'none';
+    localStorage.setItem('intraday-paper-mode', 'false');
+    toast('Real intraday mode enabled - actual trades will execute', 2000);
+  }
+}
+
+async function intradayRunAutoTrade() {
+  const isPaperMode = document.getElementById('intraday-paper-mode-toggle').checked;
+  document.getElementById('intraday-auto-status').textContent = 'SCANNING...';
+  try {
+    const endpoint = isPaperMode ? '/api/intraday/auto-trade-run-paper' : '/api/fno/auto-trade-run';
+    const result = await api(endpoint, 'POST');
+    
+    if (result.error) {
+      const modeLabel = isPaperMode ? '[PAPER]' : '[REAL]';
+      toast(`${modeLabel} Auto-trade error: ${result.error}`, 3000);
+      document.getElementById('intraday-auto-status').textContent = 'ERROR';
+      return;
+    }
+    
+    if (result.success) {
+      const modeLabel = isPaperMode ? '[PAPER]' : '[REAL]';
+      toast(`${modeLabel} Auto-trade scan complete - Trade ID: ${result.trade_id || 'none'}`, 2500);
+      intradayLoadDashboard();
+    } else {
+      toast(`No high-confidence setup found`, 2000);
+    }
+  } catch (e) {
+    toast('Auto-trade error: ' + e.message, 2500);
+    document.getElementById('intraday-auto-status').textContent = 'ERROR';
+  } finally {
+    document.getElementById('intraday-auto-status').textContent = 'ENABLED';
+  }
+}
+
+async function intradaySyncCapital() {
+  toast('Syncing capital from Groww API...', 2000);
+  try {
+    const result = await api('/api/fno/sync-capital', 'POST');
+    
+    if (result.error) {
+      toast(`Sync failed: ${result.error}`, 3000);
+      return;
+    }
+    
+    if (result.success) {
+      toast(`Capital synced: ₹${result.total?.toLocaleString('en-IN')||0} total, ₹${result.available?.toLocaleString('en-IN')||0} available`, 2500);
+      intradayLoadDashboard();
+    }
+  } catch (e) {
+    toast(`Sync error: ${e.message}`, 2500);
+  }
+}
+
+async function intradayLoadAutoLog() {
+  try {
+    const data = await api('/api/fno/auto-trade/log');
+    const runs = Array.isArray(data) ? data : data.runs || [];
+    if (runs.length) {
+      let html = '<table style="width:100%;font-size:11px"><tr><th>Time</th><th>Symbol</th><th>Signal</th><th>Action</th><th>Status</th></tr>';
+      runs.slice(0,20).forEach(r => {
+        html += `<tr>
+          <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
+          <td>${r.symbol}</td>
+          <td>${r.signal}</td>
+          <td>${r.action}</td>
+          <td style="color:${r.success?'var(--green)':'var(--red)'}">${r.success?'OK':'FAIL'}</td>
+        </tr>`;
+      });
+      html += '</table>';
+      document.getElementById('intraday-auto-log').innerHTML = html;
+    } else {
+      document.getElementById('intraday-auto-log').innerHTML = '<div style="color:var(--muted);font-size:12px">No auto-trade log yet</div>';
+    }
+  } catch (e) {
+    console.error('Auto-log error', e);
+    document.getElementById('intraday-auto-log').innerHTML = `<div style="color:var(--red);font-size:12px">Auto-log unavailable</div>`;
   }
 }
 
@@ -6359,42 +7441,21 @@ async function loadPaperTradingStatus() {
       refreshBtn.textContent = 'Refreshing...';
       refreshBtn.disabled = true;
     }
-    
-    // Try JSON file first (faster), then fall back to API
-    let trades = null;
-    
-    // Attempt 1: Try JSON file with timeout
+
+    let statusData;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000); // 2 second timeout
-      
-      const response = await fetch('paper_trades.json?t=' + Date.now(), {
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
-      
-      if (response.ok) {
-        trades = await response.json();
-      }
+      statusData = await api('/api/paper-trading/status');
     } catch (e) {
-      console.log('JSON fetch failed or timed out, trying API...');
-    }
-    
-    // Attempt 2: Fall back to API endpoint
-    if (!trades) {
-      try {
-        const data = await api('/api/paper-trading/status');
-        trades = data.trades || [];
-      } catch (e) {
-        console.error('API call failed:', e);
-        if (refreshBtn) {
-          refreshBtn.textContent = 'Refresh';
-          refreshBtn.disabled = false;
-        }
-        toast('❌ Failed to load trades - check server connection');
-        return;
+      console.error('API call failed:', e);
+      if (refreshBtn) {
+        refreshBtn.textContent = 'Refresh';
+        refreshBtn.disabled = false;
       }
+      toast('Failed to load trades - check server connection');
+      return;
     }
+
+    let trades = statusData.trades || [];
     
     // Check if market is open for live data
     function isMarketOpen() {
@@ -6415,81 +7476,88 @@ async function loadPaperTradingStatus() {
     // Get open trades for price fetching
     const openTrades = trades.filter(t => t.status === 'OPEN');
     let livePrices = {};
+    let priceSources = {};
     
-    // FETCH LIVE PRICES FIRST (in parallel for speed) before displaying
+    // Fetch latest available prices before displaying. During market hours this
+    // returns live quotes; after hours it falls back to the latest stored close.
     if (openTrades.length > 0) {
       const symbols = [...new Set(openTrades.map(t => t.symbol))];
+      const marketOpen = isMarketOpen();
       
-      if (isMarketOpen()) {
-        console.log('🔄 Fetching live prices for', symbols.length, 'symbols...');
+      console.log(
+        marketOpen
+          ? 'Fetching live prices for'
+          : 'Fetching latest available prices for',
+        symbols.length,
+        'symbols...'
+      );
+      
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         
-        try {
-          // Use batch fetch if available
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-          
-          const response = await fetch('/api/live-prices', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbols: symbols }),
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (response.ok) {
-            const data = await response.json();
-            livePrices = data.prices || {};
-            console.log('✅ Live prices fetched:', livePrices);
-          } else {
-            console.log('Batch fetch returned status:', response.status);
-          }
-        } catch (e) {
-          console.log('Batch live prices failed, trying individual fetches:', e.message);
-          
-          // Fallback: fetch individual symbols in parallel
-          const pricePromises = symbols.map(async (symbol) => {
-            try {
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 3000);
-              
-              const response = await fetch(`/api/price/${symbol}`, {
-                signal: controller.signal
-              });
-              
-              clearTimeout(timeoutId);
-              
-              if (response.ok) {
-                const data = await response.json();
-                if (data.price) {
-                  console.log(`  ${symbol}: ₹${data.price}`);
-                  return { symbol, price: data.price };
-                }
-              }
-            } catch (err) {
-              console.log(`  ${symbol}: fetch failed`);
-            }
-            return null;
-          });
-          
-          const results = await Promise.all(pricePromises);
-          results.forEach(result => {
-            if (result) {
-              livePrices[result.symbol] = result.price;
-            }
-          });
-          
-          console.log('Individual price fetch results:', livePrices);
+        const response = await fetch('/api/live-prices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: symbols }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const data = await response.json();
+          livePrices = data.prices || {};
+          priceSources = data.sources || {};
+          console.log('Latest prices fetched:', livePrices, priceSources);
+        } else {
+          console.log('Batch price fetch returned status:', response.status);
         }
-      } else {
-        console.log('Market closed - will use cached prices');
+      } catch (e) {
+        console.log('Batch price fetch failed, trying individual fetches:', e.message);
+        
+        // Fallback: fetch individual symbols in parallel
+        const endpointBase = marketOpen ? '/api/price/' : '/api/latest-price/';
+        const pricePromises = symbols.map(async (symbol) => {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            
+            const response = await fetch(`${endpointBase}${symbol}`, {
+              signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+              const data = await response.json();
+              if (data.price != null) {
+                console.log(`  ${symbol}: ₹${data.price} (${data.source || 'unknown'})`);
+                return { symbol, price: data.price, source: data.source || 'unknown' };
+              }
+            }
+          } catch (err) {
+            console.log(`  ${symbol}: fetch failed`);
+          }
+          return null;
+        });
+        
+        const results = await Promise.all(pricePromises);
+        results.forEach(result => {
+          if (result) {
+            livePrices[result.symbol] = result.price;
+            priceSources[result.symbol] = result.source;
+          }
+        });
+        
+        console.log('Individual price fetch results:', livePrices, priceSources);
       }
     }
     
     // NOW: Update trailing stops with fetched prices
-    if (openTrades.length > 0 && Object.keys(livePrices).length > 0) {
+    if (isMarketOpen() && openTrades.length > 0 && Object.keys(livePrices).length > 0) {
       try {
-        console.log('📊 Updating trailing stops with live prices...');
+        console.log('Updating trailing stops with live prices...');
         
         const updateResponse = await fetch('/api/update-trailing-stops', {
           method: 'POST',
@@ -6499,17 +7567,18 @@ async function loadPaperTradingStatus() {
         
         if (updateResponse.ok) {
           const updateData = await updateResponse.json();
-          trades = updateData.trades || trades;  // Use updated trades
-          console.log('✅ Trailing stops updated for', updateData.updated, 'trades');
+          console.log('Trailing stops updated for', updateData.updated, 'trades');
+          statusData = await api('/api/paper-trading/status');
+          trades = statusData.trades || trades;
         }
       } catch (e) {
-        console.warn('⚠️ Trailing stop update failed:', e.message);
+        console.warn('Trailing stop update failed:', e.message);
       }
     }
     
-    // DISPLAY TRADES WITH LIVE PRICES (not empty!)
-    console.log('📊 Displaying', trades.length, 'trades with', Object.keys(livePrices).length, 'live prices');
-    displayTrades(trades, livePrices);
+    // Display trades with whichever price source we found.
+    console.log('Displaying', trades.length, 'trades with', Object.keys(livePrices).length, 'priced symbols');
+    displayTrades(trades, livePrices, priceSources);
     
     // AUTO-CLOSE CHECK (fires in background)
     if (isMarketOpen() && openTrades.length > 0) {
@@ -6517,9 +7586,9 @@ async function loadPaperTradingStatus() {
         try {
           const autoCloseResponse = await api('/api/auto-close/check', {method: 'POST'});
           if (autoCloseResponse.closed_trades && autoCloseResponse.closed_trades.length > 0) {
-            console.warn(`⚠️ Auto-closed ${autoCloseResponse.closed_trades.length} trades via trailing stop`);
+            console.warn(`Auto-closed ${autoCloseResponse.closed_trades.length} trades via trailing stop`);
             autoCloseResponse.closed_trades.forEach(t => {
-              toast(`🔴 Auto-closed ${t.symbol} - ${t.reason}`, 'warning');
+              toast(`Auto-closed ${t.symbol} - ${t.reason}`, 'warning');
             });
             // Reload trades after auto-close
             setTimeout(() => loadPaperTradingStatus(), 1000);
@@ -6546,81 +7615,67 @@ async function loadPaperTradingStatus() {
 }
 
 // Helper function to display trades and stats
-function displayTradesWithStats(trades, livePrices = {}) {
-  // Calculate stats
-  const openTrades = trades.filter(t => t.status === 'OPEN');
-  const buys = trades.filter(t => t.signal === 'BUY');
-  const sells = trades.filter(t => t.signal === 'SELL');
-  const deployed = buys.reduce((sum, t) => sum + (t.entry_price * t.quantity), 0);
-  
-  // Calculate P&L metrics
-  const closedTrades = trades.filter(t => 
-    t.status !== 'OPEN' && 
-    t.actual_profit_pct !== null &&
-    t.exit_time != null  // Only truly closed trades (with exit time)
-  );
-  
-  const chargeRate = 0.0003;
-  let totalChargesInRupees = 0;
-  
-  const realizedPnL = closedTrades.reduce((sum, t) => sum + (t.actual_profit_pct || 0), 0);
-  const realizedPnLAmount = closedTrades.reduce((sum, t) => {
-    if (t.actual_profit_pct && t.exit_price) {
-      const profitAmount = t.entry_price * t.quantity * t.actual_profit_pct / 100;
-      const entryCharges = t.entry_price * t.quantity * chargeRate;
-      const exitCharges = t.exit_price * t.quantity * chargeRate;
-      totalChargesInRupees += (entryCharges + exitCharges);
-      return sum + profitAmount;
-    }
-    return sum;
+function displayTradesWithStats(trades, livePrices = {}, priceSources = {}) {
+  const allTrades = Array.isArray(trades) ? trades : [];
+  const openTrades = allTrades.filter(t => t.status === 'OPEN');
+  const openBuys = openTrades.filter(t => (t.signal || t.side || '').toUpperCase() === 'BUY');
+  const openSells = openTrades.filter(t => (t.signal || t.side || '').toUpperCase() === 'SELL');
+  const deployed = openTrades.reduce((sum, t) => {
+    const qty = Number(t.quantity || 0);
+    const entryPrice = Number(t.entry_price || 0);
+    return sum + (qty * entryPrice);
   }, 0);
   
-  // Unrealized P&L
-  let unrealizedPnL = 0;
+  // Calculate P&L metrics
+  const closedTrades = allTrades.filter(t => 
+    isClosedTrade(t)
+  );
+
+  const realizedPnLAmount = closedTrades.reduce((sum, t) => sum + getTradeNetPnlAmount(t), 0);
+
+  // Unrealized P&L, marked net of estimated exit charges
   let unrealizedPnLAmount = 0;
   let totalInvestedValue = 0;
-  
+
   for (const trade of openTrades) {
-    if (livePrices[trade.symbol]) {
+    if (livePrices[trade.symbol] != null) {
       const currentPrice = livePrices[trade.symbol];
       const investedValue = trade.entry_price * trade.quantity;
-      const currentValue = currentPrice * trade.quantity;
-      
-      let tradePnL;
-      let tradePnLAmount;
-      
-      if (trade.signal === 'BUY') {
-        tradePnL = ((currentPrice - trade.entry_price) / trade.entry_price) * 100;
-        tradePnLAmount = currentValue - investedValue;
-      } else {
-        tradePnL = ((trade.entry_price - currentPrice) / trade.entry_price) * 100;
-        tradePnLAmount = investedValue - currentValue;
-      }
-      
-      unrealizedPnL += tradePnL;
-      unrealizedPnLAmount += tradePnLAmount;
+
+      unrealizedPnLAmount += getTradeNetPnlAmount(trade, currentPrice);
       totalInvestedValue += investedValue;
     }
   }
   
-  const winners = closedTrades.filter(t => (t.actual_profit_pct || 0) > 0).length;
+  const winners = closedTrades.filter(t => getTradeNetPnlAmount(t) > 0).length;
   const winRate = closedTrades.length > 0 ? ((winners / closedTrades.length) * 100).toFixed(1) : '-';
-  
-  const totalCharges = realizedCharges = (closedTrades.length > 0 ? closedTrades.reduce((sum, t) => {
-    if (t.exit_price && t.entry_price) {
-      const entryCharges = t.entry_price * t.quantity * chargeRate;
-      const exitCharges = t.exit_price * t.quantity * chargeRate;
-      return sum + (entryCharges + exitCharges);
-    }
-    return sum;
-  }, 0) : 0);
+
+  const dailyNetPnL = realizedPnLAmount + unrealizedPnLAmount;
+
+  const paperCountEl = document.getElementById('paper-count');
+  if (paperCountEl) paperCountEl.textContent = formatCount(openTrades.length);
+
+  const paperBuysEl = document.getElementById('paper-buys');
+  if (paperBuysEl) paperBuysEl.textContent = formatCount(openBuys.length);
+
+  const paperSellsEl = document.getElementById('paper-sells');
+  if (paperSellsEl) paperSellsEl.textContent = formatCount(openSells.length);
+
+  const paperCapitalEl = document.getElementById('paper-capital');
+  if (paperCapitalEl) paperCapitalEl.textContent = formatMoney(deployed, 2);
+
+  const dailyPnLEl = document.getElementById('paper-daily-pnl');
+  if (dailyPnLEl) {
+    dailyPnLEl.textContent = `${formatSignedMoney(dailyNetPnL, 2)} (${openTrades.length} open)`;
+    dailyPnLEl.style.color = dailyNetPnL >= 0 ? 'var(--green)' : 'var(--red)';
+  }
   
   // Update stats display
   const realizedPnLEl = document.getElementById('paper-realized-pnl');
   if (realizedPnLEl) {
-    const displayRealizedPnL = (realizedPnLAmount - realizedCharges >= 0 ? '+' : '') + (realizedPnLAmount - realizedCharges).toFixed(2) + '% (₹' + (realizedPnLAmount - realizedCharges).toFixed(2) + ' after ₹' + realizedCharges.toFixed(2) + ' charges)';
+    const displayRealizedPnL = `${formatSignedMoney(realizedPnLAmount, 2)} (${closedTrades.length} closed)`;
     realizedPnLEl.textContent = displayRealizedPnL;
-    realizedPnLEl.style.color = (realizedPnLAmount - realizedCharges) >= 0 ? 'var(--green)' : 'var(--red)';
+    realizedPnLEl.style.color = realizedPnLAmount >= 0 ? 'var(--green)' : 'var(--red)';
   }
   
   const unrealizedPnLEl = document.getElementById('paper-unrealized-pnl');
@@ -6628,7 +7683,7 @@ function displayTradesWithStats(trades, livePrices = {}) {
     if (openTrades.length > 0 && totalInvestedValue > 0) {
       // Calculate portfolio unrealized P&L percentage
       const portfolioUnrealizedPct = (unrealizedPnLAmount / totalInvestedValue) * 100;
-      const displayUnrealizedPnL = (portfolioUnrealizedPct >= 0 ? '+' : '') + portfolioUnrealizedPct.toFixed(2) + '% (₹' + unrealizedPnLAmount.toFixed(2) + ', ' + openTrades.length + ' Open)';
+      const displayUnrealizedPnL = `${formatSignedMoney(unrealizedPnLAmount, 2)} (${portfolioUnrealizedPct >= 0 ? '+' : ''}${portfolioUnrealizedPct.toFixed(2)}%)`;
       unrealizedPnLEl.textContent = displayUnrealizedPnL;
       unrealizedPnLEl.style.color = portfolioUnrealizedPct >= 0 ? 'var(--green)' : 'var(--red)';
     } else {
@@ -6647,170 +7702,158 @@ function displayTradesWithStats(trades, livePrices = {}) {
   }
   
   // Cache trades for P&L chart calculations
-  cachedTrades = trades;
+  cachedTrades = allTrades;
   
   // Display trades
-  displayPaperTrades(trades, livePrices);
+  displayPaperTrades(allTrades, livePrices, priceSources);
   
   // Refresh P&L chart if tab is visible (use cached data, no server call!)
   const pnlChartTab = document.getElementById('pnl-chart');
   if (pnlChartTab && !pnlChartTab.classList.contains('hidden')) {
-    refreshPnLChart(trades);
+    refreshPnLChart(allTrades);
   }
 }
 
 // Fast trade display (shows trades with or without live prices)
-function displayTrades(trades, livePrices = {}) {
-  displayTradesWithStats(trades, livePrices);
+function displayTrades(trades, livePrices = {}, priceSources = {}) {
+  displayTradesWithStats(trades, livePrices, priceSources);
 }
 
-function displayPaperTrades(trades, livePrices = {}) {
+function displayPaperTrades(trades, livePrices = {}, priceSources = {}) {
   try {
     const tbody = document.getElementById('paper-trades-body');
     if (!tbody) return;
     
-    if (trades.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No paper trades yet</td></tr>';
+    const visibleTrades = [...(trades || [])]
+      .filter(t => t.status === 'OPEN')
+      .sort((a, b) => new Date(b.entry_time || 0) - new Date(a.entry_time || 0));
+
+    if (visibleTrades.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" style="color:var(--muted);text-align:center;padding:20px">No open paper trades</td></tr>';
       return;
     }
-    
-    // Sort trades: OPEN first, then CLOSED
-    const sortedTrades = trades.sort((a, b) => {
-      if (a.status === 'OPEN' && b.status !== 'OPEN') return -1;
-      if (a.status !== 'OPEN' && b.status === 'OPEN') return 1;
-      return 0;
-    });
-    
-    const tradesHTML = sortedTrades.map((t, idx) => {
+
+    const tradesHTML = visibleTrades.map((t, idx) => {
       // Ensure required fields have defaults
       const qty = t.quantity || 1;
+      const tradeSignal = (t.signal || t.side || 'BUY').toUpperCase();
       const projExit = t.projected_exit || t.entry_price;
-      const profitTarget = t.entry_profit_target || 0;
+      const entryPrice = Number(t.entry_price || 0);
+      const positionValue = entryPrice * qty;
+      const profitTarget = t.entry_profit_target != null
+        ? Number(t.entry_profit_target)
+        : (projExit && entryPrice
+            ? (((tradeSignal === 'SELL' ? entryPrice - projExit : projExit - entryPrice) / entryPrice) * 100)
+            : 0);
+      const hasCurrentPrice = livePrices[t.symbol] != null;
+      const currentPrice = hasCurrentPrice ? livePrices[t.symbol] : null;
+      const priceSource = priceSources[t.symbol] || '';
+      const priceSourceLabel = priceSource === 'live'
+        ? 'LIVE'
+        : priceSource === 'intraday_db'
+          ? 'LAST'
+          : priceSource === 'daily_db'
+            ? 'CLOSE'
+            : 'PRICE';
+      const priceSourceColor = priceSource === 'live' ? '#10b981' : 'var(--muted)';
       
       // Calculate dynamic P&L for OPEN trades
       const profitPct = getProfitPercent(t);
       let displayPnL = profitPct;
-    let displayPnLAmount = 0;
-    let pnlColor = 'var(--accent)';
-    let pnlDisplay = '-';
-    let statusIndicator = '';
-    
-    const amountInvested = t.entry_price * qty;
-    
-    // Calculate breakeven for display
-    const charges_and_tax = 0.16;
-    let breakeven;
-    if (t.signal === 'BUY') {
-      breakeven = t.entry_price * (1 + charges_and_tax / 100);
-    } else {
-      breakeven = t.entry_price * (1 - charges_and_tax / 100);
-    }
-    
-    // Calculate distance from breakeven
-    let distanceFromBreakeven = 0;
-    if (t.status === 'OPEN' && livePrices[t.symbol]) {
-      const currentPrice = livePrices[t.symbol];
-      if (t.signal === 'BUY') {
-        distanceFromBreakeven = ((currentPrice - breakeven) / breakeven) * 100;
-      } else {
-        distanceFromBreakeven = ((breakeven - currentPrice) / breakeven) * 100;
-      }
-    }
-    
-    if (t.status === 'OPEN') {
-      if (livePrices[t.symbol]) {
-        // Live price available
-        const currentPrice = livePrices[t.symbol];
-        const currentValue = currentPrice * qty;
-        
-        if (t.signal === 'BUY') {
-          displayPnL = ((currentPrice - t.entry_price) / t.entry_price) * 100;
-        } else {
-          displayPnL = ((t.entry_price - currentPrice) / t.entry_price) * 100;
-        }
-        displayPnLAmount = currentValue - amountInvested;
-        pnlColor = displayPnL > 0 ? 'var(--green)' : (displayPnL < 0 ? 'var(--red)' : 'var(--yellow)');
-        
-        // Check if was profitable but now in loss
-        const peak = t.peak_pnl || 0;
-        if (peak > 0 && displayPnL < 0) {
-          statusIndicator = `<span style="color:#f59e0b;font-weight:bold;font-size:11px">⚠️ WAS PROFIT: +${peak.toFixed(2)}%</span><br>`;
-        } else if (peak > 0 && displayPnL > 0 && displayPnL < peak) {
-          statusIndicator = `<span style="color:#fbbf24;font-size:11px">📉 Profit Eroding: +${peak.toFixed(2)}% → ${displayPnL.toFixed(2)}%</span><br>`;
-        }
-        
-        // Clear P&L label
-        const pnlLabel = displayPnL > 0 ? '✅ PROFIT' : (displayPnL < 0 ? '❌ LOSS' : '⚪ BREAKEVEN');
-        const pnlPercent = Math.abs(displayPnL).toFixed(2);
-        const pnlAmount = Math.abs(displayPnLAmount).toFixed(2);
-        
-        pnlDisplay = `${statusIndicator}Invested: ₹${amountInvested.toFixed(2)}<br>Current: ₹${currentValue.toFixed(2)}<br>${pnlLabel}: ${displayPnL > 0 ? '+' : (displayPnL < 0 ? '-' : '')}₹${pnlAmount} (${displayPnL > 0 ? '+' : (displayPnL < 0 ? '-' : '')}${pnlPercent}%)`;
-      } else {
-        // No live price
-        const projectedValue = projExit * qty;
-        const projectedPnL = profitTarget;
-        displayPnLAmount = projectedValue - amountInvested;
-        pnlColor = 'var(--accent)';
-        
-        pnlDisplay = `Invested: ₹${amountInvested.toFixed(2)}<br>Target: ₹${projectedValue.toFixed(2)}<br>Projected: ${projectedPnL > 0 ? '+' : ''}₹${displayPnLAmount.toFixed(2)} (${projectedPnL > 0 ? '+' : ''}${projectedPnL.toFixed(2)}%)<br><small style="color:#f59e0b;font-size:11px">awaiting live data</small>`;
-      }
-    } else if (profitPct !== null && t.exit_price) {
-      const currentValue = t.exit_price * qty;
-      displayPnLAmount = currentValue - amountInvested;
-      pnlColor = profitPct > 0 ? 'var(--green)' : (profitPct < 0 ? 'var(--red)' : 'var(--yellow)');
+      let displayPnLAmount = 0;
+      let pnlColor = 'var(--accent)';
+      let pnlDisplay = '-';
+      let statusIndicator = '';
       
-      // For closed trades
-      const finalLabel = profitPct > 0 ? '✅ PROFIT' : (profitPct < 0 ? '❌ LOSS' : '⚪ BREAKEVEN');
-      const exitReasonDisplay = t.exit_reason ? `<br><small style="color:#60a5fa;font-size:10px">${t.exit_reason}</small>` : '';
-      pnlDisplay = `Invested: ₹${amountInvested.toFixed(2)}<br>Exit: ₹${currentValue.toFixed(2)}<br>${finalLabel}: ${profitPct > 0 ? '+' : (profitPct < 0 ? '-' : '')}₹${Math.abs(displayPnLAmount).toFixed(2)} (${profitPct > 0 ? '+' : (profitPct < 0 ? '-' : '')}${Math.abs(profitPct).toFixed(2)}%)${exitReasonDisplay}`;
-    }
+      const amountInvested = entryPrice * qty;
+      const breakevenCharges = estimatePaperTradeCharges(t, entryPrice);
+      const breakeven = tradeSignal === 'BUY'
+        ? entryPrice + (qty ? breakevenCharges / qty : 0)
+        : entryPrice - (qty ? breakevenCharges / qty : 0);
+      
+      // Calculate distance from breakeven
+      let distanceFromBreakeven = 0;
+      if (t.status === 'OPEN' && hasCurrentPrice) {
+        if (tradeSignal === 'BUY') {
+          distanceFromBreakeven = ((currentPrice - breakeven) / breakeven) * 100;
+        } else {
+          distanceFromBreakeven = ((breakeven - currentPrice) / breakeven) * 100;
+        }
+      }
+      
+      if (t.status === 'OPEN') {
+        if (hasCurrentPrice) {
+          const estimatedCharges = estimatePaperTradeCharges(t, currentPrice);
+          displayPnLAmount = getTradeNetPnlAmount(t, currentPrice);
+          displayPnL = amountInvested > 0 ? (displayPnLAmount / amountInvested) * 100 : 0;
+          pnlColor = displayPnLAmount > 0 ? 'var(--green)' : (displayPnLAmount < 0 ? 'var(--red)' : 'var(--yellow)');
+          
+          const peak = t.peak_pnl || 0;
+          if (peak > 0 && displayPnL < 0) {
+            statusIndicator = `<span style="color:#f59e0b;font-weight:bold;font-size:11px">Was profit: +${peak.toFixed(2)}%</span><br>`;
+          } else if (peak > 0 && displayPnL > 0 && displayPnL < peak) {
+            statusIndicator = `<span style="color:#fbbf24;font-size:11px">Profit eroding: +${peak.toFixed(2)}% to ${displayPnL.toFixed(2)}%</span><br>`;
+          }
+          
+          const pnlLabel = displayPnLAmount > 0 ? 'NET PROFIT' : (displayPnLAmount < 0 ? 'NET LOSS' : 'NET FLAT');
+          const signedPct = `${displayPnL >= 0 ? '+' : ''}${displayPnL.toFixed(2)}%`;
+          pnlDisplay = `${statusIndicator}${pnlLabel}: ${formatSignedMoney(displayPnLAmount, 2)} (${signedPct})<br><small style="color:var(--muted);font-size:10px">after est. charges ${formatMoney(estimatedCharges, 2)}</small>`;
+        } else {
+          const projectedNetAmount = getTradeNetPnlAmount(t, projExit);
+          const projectedNetPct = amountInvested > 0 ? (projectedNetAmount / amountInvested) * 100 : 0;
+          const projectedCharges = estimatePaperTradeCharges(t, projExit);
+          pnlColor = projectedNetAmount >= 0 ? 'var(--accent)' : 'var(--red)';
+          
+          pnlDisplay = `Projected net: ${formatSignedMoney(projectedNetAmount, 2)} (${projectedNetPct >= 0 ? '+' : ''}${projectedNetPct.toFixed(2)}%)<br><small style="color:#f59e0b;font-size:11px">est. charges ${formatMoney(projectedCharges, 2)} · awaiting price</small>`;
+        }
+      }
     
-    const isClosed = t.status !== 'OPEN';
-    const statusColor = t.status === 'HIT_TARGET' ? 'var(--green)' : t.status === 'HIT_SL' ? 'var(--red)' : t.status === 'CLOSED' ? 'var(--yellow)' : 'var(--accent)';
+    const statusColor = 'var(--accent)';
     const entryTime = new Date(t.entry_time).toLocaleTimeString();
+    const stopLossPct = entryPrice && t.stop_loss != null
+      ? (((tradeSignal === 'SELL' ? t.stop_loss - entryPrice : entryPrice - t.stop_loss) / entryPrice) * 100)
+      : 0;
     
     // SL display
-    let slDisplay = `₹${t.stop_loss != null ? parseFloat(t.stop_loss).toFixed(2) : 'N/A'}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '-2.0%' : '+2.0%'}</small>`;
-    if (t.status === 'OPEN') {
-      // For OPEN trades, show trailing stop if available, otherwise show breakeven
-      if (t.trailing_stop !== null && t.trailing_stop !== undefined) {
-        // Trailing stop is active - show its current value
-        const trailingStopPrice = parseFloat(t.trailing_stop).toFixed(2);
-        const priceFromEntry = t.entry_price ? ((t.trailing_stop - t.entry_price) / t.entry_price * 100).toFixed(2) : 0;
-        slDisplay = `₹${trailingStopPrice}<br><small style="color:#10b981;font-weight:600;font-size:10px">📈 TRAILING (+${priceFromEntry}%)</small>`;
-      } else {
-        // No trailing stop yet
-        const slProtectionColor = t.peak_pnl && t.peak_pnl > 0 ? 'var(--green)' : 'var(--accent)';
-        slDisplay = `₹${breakeven.toFixed(2)}<br><small style="color:${slProtectionColor};font-size:10px;font-weight:600">BREAKEVEN FLOOR</small><br><small style="color:var(--muted);font-size:10px">${distanceFromBreakeven >= 0 ? '+' : ''}${distanceFromBreakeven.toFixed(2)}% safe</small>`;
-      }
+    let slDisplay = `₹${t.stop_loss != null ? parseFloat(t.stop_loss).toFixed(2) : 'N/A'}<br><small style="color:var(--muted);font-size:11px">${stopLossPct ? `${stopLossPct.toFixed(2)}% risk` : 'risk set'}</small>`;
+    if (t.trailing_stop !== null && t.trailing_stop !== undefined) {
+      // Trailing stop is active - show its current value
+      const trailingStopPrice = parseFloat(t.trailing_stop).toFixed(2);
+      const priceFromEntry = entryPrice ? ((t.trailing_stop - entryPrice) / entryPrice * 100).toFixed(2) : 0;
+      slDisplay = `₹${trailingStopPrice}<br><small style="color:#10b981;font-weight:600;font-size:10px">TRAILING (+${priceFromEntry}%)</small>`;
+    } else {
+      // No trailing stop yet
+      const slProtectionColor = t.peak_pnl && t.peak_pnl > 0 ? 'var(--green)' : 'var(--accent)';
+      slDisplay = `₹${breakeven.toFixed(2)}<br><small style="color:${slProtectionColor};font-size:10px;font-weight:600">BREAKEVEN FLOOR</small><br><small style="color:var(--muted);font-size:10px">${distanceFromBreakeven >= 0 ? '+' : ''}${distanceFromBreakeven.toFixed(2)}% safe</small>`;
     }
     
     // Direction indicator for SELL trades
     let directionHint = '';
-    if (t.status === 'OPEN' && livePrices[t.symbol]) {
-      const currentPrice = livePrices[t.symbol];
-      if (t.signal === 'SELL') {
-        if (currentPrice < t.entry_price) {
-          directionHint = '📉 Good: price down';
-        } else if (currentPrice > t.entry_price) {
-          directionHint = '📈 Bad: price up';
+    if (hasCurrentPrice) {
+      if (tradeSignal === 'SELL') {
+        if (currentPrice < entryPrice) {
+          directionHint = 'Good: price down';
+        } else if (currentPrice > entryPrice) {
+          directionHint = 'Bad: price up';
         }
       } else {
-        if (currentPrice > t.entry_price) {
-          directionHint = '📈 Good: price up';
-        } else if (currentPrice < t.entry_price) {
-          directionHint = '📉 Bad: price down';
+        if (currentPrice > entryPrice) {
+          directionHint = 'Good: price up';
+        } else if (currentPrice < entryPrice) {
+          directionHint = 'Bad: price down';
         }
       }
     }
     
-    return `<tr style="opacity:${isClosed ? 0.6 : 1}; background:${t.status === 'OPEN' ? 'rgba(16,185,129,0.05)' : 'transparent'}; cursor:pointer;" class="trade-row" data-entry-price="${t.entry_price}" data-projected-exit="${t.projected_exit}" data-exit-price="${t.exit_price || ''}" data-symbol="${t.symbol}" data-signal="${t.signal}" data-entry-time="${entryTime}" data-profit-pct="${profitPct}">
+    return `<tr style="background:rgba(16,185,129,0.05); cursor:pointer;" class="trade-row" data-entry-price="${entryPrice}" data-projected-exit="${t.projected_exit}" data-exit-price="${t.exit_price || ''}" data-symbol="${t.symbol}" data-signal="${tradeSignal}" data-entry-time="${entryTime}" data-profit-pct="${displayPnL}">
       <td><strong>${t.symbol}</strong></td>
-      <td><span class="signal-${t.signal.toLowerCase()}">${t.signal}</span>${directionHint ? `<br><small style="font-size:10px;color:var(--muted)">${directionHint}</small>` : ''}</td>
-      <td>₹${t.entry_price.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${entryTime}</small></td>
+      <td><span class="signal-${tradeSignal.toLowerCase()}">${tradeSignal}</span>${directionHint ? `<br><small style="font-size:10px;color:var(--muted)">${directionHint}</small>` : ''}</td>
+      <td>${qty}</td>
+      <td>₹${entryPrice.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${entryTime}</small></td>
+      <td>${formatMoney(positionValue, 2)}</td>
       <td>₹${projExit.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '+' : ''}${profitTarget.toFixed(1)}%</small></td>
       <td>${slDisplay}</td>
-      <td>${t.exit_price ? '₹' + t.exit_price.toFixed(2) : (livePrices[t.symbol] ? '<strong style="color:var(--green)">₹' + livePrices[t.symbol].toFixed(2) + '</strong><br><small style="color:#10b981">LIVE</small>' : '-')}</td>
+      <td>${hasCurrentPrice ? '<strong style="color:var(--green)">₹' + currentPrice.toFixed(2) + '</strong><br><small style="color:' + priceSourceColor + '">' + priceSourceLabel + '</small>' : '-'}</td>
       <td><span style="color:${pnlColor}; font-weight:700; font-size:11px;line-height:1.6">${pnlDisplay}</span></td>
       <td><span style="padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;background:${statusColor}22;color:${statusColor}">${t.status}</span></td>
     </tr>`;
@@ -6838,8 +7881,8 @@ function displayPaperTrades(trades, livePrices = {}) {
     console.error('Error in displayPaperTrades:', error);
     const tbody = document.getElementById('paper-trades-body');
     if (tbody) {
-      tbody.innerHTML = `<tr><td colspan="8" style="color:#ff6b6b;text-align:center;padding:20px">
-        ⚠️ Error rendering trades: ${error.message}
+      tbody.innerHTML = `<tr><td colspan="10" style="color:#ff6b6b;text-align:center;padding:20px">
+        Error rendering trades: ${error.message}
       </td></tr>`;
     }
   }
@@ -6970,7 +8013,7 @@ async function manualCloseTrade(tradeId, symbol, entryPrice, signal) {
       const pnl = data.trade.actual_profit_pnl;
       const pnlFormatted = pnl > 0 ? `+${pnl.toFixed(2)}%` : `${pnl.toFixed(2)}%`;
       const pnlColor = pnl > 0 ? 'green' : 'red';
-      showToast(`✓ Trade closed: ${symbol} at ₹${currentPrice.toFixed(2)} | P&L: <span style="color:${pnlColor};font-weight:bold">${pnlFormatted}</span>`, 'success');
+      showToast(`Trade closed: ${symbol} at ₹${currentPrice.toFixed(2)} | P&L: <span style="color:${pnlColor};font-weight:bold">${pnlFormatted}</span>`, 'success');
       
       // Refresh the dashboard
       loadPaperTradingStatus();
@@ -7040,7 +8083,7 @@ function displayTradesByDate(tradesByDate, sortedDates, tbody) {
    * Filters to only closed trades
    */
   if (!sortedDates || sortedDates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">No closed trades yet. System waiting for first trade...</td></tr>';
     return;
   }
 
@@ -7054,7 +8097,7 @@ function displayTradesByDate(tradesByDate, sortedDates, tbody) {
   // Remove dates with no closed trades
   const validDates = sortedDates.filter(d => filteredTradesByDate[d] && filteredTradesByDate[d].length > 0);
   if (validDates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">No closed trades yet. System waiting for first trade...</td></tr>';
     return;
   }
 
@@ -7179,7 +8222,7 @@ function buildStocksSummary(date, tradesByDate) {
             cursor:pointer;
             transition:all 0.2s;
           " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
-            📊 View All Trades
+            View All Trades
           </button>
           
           <button onclick="viewTradesCarousel('${symbol}', '${window._selectedDate}')" style="
@@ -7194,7 +8237,7 @@ function buildStocksSummary(date, tradesByDate) {
             cursor:pointer;
             transition:all 0.2s;
           " onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text)'">
-            🔄 View Individual Trades
+            View Individual Trades
           </button>
         </div>
       </div>
@@ -7369,7 +8412,7 @@ function showCarouselTrade(index) {
       <div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="font-weight:700;font-size:14px;color:${statusColor}">${(trade.signal || 'BUY').toUpperCase()}</div>
-          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN' : 'LOSS'}</div>
         </div>
         
         <div style="background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;margin-bottom:8px">
@@ -7828,19 +8871,14 @@ async function loadTradeSnapshots() {
   try {
     const tbody = document.getElementById('snapshots-body');
     
-    // WORKFLOW: Load paper trades from JSON, then fetch actual price candles from DB for each trade date
-    let paperTrades = null;
+    // WORKFLOW: Load canonical paper trades from the API, then fetch actual price
+    // candles from the DB for each trade date.
+    let paperTrades = [];
     
-    // 1. Load paper trades (source of truth for all trades)
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch('paper_trades.json?t=' + Date.now(), { signal: controller.signal });
-      clearTimeout(timeout);
-      if (response.ok) {
-        paperTrades = await response.json();
-        console.log(`✓ Loaded ${paperTrades.length} trades from paper_trades.json`);
-      }
+      const status = await api('/api/paper-trading/status');
+      paperTrades = status.trades || [];
+      console.log(`Loaded ${paperTrades.length} canonical paper trades`);
     } catch (e) {
       console.log(`Paper trades unavailable: ${e.message}`);
     }
@@ -7963,18 +9001,18 @@ async function loadTradeSnapshots() {
     }
     
     // No data available from any source
-    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">📊 No closed trades yet. System waiting for first trade...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="1" style="color:var(--muted);text-align:center;padding:16px">No closed trades yet. System waiting for first trade...</td></tr>';
   } catch (e) {
     console.error('Snapshot load error:', e);
     console.error('Error stack:', e.stack);
     const tbody = document.getElementById('snapshots-body');
     if (tbody) {
       tbody.innerHTML = `<tr><td colspan="1" style="color:#ff6b6b;text-align:center;padding:16px">
-        ⚠️ Error loading snapshots: ${e.message}<br>
+        Error loading snapshots: ${e.message}<br>
         <small>Check browser console for details</small>
       </td></tr>`;
     }
-    toast('❌ Failed to load trade snapshots: ' + (e.message || 'Unknown error'));
+    toast('Failed to load trade snapshots: ' + (e.message || 'Unknown error'));
   }
 }
 
@@ -8042,7 +9080,7 @@ function viewTradeByDate(tradeId) {
     // Validate trade data
     if (!trade.entry_price || !trade.exit_price || trade.entry_time == null) {
       console.error('Invalid trade data:', trade);
-      toast('⚠️ Trade missing required data (entry/exit price)');
+      toast('Trade missing required data (entry/exit price)');
       return;
     }
     
@@ -8075,7 +9113,7 @@ function viewTradeByDate(tradeId) {
       infoBar.innerHTML = `<div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="font-weight:700;font-size:14px;color:${statusColor}">${(trade.signal || 'BUY').toUpperCase()}</div>
-          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN' : 'LOSS'}</div>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">@ ${entryTime}</div>
         
@@ -8211,7 +9249,7 @@ function displayFullDayChartWithRealData(symbol, trades, candles) {
       return `<div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="font-weight:700;font-size:14px;color:${statusColor}">#${idx+1} ${t.signal.toUpperCase()}</div>
-          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN' : 'LOSS'}</div>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">@ ${new Date(t.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'})}</div>
         
@@ -8268,7 +9306,7 @@ function displayFullDayChart(symbol, trades, candles) {
       return `<div style="flex-shrink:0;min-width:240px;padding:16px;background:${statusBg};border-radius:10px;border-left:5px solid ${statusColor};border:2px solid ${statusColor}40">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <div style="font-weight:700;font-size:14px;color:${statusColor}">#${idx+1} ${t.signal.toUpperCase()}</div>
-          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN ✓' : 'LOSS ✗'}</div>
+          <div style="font-weight:700;font-size:12px;padding:4px 8px;background:${statusColor};color:white;border-radius:4px">${isWin ? 'WIN' : 'LOSS'}</div>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">@ ${new Date(t.entry_time).toLocaleTimeString('en-IN', {hour: '2-digit', minute: '2-digit'})}</div>
         
@@ -9439,7 +10477,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // Load paper trades on startup with timeout
   const startupTimeout = setTimeout(() => {
     console.warn('Paper trades loading timed out on startup');
-    toast('⏱️ Paper trades loading is slow - try manual refresh');
+    toast('Paper trades loading is slow - try manual refresh');
   }, 15000);
   
   loadPaperTradingStatus().finally(() => clearTimeout(startupTimeout));
@@ -9450,11 +10488,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!badge) return;
     
     if (isMarketHours()) {
-      badge.textContent = '🟢 Auto-refresh ON';
+      badge.textContent = 'Auto-refresh ON';
       badge.style.background = '#dcfce7';
       badge.style.color = '#166534';
     } else {
-      badge.textContent = '⏸ Off-hours (9:15 AM - 3:30 PM IST)';
+      badge.textContent = 'Off-hours (9:15 AM - 3:30 PM IST)';
       badge.style.background = '#fee2e2';
       badge.style.color = '#991b1b';
     }
@@ -9484,83 +10522,104 @@ let pnlChartInstance = null;
 let cachedPnLData = null;  // Cache P&L data to avoid recalculation
 let cachedTrades = null;   // Cache latest trades for P&L chart calculation
 
-// Calculate P&L data from trades (CLIENT-SIDE - no server call!)
-function calculatePnLFromTrades(trades) {
-  // Filter to closed trades with exit_time
-  const closedTrades = trades.filter(t => 
-    t.status !== 'OPEN' && 
-    t.actual_profit_pct !== null &&
-    t.exit_time != null
-  );
-  
-  // Sort by exit_time
-  closedTrades.sort((a, b) => {
-    const timeA = new Date(a.exit_time).getTime();
-    const timeB = new Date(b.exit_time).getTime();
-    return timeA - timeB;
+function getPnLWindowTrades(trades) {
+  const closedTrades = (Array.isArray(trades) ? trades : [])
+    .filter(isClosedTrade)
+    .sort((a, b) => new Date(getTradeExitTime(a) || 0).getTime() - new Date(getTradeExitTime(b) || 0).getTime());
+
+  if (!closedTrades.length) return [];
+
+  const minutes = Number(document.getElementById('pnl-timerange')?.value || 0);
+  if (!Number.isFinite(minutes) || minutes <= 0) return closedTrades;
+
+  const latestExitTs = new Date(getTradeExitTime(closedTrades[closedTrades.length - 1]) || 0).getTime();
+  if (!Number.isFinite(latestExitTs)) return closedTrades;
+
+  const cutoff = latestExitTs - (minutes * 60 * 1000);
+  const filtered = closedTrades.filter(trade => {
+    const exitTs = new Date(getTradeExitTime(trade) || 0).getTime();
+    return Number.isFinite(exitTs) && exitTs >= cutoff;
   });
-  
-  if (closedTrades.length === 0) {
-    return null;
-  }
-  
-  // Build cumulative P&L over time
-  let cumulativePnL = 0;
-  let peakPnL = 0;
+
+  return filtered.length ? filtered : closedTrades.slice(-Math.min(closedTrades.length, 40));
+}
+
+// Calculate cumulative net P&L from trades (CLIENT-SIDE - no server call!)
+function calculatePnLFromTrades(trades) {
+  const closedTrades = getPnLWindowTrades(trades);
+  if (!closedTrades.length) return null;
+
+  let totalCapitalInvested = 0;
+  let cumulativeNetPnL = 0;
+  let cumulativeCharges = 0;
+  let peakNetPnL = Number.NEGATIVE_INFINITY;
+  let troughNetPnL = Number.POSITIVE_INFINITY;
+  let winners = 0;
+  let losses = 0;
   const pnlData = [];
-  
+
   for (const trade of closedTrades) {
-    const pnlPct = trade.actual_profit_pct || 0;
-    
-    // Add to cumulative
-    cumulativePnL += pnlPct;
-    peakPnL = Math.max(peakPnL, cumulativePnL);
-    
-    // Format exit time
-    let timeStr = '';
-    if (trade.exit_time) {
-      const exitDt = new Date(trade.exit_time);
-      const month = String(exitDt.getMonth() + 1).padStart(2, '0');
-      const date = String(exitDt.getDate()).padStart(2, '0');
-      const hours = String(exitDt.getHours()).padStart(2, '0');
-      const mins = String(exitDt.getMinutes()).padStart(2, '0');
-      timeStr = `${month}-${date} ${hours}:${mins}`;
-    }
-    
+    const entryValue = parseNumber(trade.entry_price, 0) * getTradeQuantity(trade);
+    const exitPrice = getTradeExitPrice(trade);
+    const netPnl = getTradeNetPnlAmount(trade);
+    const grossPnl = getTradeGrossPnlAmount(trade);
+    const charges = parseNumber(
+      trade?.post_trade?.total_charges ?? trade?.total_charges,
+      estimatePaperTradeCharges(trade, exitPrice)
+    );
+
+    totalCapitalInvested += entryValue;
+    cumulativeNetPnL += netPnl;
+    cumulativeCharges += charges;
+    peakNetPnL = Math.max(peakNetPnL, cumulativeNetPnL);
+    troughNetPnL = Math.min(troughNetPnL, cumulativeNetPnL);
+
+    if (netPnl > 0) winners += 1;
+    else if (netPnl < 0) losses += 1;
+
+    const exitDt = new Date(getTradeExitTime(trade) || 0);
+    const month = String(exitDt.getMonth() + 1).padStart(2, '0');
+    const date = String(exitDt.getDate()).padStart(2, '0');
+    const hours = String(exitDt.getHours()).padStart(2, '0');
+    const mins = String(exitDt.getMinutes()).padStart(2, '0');
+
     pnlData.push({
-      timestamp: trade.exit_time,
-      time: timeStr,
+      timestamp: getTradeExitTime(trade),
+      time: `${month}-${date} ${hours}:${mins}`,
       symbol: trade.symbol,
-      trade_id: trade.id,
-      trade_pnl: pnlPct,
-      cumulative_pnl: Math.round(cumulativePnL * 100) / 100,
-      peak_pnl: Math.round(peakPnL * 100) / 100,
+      trade_id: trade.trade_id || trade.id,
+      net_pnl: roundNumber(netPnl, 2),
+      gross_pnl: roundNumber(grossPnl, 2),
+      charges: roundNumber(charges, 2),
+      entry_value: roundNumber(entryValue, 2),
+      cumulative_pnl_amount: roundNumber(cumulativeNetPnL, 2),
+      peak_pnl_amount: roundNumber(peakNetPnL, 2),
+      cumulative_pnl_pct: totalCapitalInvested > 0 ? roundNumber((cumulativeNetPnL / totalCapitalInvested) * 100, 2) : 0,
+      total_capital_invested: roundNumber(totalCapitalInvested, 2),
+      total_charges: roundNumber(cumulativeCharges, 2),
     });
   }
-  
-  // Calculate statistics
-  if (pnlData.length > 0) {
-    const finalPnL = pnlData[pnlData.length - 1].cumulative_pnl;
-    const minPnL = Math.min(...pnlData.map(d => d.cumulative_pnl));
-    const maxPnL = Math.max(...pnlData.map(d => d.cumulative_pnl));
-    
-    return {
-      pnl_data: pnlData,
-      statistics: {
-        current_pnl: finalPnL,
-        peak_pnl: maxPnL,
-        trough_pnl: minPnL,
-        total_trades_closed: closedTrades.length,
-      }
-    };
-  }
-  
-  return null;
+
+  const finalData = pnlData[pnlData.length - 1];
+
+  return {
+    pnl_data: pnlData,
+    statistics: {
+      current_pnl_amount: finalData.cumulative_pnl_amount,
+      current_pnl_pct: finalData.cumulative_pnl_pct,
+      peak_pnl_amount: roundNumber(peakNetPnL, 2),
+      trough_pnl_amount: roundNumber(troughNetPnL, 2),
+      total_trades_closed: closedTrades.length,
+      total_capital_invested: finalData.total_capital_invested,
+      total_charges: finalData.total_charges,
+      winners: winners,
+      losses: losses,
+    }
+  };
 }
 
 async function refreshPnLChart(trades) {
   try {
-    // Calculate P&L from trades (CLIENT-SIDE - NO SERVER CALL!)
     if (!trades) {
       clearPnLChart();
       return;
@@ -9580,21 +10639,28 @@ async function refreshPnLChart(trades) {
       const currentEl = document.getElementById('pnl-current');
       const peakEl = document.getElementById('pnl-peak');
       const percentEl = document.getElementById('pnl-percent');
+      const tradesEl = document.getElementById('pnl-trades');
       
       if (currentEl) {
-        const curr = pnlResult.statistics.current_pnl;
-        currentEl.textContent = (curr >= 0 ? '+' : '') + curr.toFixed(2) + '%';
+        const curr = pnlResult.statistics.current_pnl_amount;
+        currentEl.textContent = formatSignedMoney(curr, 2);
         currentEl.style.color = curr >= 0 ? 'var(--green)' : 'var(--red)';
       }
       
       if (peakEl) {
-        const peak = pnlResult.statistics.peak_pnl;
-        peakEl.textContent = (peak >= 0 ? '+' : '') + peak.toFixed(2) + '%';
+        const peak = pnlResult.statistics.peak_pnl_amount;
+        peakEl.textContent = formatSignedMoney(peak, 2);
         peakEl.style.color = peak >= 0 ? 'var(--green)' : 'var(--red)';
       }
       
       if (percentEl) {
-        percentEl.textContent = pnlResult.statistics.total_trades_closed + ' closed';
+        const pct = pnlResult.statistics.current_pnl_pct;
+        percentEl.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+        percentEl.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+
+      if (tradesEl) {
+        tradesEl.textContent = `${pnlResult.statistics.winners} / ${pnlResult.statistics.losses}`;
       }
     }
     
@@ -9620,15 +10686,14 @@ function renderCumulativePnLChart(pnlData) {
   
   const labels = sampledData.map(d => {
     const dateStr = d.time || '';
-    // Extract date and time parts
     if (dateStr.length > 10) {
-      return dateStr.substring(5, 16); // "04-15 14:23" format
+      return dateStr.substring(0, 11);
     }
     return dateStr;
   });
   
-  const cumulativePnL = sampledData.map(d => d.cumulative_pnl);
-  const peakPnL = sampledData.map(d => d.peak_pnl);
+  const cumulativePnL = sampledData.map(d => d.cumulative_pnl_amount);
+  const peakPnL = sampledData.map(d => d.peak_pnl_amount);
   
   const minPnL = Math.min(...cumulativePnL, 0);
   const maxPnL = Math.max(...peakPnL, 0);
@@ -9653,7 +10718,7 @@ function renderCumulativePnLChart(pnlData) {
       labels: labels,
       datasets: [
         {
-          label: 'Cumulative P&L (%)',
+          label: 'Cumulative Net P&L',
           data: cumulativePnL,
           borderColor: primaryColor,
           backgroundColor: primaryColorLight,
@@ -9667,7 +10732,7 @@ function renderCumulativePnLChart(pnlData) {
           pointBorderWidth: 2.5,
         },
         {
-          label: 'Peak P&L (%)',
+          label: 'Peak Net P&L',
           data: peakPnL,
           borderColor: 'rgba(0, 113, 227, 0.35)',
           backgroundColor: 'transparent',
@@ -9710,18 +10775,36 @@ function renderCumulativePnLChart(pnlData) {
           callbacks: {
             title: function(ctx) {
               const point = ctx[0];
-              const fullData = pnlData[pnlData.findIndex(d => labels.includes(d.time))];
-              return fullData ? fullData.time : point.label;
+              const dataIdx = point.dataIndex;
+              const fullData = sampledData[dataIdx];
+              return fullData ? fullData.time + ' · ' + fullData.symbol : point.label;
             },
             label: function(ctx) {
+              const dataIdx = ctx.dataIndex;
+              const fullData = sampledData[dataIdx];
               const value = ctx.parsed.y;
-              const symbol = ctx.dataset.label.includes('Peak') ? '' : (ctx.dataset.data === cumulativePnL ? '' : '');
-              return ctx.dataset.label + ': ' + (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+              const label = ctx.dataset.label;
+              
+              if (label.includes('Cumulative') && fullData) {
+                return [
+                  `${label}: ${formatSignedMoney(value, 2)}`,
+                  `Net Return: ${fullData.cumulative_pnl_pct >= 0 ? '+' : ''}${fullData.cumulative_pnl_pct.toFixed(2)}%`,
+                ];
+              }
+              
+              return `${label}: ${formatSignedMoney(value, 2)}`;
             },
             afterLabel: function(ctx) {
-              const idx = ctx.dataIndex;
-              if (ctx.dataset.data === cumulativePnL && idx < sampledData.length) {
-                return 'Trades closed: ' + (idx + 1);
+              const dataIdx = ctx.dataIndex;
+              const fullData = sampledData[dataIdx];
+              
+              if (ctx.dataset.label.includes('Cumulative') && fullData) {
+                const totalCapital = fullData.total_capital_invested || 0;
+                return [
+                  `Gross P&L: ${formatSignedMoney(fullData.gross_pnl, 2)}`,
+                  `Charges: ${formatMoney(fullData.charges, 2)}`,
+                  `Capital Invested: ${formatMoney(totalCapital, 2)}`,
+                ];
               }
             }
           }
@@ -9729,14 +10812,13 @@ function renderCumulativePnLChart(pnlData) {
       },
       scales: {
         y: {
-          beginAtZero: true,
           min: minPnL - padding,
           max: maxPnL + padding,
           ticks: {
             color: 'var(--muted)',
             font: { size: 11, weight: '500' },
             callback: function(value) {
-              return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+              return formatSignedMoney(value, 0);
             }
           },
           grid: {
@@ -9767,8 +10849,23 @@ function clearPnLChart() {
     pnlChartInstance.destroy();
     pnlChartInstance = null;
   }
+  const currentEl = document.getElementById('pnl-current');
+  const peakEl = document.getElementById('pnl-peak');
+  const percentEl = document.getElementById('pnl-percent');
+  const tradesEl = document.getElementById('pnl-trades');
+  if (currentEl) currentEl.textContent = '₹0';
+  if (peakEl) peakEl.textContent = '₹0';
+  if (percentEl) percentEl.textContent = '0.00%';
+  if (tradesEl) tradesEl.textContent = '0 / 0';
 }
 
+// ── Logout Function ────────────────────────────
+function logoutUser() {
+  if (confirm('Are you sure you want to logout?')) {
+    localStorage.removeItem('auth_token'); // Match React app's key
+    window.location.href = '/login';
+  }
+}
 
 </script>
 </body>

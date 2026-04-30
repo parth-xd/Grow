@@ -1,0 +1,38 @@
+# Graphify Ignore Patterns
+# Tells Graphify what NOT to index
+
+# Dependencies (not source code)
+.venv/
+venv/
+node_modules/
+frontend/node_modules/
+
+# Build outputs (not source code)
+.next/
+frontend/.next/
+build/
+dist/
+out/
+
+# Cache & temporary files (not source code)
+__pycache__/
+.pytest_cache/
+.DS_Store
+*.pyc
+*.pyo
+*.log
+
+# Version control (not source code)
+.git/
+
+# Archive (old code)
+archive/
+
+# Large generated data (not source code)
+graphify-out/
+chart_cache/
+
+# System files
+.vscode/
+.idea/
+.env

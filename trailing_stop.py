@@ -244,6 +244,23 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
                     should_close = True
                     exit_reason = f"HARD_STOP_LOSS_HIT (Price: ₹{current_price:.2f} ≥ SL: ₹{hard_stop_loss:.2f})"
         
+        # CHECK 0.5: TRAILING STOP FIELD — honour the ratcheting stop set by PaperTradeTracker
+        if not should_close:
+            ts = trade.get('trailing_stop')
+            if ts is not None:
+                if signal == 'BUY' and current_price <= ts:
+                    should_close = True
+                    exit_reason = (
+                        f"TRAILING_STOP_HIT (Price: ₹{current_price:.2f} ≤ "
+                        f"Trailing SL: ₹{ts:.2f} | Peak P&L: +{trade.get('peak_pnl', 0):.2f}%)"
+                    )
+                elif signal == 'SELL' and current_price >= ts:
+                    should_close = True
+                    exit_reason = (
+                        f"TRAILING_STOP_HIT (Price: ₹{current_price:.2f} ≥ "
+                        f"Trailing SL: ₹{ts:.2f} | Peak P&L: +{trade.get('peak_pnl', 0):.2f}%)"
+                    )
+        
         # CHECK 1: HARD FLOOR - If price at breakeven, close (no point holding)
         if not should_close:
             if signal == 'BUY':

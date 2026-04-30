@@ -35,6 +35,8 @@ from thesis_manager import get_manager as get_thesis_manager
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+CLOSED_TRADE_STATUSES = ("CLOSED", "HIT_TARGET", "HIT_SL")
+
 app = Flask(__name__, static_folder=".", static_url_path="")
 CORS(app)
 
@@ -109,16 +111,8 @@ except Exception as e:
 
 @app.route("/")
 def index():
-    """Redirect to login or dashboard based on authentication."""
-    token = request.cookies.get("token") or request.headers.get("Authorization", "").replace("Bearer ", "")
-    if token:
-        try:
-            from auth_manager import verify_jwt
-            verify_jwt(token)
-            return redirect("/dashboard")
-        except:
-            pass
-    return redirect("/login")
+    """Serve the main trading dashboard."""
+    return send_file("index.html", mimetype="text/html")
 
 
 @app.route("/login")
@@ -319,51 +313,25 @@ def api_close_trade():
             exit_price = float(exit_price)
         except:
             return jsonify({"success": False, "message": "exit_price must be a number"}), 400
-        
-        import json
-        trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
-        
-        if not os.path.exists(trades_json_path):
-            return jsonify({"success": False, "message": "Trades file not found"}), 500
-        
-        with open(trades_json_path, 'r') as f:
-            trades = json.load(f)
-        
-        import pytz
-        from datetime import datetime
-        ist = pytz.timezone('Asia/Kolkata')
-        
-        trade_found = False
-        trade_data = None
-        entry_price = 0
-        signal = ""
-        pnl = 0
-        
-        for trade in trades:
-            if str(trade.get('id')) == str(trade_id) and trade['status'] == 'OPEN':
-                entry_price = trade['entry_price']
-                signal = trade['signal']
-                
-                if signal == 'BUY':
-                    pnl = ((exit_price - entry_price) / entry_price) * 100
-                else:
-                    pnl = ((entry_price - exit_price) / entry_price) * 100
-                
-                trade['exit_price'] = round(exit_price, 2)
-                trade['exit_time'] = datetime.now(ist).isoformat()
-                trade['actual_profit_pnl'] = round(pnl, 2)
-                trade['status'] = 'CLOSED'
-                trade['exit_reason'] = f"MANUAL_CLOSE (User requested at ₹{exit_price:.2f})"
-                trade_data = trade
-                trade_found = True
-                logger.info(f"✓ MANUAL CLOSE: {symbol} {signal} | Entry: ₹{entry_price:.2f} → Exit: ₹{exit_price:.2f} | P&L: {pnl:.2f}%")
-                break
-        
-        if not trade_found:
+
+        from paper_trader import PaperTradeTracker
+
+        tracker = PaperTradeTracker()
+        closed_trade = tracker.close_trade(trade_id, exit_price, "manual_close")
+        if not closed_trade:
             return jsonify({"success": False, "message": "Trade not found or already closed"}), 404
-        
-        with open(trades_json_path, 'w') as f:
-            json.dump(trades, f, indent=2, default=str)
+
+        entry_price = float(closed_trade.get("entry_price") or 0)
+        signal = closed_trade.get("signal") or closed_trade.get("side") or "BUY"
+        pnl = float(closed_trade.get("actual_profit_pct") or 0)
+        logger.info(
+            "MANUAL CLOSE: %s %s | Entry: Rs%.2f -> Exit: Rs%.2f | P&L: %.2f%%",
+            symbol,
+            signal,
+            entry_price,
+            exit_price,
+            pnl,
+        )
         
         return jsonify({
             "success": True, 
@@ -374,6 +342,7 @@ def api_close_trade():
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "signal": signal,
+                "actual_profit_pnl": pnl,
                 "pnl_pct": pnl
             }
         })
@@ -1432,6 +1401,336 @@ def fno_auto_trade_config():
     return jsonify(fno_trader.get_auto_trade_config())
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# INTRADAY PAPER TRADING ENDPOINTS (MIS 4x Leverage)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/intraday/enter-paper", methods=["POST"])
+def intraday_enter_paper():
+    """Record a paper intraday trade (MIS) - simulated, not executed on Groww."""
+    from db_manager import get_db, TradeJournalEntry
+    from datetime import datetime
+    import uuid
+    
+    data = request.get_json(force=True)
+    symbol = data.get('symbol', '').upper()
+    side = data.get('side', 'BUY').upper()
+    quantity = int(data.get('quantity', 1))
+    trigger = data.get('trigger', 'manual')
+    confidence = float(data.get('confidence', 0.75))
+    
+    if not symbol or side not in ['BUY', 'SELL']:
+        return jsonify({"error": "symbol and side (BUY/SELL) required"}), 400
+    
+    try:
+        # Get current price from market (MUST be real data, reject if unavailable)
+        try:
+            market_data = fno_trader._groww_api.get_quotes([symbol])
+            current_price = market_data.get(symbol, {}).get('ltp', 0) or \
+                           market_data.get(symbol, {}).get('last_price', 0)
+            if current_price <= 0:
+                return jsonify({"error": f"Invalid market price for {symbol}: ₹{current_price}"}), 400
+        except Exception as price_err:
+            logger.error(f"Failed to fetch real market price for {symbol}: {price_err}")
+            return jsonify({"error": f"Cannot fetch live price for {symbol} - market data unavailable. Check if symbol is valid and market is open."}), 503
+        
+        # Generate unique trade ID for paper trade
+        trade_id = f"PAPER-{symbol}-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        
+        db = get_db()
+        with db.Session() as session:
+            # Create paper trade entry
+            trade = TradeJournalEntry(
+                trade_id=trade_id,
+                status="OPEN",
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                trigger=trigger,
+                is_paper=True,  # Mark as paper trade
+                entry_time=datetime.utcnow(),
+                entry_price=current_price,
+                signal=side,
+                confidence=confidence,
+                stop_loss=current_price * 0.985 if side == 'BUY' else current_price * 1.015,  # 1.5% margin SL
+                projected_exit=current_price * 1.025 if side == 'BUY' else current_price * 0.975,  # 2.5% target
+                peak_pnl=0,
+                actual_profit_pct=0,
+                breakeven_price=current_price
+            )
+            session.add(trade)
+            session.commit()
+            
+            logger.info(f"Paper intraday trade created: {trade_id} ({symbol} {quantity}@₹{current_price})")
+            
+            return jsonify({
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "entry_price": current_price,
+                "status": "OPEN",
+                "is_paper": True,
+                "message": f"Paper trade recorded: {trade_id}"
+            }), 201
+    except Exception as e:
+        logger.exception("Paper intraday enter error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/intraday/close-paper", methods=["POST"])
+def intraday_close_paper():
+    """Close a paper intraday trade at market price."""
+    from db_manager import get_db, TradeJournalEntry
+    from datetime import datetime
+    
+    data = request.get_json(force=True)
+    symbol = data.get('symbol', '').upper()
+    
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    
+    try:
+        # Get current price (MUST be real, reject if unavailable)
+        try:
+            market_data = fno_trader._groww_api.get_quotes([symbol])
+            current_price = market_data.get(symbol, {}).get('ltp', 0) or \
+                           market_data.get(symbol, {}).get('last_price', 0)
+            if current_price <= 0:
+                return jsonify({"error": f"Invalid market price for {symbol}: ₹{current_price}"}), 400
+        except Exception as price_err:
+            logger.error(f"Failed to fetch real market price for {symbol}: {price_err}")
+            return jsonify({"error": f"Cannot fetch live price for {symbol} - market data unavailable"}), 503
+        
+        db = get_db()
+        with db.Session() as session:
+            # Find most recent open paper trade for this symbol
+            trade = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.symbol == symbol,
+                TradeJournalEntry.is_paper == True,
+                TradeJournalEntry.status == "OPEN"
+            ).order_by(TradeJournalEntry.entry_time.desc()).first()
+            
+            if not trade:
+                return jsonify({"error": f"No open paper trade found for {symbol}"}), 404
+            
+            # Close the trade
+            trade.status = "CLOSED"
+            trade.exit_time = datetime.utcnow()
+            trade.exit_price = current_price
+            trade.exit_reason = "MANUAL"
+            
+            # Calculate P&L
+            if trade.side == 'BUY':
+                pnl_amt = (current_price - trade.entry_price) * trade.quantity
+                pnl_pct = ((current_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            else:
+                pnl_amt = (trade.entry_price - current_price) * trade.quantity
+                pnl_pct = ((trade.entry_price - current_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            
+            trade.actual_profit_pct = pnl_pct
+            
+            session.commit()
+            
+            logger.info(f"Paper trade closed: {trade.trade_id} | P&L: ₹{pnl_amt:.2f} ({pnl_pct:.2f}%)")
+            
+            return jsonify({
+                "trade_id": trade.trade_id,
+                "symbol": symbol,
+                "status": "CLOSED",
+                "exit_price": current_price,
+                "exit_reason": "MANUAL",
+                "pnl_amount": pnl_amt,
+                "pnl_percent": pnl_pct,
+                "is_paper": True,
+                "message": f"Paper trade closed: ₹{pnl_amt:.2f}"
+            }), 200
+    except Exception as e:
+        logger.exception("Paper intraday close error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/intraday/auto-trade-run-paper", methods=["POST"])
+def intraday_auto_trade_run_paper():
+    """Run auto-trade in paper mode - creates paper trades without executing on Groww."""
+    from db_manager import get_db, TradeJournalEntry
+    from datetime import datetime
+    import uuid
+    
+    try:
+        # Get best opportunity
+        opp = fno_trader.find_best_opportunity()
+        
+        if not opp or opp['confidence'] < 0.65:
+            return jsonify({
+                "success": False,
+                "message": "No high-confidence setup found",
+                "opportunities_scanned": 0
+            }), 200
+        
+        # Get current price - MUST BE REAL, reject if unavailable
+        try:
+            market_data = fno_trader._groww_api.get_quotes([opp['symbol']])
+            current_price = market_data.get(opp['symbol'], {}).get('ltp', 0) or \
+                           market_data.get(opp['symbol'], {}).get('last_price', 0)
+            if current_price <= 0:
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid market price for {opp['symbol']}: ₹{current_price}",
+                    "message": "Cannot execute auto-trade without real market price"
+                }), 503
+        except Exception as price_err:
+            logger.error(f"Failed to fetch price for auto-trade {opp['symbol']}: {price_err}")
+            return jsonify({
+                "success": False,
+                "error": f"Cannot fetch live price for {opp['symbol']}",
+                "message": "Market data unavailable"
+            }), 503
+        
+        # Create paper trade
+        trade_id = f"PAPER-AUTO-{opp['symbol']}-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        quantity = int(opp.get('quantity', 1) or 1)
+        paper_amount_limit = bot.get_paper_trade_amount_limit()
+        limit_applied = False
+
+        if paper_amount_limit > 0 and current_price > 0:
+            capped_qty = max(1, int(paper_amount_limit / current_price))
+            if quantity > capped_qty:
+                quantity = capped_qty
+                limit_applied = True
+        
+        db = get_db()
+        with db.Session() as session:
+            trade = TradeJournalEntry(
+                trade_id=trade_id,
+                status="OPEN",
+                symbol=opp['symbol'],
+                side="BUY",
+                quantity=quantity,
+                trigger="auto",
+                is_paper=True,
+                entry_time=datetime.utcnow(),
+                entry_price=current_price,
+                signal="BUY",
+                confidence=opp['confidence'],
+                stop_loss=current_price * 0.985,
+                projected_exit=current_price * 1.025,
+                peak_pnl=0,
+                actual_profit_pct=0,
+                breakeven_price=current_price,
+                pre_trade_json=json.dumps(opp)
+            )
+            session.add(trade)
+            session.commit()
+            
+            logger.info(f"Paper auto-trade: {trade_id} ({opp['symbol']}) @ ₹{current_price}, Confidence: {opp['confidence']*100:.0f}%")
+            
+            return jsonify({
+                "success": True,
+                "trade_id": trade_id,
+                "symbol": opp['symbol'],
+                "quantity": quantity,
+                "entry_price": current_price,
+                "confidence": opp['confidence'],
+                "is_paper": True,
+                "limit_applied": limit_applied,
+                "message": f"Paper auto-trade executed: {trade_id}"
+            }), 201
+    except Exception as e:
+        logger.exception("Paper auto-trade error")
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INTRADAY DATA FETCH ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/intraday/trades")
+def intraday_trades():
+    """Fetch all paper intraday trades from database (NOT from cache)."""
+    from db_manager import get_db, TradeJournalEntry
+    
+    try:
+        db = get_db()
+        with db.Session() as session:
+            # Get paper trades for today
+            from datetime import date, timedelta
+            today_start = datetime.combine(date.today(), datetime.min.time())
+            
+            trades_orm = session.query(TradeJournalEntry).filter(
+                TradeJournalEntry.is_paper == True,
+                TradeJournalEntry.created_at >= today_start
+            ).order_by(TradeJournalEntry.entry_time.desc()).all()
+            
+            trades = []
+            for t in trades_orm:
+                trade_dict = {
+                    "trade_id": t.trade_id,
+                    "action": t.side,  # Map DB field 'side' to display field 'action'
+                    "side": t.side,
+                    "symbol": t.symbol,
+                    "trading_symbol": t.symbol,
+                    "quantity": t.quantity,
+                    "price": t.entry_price,  # Map entry_price to display field
+                    "premium": t.entry_price,
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "status": t.status,
+                    "time": t.entry_time.isoformat() if t.entry_time else None,
+                    "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                    "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                    "confidence": t.confidence,
+                    "signal": t.signal,
+                    "stop_loss": t.stop_loss,
+                    "projected_exit": t.projected_exit,
+                    "pnl": t.actual_profit_pct * t.quantity if t.actual_profit_pct and t.quantity else 0,  # Rough P&L
+                    "actual_profit_pct": t.actual_profit_pct,
+                    "is_paper": t.is_paper,
+                    "trigger": t.trigger,
+                }
+                trades.append(trade_dict)
+            
+            return jsonify({"trades": trades, "count": len(trades)})
+    except Exception as e:
+        logger.exception("Intraday trades fetch error")
+        return jsonify({"error": str(e), "trades": []}), 500
+
+
+@app.route("/api/fno/sync-capital", methods=["POST", "GET"])
+def fno_sync_capital():
+    """Sync F&O capital from Groww account (fetch real margin data)."""
+    try:
+        # Get real capital from Groww API
+        capital_data = fno_trader.get_fno_account_balance()
+        
+        if capital_data and 'capital' in capital_data:
+            from db_manager import set_config
+            total_capital = capital_data['capital']
+            used_capital = capital_data.get('used', 0)
+            
+            # Store in database
+            set_config("fno.capital", str(total_capital), "F&O trading capital from Groww")
+            set_config("fno.used_capital", str(used_capital), "F&O capital currently deployed")
+            
+            logger.info(f"Synced F&O capital: Total=₹{total_capital}, Used=₹{used_capital}")
+            
+            return jsonify({
+                "success": True,
+                "total": total_capital,
+                "used": used_capital,
+                "available": total_capital - used_capital,
+                "message": "Capital synced from Groww"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Could not fetch capital from Groww"
+            }), 503
+    except Exception as e:
+        logger.exception("Capital sync error")
+        return jsonify({"error": str(e), "success": False}), 500
+
+
 @app.route("/api/signals/tomorrow")
 def get_tomorrow_signals():
     """Get XGBoost ML signals for all instruments (for tomorrow's trading)."""
@@ -2341,24 +2640,203 @@ def quote(symbol):
 
 # ── Trade Journal endpoints ──────────────────────────────────────────────────
 
-@app.route("/api/journal")
-def journal_all():
-    """Get all trade journal entries (newest first) from database."""
-    from flask import request
+def _estimate_trade_net_pnl(entry):
+    """Best-effort net P&L fallback when post-trade analysis is missing."""
+    post = _derive_post_trade_metrics(entry)
+    if post.get("net_pnl") is not None:
+        return float(post["net_pnl"])
+
+    entry_price = entry.get("entry_price") or 0
+    quantity = entry.get("quantity") or 0
+    profit_pct = entry.get("actual_profit_pct")
+
+    if profit_pct is None or not entry_price or not quantity:
+        return 0.0
+
+    return round((float(entry_price) * int(quantity) * float(profit_pct)) / 100.0, 2)
+
+
+def _source_was_correct(source_signal, side, trade_was_profitable):
+    """Infer whether a source agreed with the final trade outcome."""
+    if source_signal is None or trade_was_profitable is None:
+        return None
+
+    normalized_signal = str(source_signal).upper()
+    normalized_side = str(side or "BUY").upper()
+    buy_signals = {"BUY", "BULLISH"}
+    sell_signals = {"SELL", "BEARISH"}
+
+    if normalized_side == "BUY":
+        if normalized_signal in buy_signals:
+            return trade_was_profitable
+        if normalized_signal in sell_signals:
+            return not trade_was_profitable
+    elif normalized_side == "SELL":
+        if normalized_signal in sell_signals:
+            return trade_was_profitable
+        if normalized_signal in buy_signals:
+            return not trade_was_profitable
+
+    return None
+
+
+def _derive_post_trade_metrics(entry):
+    """Backfill post-trade analytics for legacy rows that only have basic fields."""
+    post = dict(entry.get("post_trade") or {})
+    side = str(entry.get("side") or entry.get("signal") or "BUY").upper()
+    entry_price = float(entry.get("entry_price") or 0)
+    exit_price = post.get("exit_price", entry.get("exit_price"))
+    quantity = int(entry.get("quantity") or 0)
+    pre_trade = entry.get("pre_trade") or {}
+
+    try:
+        exit_price = float(exit_price) if exit_price is not None else None
+    except (TypeError, ValueError):
+        exit_price = None
+
+    if entry_price > 0 and exit_price is not None and quantity > 0:
+        if side == "SELL":
+            pnl_info = costs.net_profit(exit_price, entry_price, quantity)
+        else:
+            pnl_info = costs.net_profit(entry_price, exit_price, quantity)
+
+        post.setdefault("gross_pnl", pnl_info["gross_profit"])
+        post.setdefault("total_charges", pnl_info["total_charges"])
+        post.setdefault("net_pnl", pnl_info["net_profit"])
+        post.setdefault("profitable", pnl_info["net_profit"] > 0)
+        post.setdefault("exit_price", exit_price)
+        post.setdefault("exit_time", entry.get("exit_time"))
+        post.setdefault("move_pct", entry.get("actual_profit_pct"))
+
+    prediction_correct = post.get("prediction_correct")
+    if prediction_correct is None and entry_price > 0 and exit_price is not None:
+        prediction_correct = exit_price < entry_price if side == "SELL" else exit_price > entry_price
+        post["prediction_correct"] = prediction_correct
+
+    trade_was_profitable = post.get("profitable")
+    if trade_was_profitable is None and post.get("net_pnl") is not None:
+        trade_was_profitable = float(post["net_pnl"]) > 0
+        post["profitable"] = trade_was_profitable
+
+    if post.get("ml_correct") is None:
+        post["ml_correct"] = _source_was_correct(pre_trade.get("ml_signal"), side, trade_was_profitable)
+    if post.get("news_correct") is None:
+        post["news_correct"] = _source_was_correct(pre_trade.get("news_signal"), side, trade_was_profitable)
+    if post.get("market_correct") is None:
+        post["market_correct"] = _source_was_correct(pre_trade.get("market_signal"), side, trade_was_profitable)
+
+    return post
+
+
+def _load_journal_entries_from_db():
     from db_manager import get_db, TradeJournalEntry
-    
-    trade_type = request.args.get('type', None)  # 'paper' or 'actual'
-    
+
     db = get_db()
     with db.Session() as session:
-        query = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at.desc())
-        
-        if trade_type == 'paper':
-            query = query.filter(TradeJournalEntry.is_paper == True)
-        elif trade_type == 'actual':
-            query = query.filter(TradeJournalEntry.is_paper == False)
-        
-        entries = [t.to_dict() for t in query.all()]
+        return [trade.to_dict() for trade in session.query(TradeJournalEntry).all()]
+
+
+def _get_canonical_journal_views():
+    from paper_trade_reconciliation import build_canonical_trade_views
+
+    return build_canonical_trade_views(_load_journal_entries_from_db())
+
+
+def _build_journal_stats_payload(entries):
+    """Match the frontend journal stats contract and avoid undefined values."""
+    closed_entries = [e for e in entries if e.get("status") in CLOSED_TRADE_STATUSES]
+    closed_with_reports = []
+
+    winning_trades = []
+    losing_trades = []
+    total_pnl = 0.0
+
+    for entry in closed_entries:
+        derived_post = _derive_post_trade_metrics(entry)
+        pnl = _estimate_trade_net_pnl(entry)
+        total_pnl += pnl
+        if pnl > 0:
+            winning_trades.append(entry)
+        elif pnl < 0:
+            losing_trades.append(entry)
+        if derived_post:
+            closed_with_reports.append({**entry, "post_trade": derived_post})
+
+    ml_calls = [e for e in closed_with_reports if e.get("post_trade", {}).get("ml_correct") is not None]
+    news_calls = [e for e in closed_with_reports if e.get("post_trade", {}).get("news_correct") is not None]
+    market_calls = [e for e in closed_with_reports if e.get("post_trade", {}).get("market_correct") is not None]
+
+    symbols = {}
+    for entry in entries:
+        symbol = entry.get("symbol") or "UNKNOWN"
+        bucket = symbols.setdefault(symbol, {"count": 0, "winning": 0, "losing": 0})
+        bucket["count"] += 1
+
+        if entry.get("status") in CLOSED_TRADE_STATUSES:
+            pnl = _estimate_trade_net_pnl(entry)
+            if pnl > 0:
+                bucket["winning"] += 1
+            elif pnl < 0:
+                bucket["losing"] += 1
+
+    closed_count = len(closed_entries)
+    win_rate = round((len(winning_trades) / closed_count) * 100, 1) if closed_count else 0.0
+    avg_pnl = round(total_pnl / closed_count, 2) if closed_count else 0.0
+
+    prediction_accuracy = round(
+        (len([e for e in closed_with_reports if e.get("post_trade", {}).get("prediction_correct")]) / len(closed_with_reports)) * 100,
+        1,
+    ) if closed_with_reports else 0.0
+    ml_accuracy = round(
+        (len([e for e in ml_calls if e.get("post_trade", {}).get("ml_correct")]) / len(ml_calls)) * 100,
+        1,
+    ) if ml_calls else 0.0
+    news_accuracy = round(
+        (len([e for e in news_calls if e.get("post_trade", {}).get("news_correct")]) / len(news_calls)) * 100,
+        1,
+    ) if news_calls else 0.0
+    market_accuracy = round(
+        (len([e for e in market_calls if e.get("post_trade", {}).get("market_correct")]) / len(market_calls)) * 100,
+        1,
+    ) if market_calls else 0.0
+
+    return {
+        "total_trades": len(entries),
+        "open_trades": len([e for e in entries if e.get("status") == "OPEN"]),
+        "closed_trades": closed_count,
+        "open": len([e for e in entries if e.get("status") == "OPEN"]),
+        "closed": closed_count,
+        "winning_trades": len(winning_trades),
+        "losing_trades": len(losing_trades),
+        "win_rate": win_rate,
+        "total_pnl": round(total_pnl, 2),
+        "total_profit_pct": round(sum(float(e.get("actual_profit_pct") or 0) for e in closed_entries), 2),
+        "avg_pnl": avg_pnl,
+        "avg_profit_pct": round(
+            sum(float(e.get("actual_profit_pct") or 0) for e in closed_entries) / closed_count,
+            2,
+        ) if closed_count else 0.0,
+        "prediction_accuracy": prediction_accuracy,
+        "ml_accuracy": ml_accuracy,
+        "news_accuracy": news_accuracy,
+        "market_accuracy": market_accuracy,
+        "symbols": symbols,
+    }
+
+@app.route("/api/journal")
+def journal_all():
+    """Get canonical trade journal entries (newest first)."""
+    from flask import request
+    
+    trade_type = request.args.get('type', None)  # 'paper' or 'actual'
+
+    views = _get_canonical_journal_views()
+    if trade_type == 'paper':
+        entries = list(views["paper"])
+    elif trade_type == 'actual':
+        entries = list(views["actual"])
+    else:
+        entries = list(views["all"])
     
     # Attach filtered candles to each entry based on trade status
     try:
@@ -2369,7 +2847,7 @@ def journal_all():
                 filtered_candles = cached
             else:
                 filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
-                    entry.get('intraday_candles', []),
+                    entry.get('intraday_candles') or [],
                     entry
                 )
             entry['intraday_candles'] = filtered_candles
@@ -2381,93 +2859,31 @@ def journal_all():
 
 @app.route("/api/journal/stats")
 def journal_stats():
-    """Get aggregate journal statistics from database."""
-    from db_manager import get_db, TradeJournalEntry
-    from sqlalchemy import func
-    
-    db = get_db()
-    with db.Session() as session:
-        trades = session.query(TradeJournalEntry).all()
-        
-        total_trades = len(trades)
-        open_trades = len([t for t in trades if t.status == "OPEN"])
-        closed_trades = len([t for t in trades if t.status == "CLOSED"])
-        
-        # Calculate P&L stats
-        winning_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct > 0])
-        losing_trades = len([t for t in trades if t.actual_profit_pct and t.actual_profit_pct < 0])
-        
-        total_profit_pct = sum([t.actual_profit_pct for t in trades if t.actual_profit_pct]) if trades else 0
-        win_rate = (winning_trades / closed_trades * 100) if closed_trades > 0 else 0
-        
-        # Group by symbol
-        symbols = {}
-        for t in trades:
-            if t.symbol not in symbols:
-                symbols[t.symbol] = {'count': 0, 'winning': 0, 'losing': 0}
-            symbols[t.symbol]['count'] += 1
-            if t.actual_profit_pct:
-                if t.actual_profit_pct > 0:
-                    symbols[t.symbol]['winning'] += 1
-                else:
-                    symbols[t.symbol]['losing'] += 1
-        
-        stats = {
-            "total_trades": total_trades,
-            "open": open_trades,
-            "closed": closed_trades,
-            "winning_trades": winning_trades,
-            "losing_trades": losing_trades,
-            "win_rate": round(win_rate, 2),
-            "total_profit_pct": round(total_profit_pct, 2),
-            "avg_profit_pct": round(total_profit_pct / closed_trades, 2) if closed_trades > 0 else 0,
-            "symbols": symbols,
-        }
-        
-        return jsonify(stats)
+    """Get aggregate journal statistics from the canonical trade view."""
+    entries = _get_canonical_journal_views()["all"]
+    return jsonify(_build_journal_stats_payload(entries))
 
 
 @app.route("/api/journal/open")
 def journal_open():
-    """Get only open (active) trades from database."""
-    from db_manager import get_db, TradeJournalEntry
-    
-    db = get_db()
-    with db.Session() as session:
-        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
-                   .filter(TradeJournalEntry.status == "OPEN")
-                   .order_by(TradeJournalEntry.created_at.desc()).all()]
-    
+    """Get only open (active) trades from the canonical trade view."""
+    entries = [entry for entry in _get_canonical_journal_views()["all"] if entry.get("status") == "OPEN"]
     return jsonify(entries)
 
 
 @app.route("/api/journal/closed")
 def journal_closed():
-    """Get only closed trades with post-trade reports from database."""
-    from db_manager import get_db, TradeJournalEntry
-    
-    db = get_db()
-    with db.Session() as session:
-        entries = [t.to_dict() for t in session.query(TradeJournalEntry)
-                   .filter(TradeJournalEntry.status == "CLOSED")
-                   .order_by(TradeJournalEntry.created_at.desc()).all()]
-    
+    """Get only closed trades with post-trade reports from the canonical trade view."""
+    entries = [entry for entry in _get_canonical_journal_views()["all"] if entry.get("status") in CLOSED_TRADE_STATUSES]
     return jsonify(entries)
 
 
 @app.route("/api/journal/<trade_id>")
 def journal_entry(trade_id):
-    """Get a single trade journal entry with full pre & post trade reports from database."""
-    from db_manager import get_db, TradeJournalEntry
-    
-    db = get_db()
-    with db.Session() as session:
-        entry = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
-    
-    if entry is None:
+    """Get a single trade journal entry with full pre and post trade reports."""
+    report = _get_canonical_journal_views()["lookup"].get(trade_id)
+    if report is None:
         return jsonify({"error": "Trade not found"}), 404
-    
-    report = entry.to_dict()
     
     # Attach filtered candles to the entry
     try:
@@ -2476,7 +2892,7 @@ def journal_entry(trade_id):
             filtered_candles = cached
         else:
             filtered_candles = trade_chart_manager.filter_candles_by_trade_status(
-                report.get('intraday_candles', []),
+                report.get('intraday_candles') or [],
                 report
             )
         report['intraday_candles'] = filtered_candles
@@ -2495,22 +2911,40 @@ def journal_close(trade_id):
     data = request.get_json(force=True)
     exit_price = data.get("exit_price")
     exit_reason = data.get("exit_reason", "manual")
+    target_entry = _get_canonical_journal_views()["lookup"].get(trade_id)
 
     if not exit_price:
         # Try to fetch current price if not provided
         try:
-            db = get_db()
-            with db.Session() as session:
-                trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
-                if trade and trade.status == "OPEN":
-                    try:
-                        exit_price = bot.fetch_live_price(trade.symbol)
-                    except Exception:
-                        return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
-                else:
-                    return jsonify({"error": "Trade not found or already closed"}), 404
+            if target_entry and target_entry.get("status") == "OPEN":
+                try:
+                    exit_price = bot.fetch_live_price(target_entry["symbol"])
+                except Exception:
+                    return jsonify({"error": "exit_price required (could not fetch live price)"}), 400
+            else:
+                return jsonify({"error": "Trade not found or already closed"}), 404
         except Exception:
             return jsonify({"error": "exit_price is required"}), 400
+
+    if target_entry and target_entry.get("is_paper"):
+        try:
+            from paper_trader import PaperTradeTracker
+
+            tracker = PaperTradeTracker()
+            tracker_trade = next(
+                (trade for trade in tracker.trades if str(trade.get("id")) == str(trade_id) and trade.get("status") == "OPEN"),
+                None,
+            )
+            if tracker_trade:
+                closed_trade = tracker.close_trade(trade_id, float(exit_price), exit_reason)
+                if not closed_trade:
+                    return jsonify({"error": "Trade not found or already closed"}), 404
+
+                updated_entry = _get_canonical_journal_views()["lookup"].get(trade_id)
+                if updated_entry is not None:
+                    return jsonify(updated_entry)
+        except Exception as e:
+            logger.warning("Tracker-based paper trade close failed for %s: %s", trade_id, e)
 
     # Update trade in database
     try:
@@ -2528,7 +2962,10 @@ def journal_close(trade_id):
             
             # Calculate P&L if we have quantity and entry price
             if trade.quantity and trade.entry_price:
-                pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price) * 100
+                if (trade.side or "").upper() == "SELL":
+                    pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price) * 100
+                else:
+                    pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price) * 100
                 trade.actual_profit_pct = pnl_pct
             
             session.commit()
@@ -3134,13 +3571,14 @@ def compare_strategies_endpoint(symbol):
 
 @app.route("/api/paper-trading/status")
 def paper_trading_status():
-    """Get paper trading mode status and paper trades from unified database table."""
+    """Get paper trading mode status and canonical paper trades."""
     try:
-        from db_manager import get_config, get_db, TradeJournalEntry
+        from db_manager import get_config
         is_paper = get_config("paper_trading", "false").lower() == "true"
     except (ImportError, ModuleNotFoundError) as e:
         logger.warning("Database not available: %s", e)
         return jsonify({
+            "paper_mode": False,
             "paper_trading_enabled": False,
             "trades": [],
             "trade_count": 0,
@@ -3148,41 +3586,19 @@ def paper_trading_status():
             "error": "Database unavailable"
         }), 200
 
-    # Query unified trade journal table for paper trades
-    db = get_db()
     try:
-        with db.Session() as session:
-            trades_orm = session.query(TradeJournalEntry).filter(
-                TradeJournalEntry.is_paper == True
-            ).order_by(TradeJournalEntry.created_at.desc()).all()
-            
-            # Convert to JSON-serializable format
-            trades = [{
-                "trade_id": t.trade_id,
-                "symbol": t.symbol,
-                "side": t.side,
-                "quantity": t.quantity,
-                "entry_price": t.entry_price,
-                "exit_price": t.exit_price,
-                "status": t.status,
-                "entry_time": t.entry_time.isoformat() if t.entry_time else None,
-                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
-                "signal": t.signal,
-                "confidence": t.confidence,
-                "stop_loss": t.stop_loss,
-                "projected_exit": t.projected_exit,
-                "actual_profit_pct": t.actual_profit_pct,
-            } for t in trades_orm]
-
-            return jsonify({
-                "paper_mode": is_paper,
-                "trades": trades,
-                "trade_count": len(trades),
-                "db_available": True,
-            })
+        trades = list(_get_canonical_journal_views()["paper"])
+        return jsonify({
+            "paper_mode": is_paper,
+            "trades": trades,
+            "trade_count": len(trades),
+            "open_trade_count": len([t for t in trades if t["status"] == "OPEN"]),
+            "db_available": True,
+        })
     except Exception as e:
         logger.error(f"Failed to fetch paper trades: {e}")
         return jsonify({
+            "paper_mode": is_paper,
             "paper_trading_enabled": is_paper,
             "trades": [],
             "trade_count": 0,
@@ -3247,7 +3663,7 @@ def get_closed_trades():
         with db.Session() as session:
             trades_orm = session.query(TradeJournalEntry).filter(
                 TradeJournalEntry.is_paper == True,
-                TradeJournalEntry.status == "CLOSED"
+                TradeJournalEntry.status.in_(CLOSED_TRADE_STATUSES)
             ).order_by(TradeJournalEntry.created_at.desc()).all()
             
             closed_trades = [t.to_dict() for t in trades_orm]
@@ -3929,6 +4345,63 @@ def toggle_paper_trading():
     new_val = "false" if current else "true"
     set_config("paper_trading", new_val, description="Paper trading mode (true/false)")
     return jsonify({"paper_mode": new_val == "true", "message": f"Paper trading {'enabled' if new_val == 'true' else 'disabled'}"})
+
+
+@app.route("/api/paper-trading/settings", methods=["GET"])
+def get_paper_trading_settings():
+    """Get configurable paper-trading controls for the settings page."""
+    try:
+        from db_manager import get_config
+
+        amount_limit = float(get_config("paper_trade_amount_limit", "0") or 0)
+
+        return jsonify({
+            "status": "success",
+            "settings": {
+                "amount_limit": amount_limit,
+                "amount_limit_enabled": amount_limit > 0,
+                "amount_limit_note": "Maximum rupee value per auto paper trade. Set 0 to keep the current sizing logic.",
+            },
+        })
+    except Exception as e:
+        logger.exception("Error getting paper trading settings")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/paper-trading/settings", methods=["POST"])
+def update_paper_trading_settings():
+    """Update configurable paper-trading controls."""
+    try:
+        from db_manager import set_config
+
+        data = request.get_json() or {}
+        amount_limit = data.get("amount_limit", 0)
+
+        try:
+            amount_limit = float(amount_limit)
+        except (TypeError, ValueError):
+            return jsonify({"error": "amount_limit must be a number"}), 400
+
+        if amount_limit < 0:
+            return jsonify({"error": "amount_limit must be 0 or greater"}), 400
+
+        set_config(
+            "paper_trade_amount_limit",
+            f"{amount_limit:.2f}",
+            "Maximum rupee value per auto paper trade (0 = existing sizing logic)",
+        )
+
+        return jsonify({
+            "status": "success",
+            "message": "Paper trading settings saved",
+            "settings": {
+                "amount_limit": round(amount_limit, 2),
+                "amount_limit_enabled": amount_limit > 0,
+            },
+        })
+    except Exception as e:
+        logger.exception("Error updating paper trading settings")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/cash-auto-trade/toggle", methods=["POST"])
@@ -4731,9 +5204,72 @@ def api_send_daily_summary():
 
 # ── Live Price endpoint ────────────────────────────────────────────────────
 
+def _get_latest_symbol_price(symbol):
+    """Return the latest available price for a symbol, with after-hours fallback."""
+    from paper_trader import get_live_price
+
+    symbol = symbol.upper()
+
+    try:
+        price = get_live_price(symbol)
+        if price is not None and float(price) > 0:
+            return {"price": float(price), "source": "live"}
+    except Exception as e:
+        logger.debug("Live price fetch failed for %s: %s", symbol, e)
+
+    try:
+        from db_manager import get_db, IntradayCandle
+        from sqlalchemy import text as sql_text
+
+        db = get_db()
+
+        # Use the freshest stored intraday close first.
+        with db.Session() as session:
+            latest_intraday = session.query(IntradayCandle).filter(
+                IntradayCandle.symbol == symbol
+            ).order_by(
+                IntradayCandle.trading_date.desc(),
+                IntradayCandle.time.desc(),
+            ).first()
+
+            if latest_intraday and latest_intraday.close is not None:
+                return {
+                    "price": float(latest_intraday.close),
+                    "source": "intraday_db",
+                    "as_of": f"{latest_intraday.trading_date}T{latest_intraday.time}",
+                }
+
+        # Fall back to the most recent daily close if intraday candles are missing.
+        with db.engine.connect() as conn:
+            row = conn.execute(
+                sql_text(
+                    """
+                    SELECT close, date
+                    FROM stock_prices
+                    WHERE symbol = :symbol
+                    ORDER BY date DESC
+                    LIMIT 1
+                    """
+                ),
+                {"symbol": symbol},
+            ).mappings().first()
+
+            if row and row.get("close") is not None:
+                as_of = row.get("date")
+                return {
+                    "price": float(row["close"]),
+                    "source": "daily_db",
+                    "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+                }
+    except Exception as e:
+        logger.debug("Stored price lookup failed for %s: %s", symbol, e)
+
+    return None
+
+
 @app.route("/api/live-prices", methods=["POST"])
 def get_live_prices_endpoint():
-    """Get current live prices for multiple symbols."""
+    """Get the latest available price for multiple symbols."""
     try:
         data = request.json or {}
         symbols = data.get("symbols", [])
@@ -4741,20 +5277,25 @@ def get_live_prices_endpoint():
         if not symbols:
             return jsonify({"error": "No symbols provided"}), 400
         
-        from paper_trader import get_live_price
-        
         prices = {}
+        sources = {}
         for symbol in symbols:
             try:
-                price = get_live_price(symbol)
-                if price is not None:
-                    prices[symbol] = price
-                    logger.debug(f"Fetched live price for {symbol}: {price}")
+                price_data = _get_latest_symbol_price(symbol)
+                if price_data:
+                    prices[symbol] = price_data["price"]
+                    sources[symbol] = price_data.get("source", "unknown")
+                    logger.debug(
+                        "Fetched latest price for %s: %s (%s)",
+                        symbol,
+                        price_data["price"],
+                        price_data.get("source", "unknown"),
+                    )
             except Exception as e:
-                logger.debug(f"Failed to fetch live price for {symbol}: {e}")
+                logger.debug(f"Failed to fetch latest price for {symbol}: {e}")
                 # Skip this symbol, continue with others
         
-        return jsonify({"prices": prices})
+        return jsonify({"prices": prices, "sources": sources})
     except Exception as e:
         logger.exception("Error fetching live prices")
         return jsonify({"error": str(e)}), 500
@@ -4764,39 +5305,11 @@ def get_live_prices_endpoint():
 def get_live_price_endpoint(symbol):
     """Get current live price for a single symbol - live during hours, latest from DB after hours."""
     try:
-        from paper_trader import get_live_price
-        
         symbol = symbol.upper()
-        price = get_live_price(symbol)
-        
-        if price is not None:
-            return jsonify({"price": price, "symbol": symbol, "source": "live"})
-        
-        # Fall back to latest database price (for after-hours)
-        with get_db() as conn:
-            cursor = conn.cursor()
-            # Try latest intraday candle first
-            cursor.execute("""
-                SELECT close FROM intraday_candles 
-                WHERE symbol = ? 
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            """, (symbol,))
-            row = cursor.fetchone()
-            if row:
-                return jsonify({"price": row[0], "symbol": symbol, "source": "intraday_db"})
-            
-            # Fall back to daily close price
-            cursor.execute("""
-                SELECT close FROM stock_prices 
-                WHERE symbol = ? 
-                ORDER BY trading_date DESC 
-                LIMIT 1
-            """, (symbol,))
-            row = cursor.fetchone()
-            if row:
-                return jsonify({"price": row[0], "symbol": symbol, "source": "daily_db"})
-        
+        price_data = _get_latest_symbol_price(symbol)
+        if price_data:
+            return jsonify({"symbol": symbol, **price_data})
+
         return jsonify({"error": f"No price available for {symbol}", "symbol": symbol}), 404
     except Exception as e:
         logger.exception(f"Error fetching price for {symbol}")
@@ -4807,40 +5320,11 @@ def get_live_price_endpoint(symbol):
 def get_latest_price(symbol):
     """Get latest available price (live during market hours, last close after hours)."""
     try:
-        from paper_trader import get_live_price
-        
         symbol = symbol.upper()
-        
-        # Try live price first
-        price = get_live_price(symbol)
-        if price is not None:
-            return jsonify({"price": price, "symbol": symbol, "source": "live"})
-        
-        # Fall back to latest database price
-        with get_db() as conn:
-            cursor = conn.cursor()
-            # Get latest close price from intraday_candles or stock_prices
-            cursor.execute("""
-                SELECT close FROM intraday_candles 
-                WHERE symbol = ? 
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            """, (symbol,))
-            row = cursor.fetchone()
-            if row:
-                return jsonify({"price": row[0], "symbol": symbol, "source": "database_intraday"})
-            
-            # Last resort: daily price
-            cursor.execute("""
-                SELECT close FROM stock_prices 
-                WHERE symbol = ? 
-                ORDER BY trading_date DESC 
-                LIMIT 1
-            """, (symbol,))
-            row = cursor.fetchone()
-            if row:
-                return jsonify({"price": row[0], "symbol": symbol, "source": "database_daily"})
-        
+        price_data = _get_latest_symbol_price(symbol)
+        if price_data:
+            return jsonify({"symbol": symbol, **price_data})
+
         return jsonify({"error": f"No price available for {symbol}", "symbol": symbol}), 404
     except Exception as e:
         logger.exception(f"Error fetching latest price for {symbol}")
@@ -5340,6 +5824,104 @@ def get_5min_candles():
     except Exception as e:
         logger.exception(f"Error fetching 5-minute candles: {e}")
         return jsonify({"candles": [], "error": str(e)}), 200
+
+
+# ── Scheduler Settings API ──────────────────────────────────────────────────
+
+@app.route("/api/scheduler/settings", methods=["GET"])
+def get_scheduler_settings():
+    """Get all scheduler settings (task intervals in seconds)."""
+    try:
+        from db_manager import get_config
+        
+        # Define default intervals for each task
+        tasks = {
+            "cash_auto_trade": ("5", "Generate BUY/SELL signals on watchlist (seconds)"),
+            "auto_close_trades": ("5", "Check and close trades at target/SL (seconds)"),
+            "fno_auto_trade": ("5", "F&O auto-trading interval (seconds)"),
+            "collect_5min_candles": ("300", "Collect 5-min candles (seconds)"),
+            "auto_analysis": ("300", "Run technical analysis (seconds)"),
+            "news_prefetch": ("600", "Prefetch news articles (seconds)"),
+            "global_indices": ("900", "Update global indices (seconds)"),
+            "deep_analysis": ("1800", "Deep analysis (seconds)"),
+        }
+        
+        settings = {}
+        for task_name, (default_val, description) in tasks.items():
+            key = f"scheduler_interval_{task_name}"
+            value = get_config(key, default_val)
+            settings[task_name] = {
+                "interval": int(value),
+                "description": description,
+                "key": key
+            }
+        
+        return jsonify({
+            "status": "success",
+            "settings": settings,
+            "message": "Scheduler settings (changes require app restart)"
+        })
+    except Exception as e:
+        logger.exception("Error getting scheduler settings")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scheduler/settings", methods=["POST"])
+def update_scheduler_settings():
+    """Update scheduler settings (task intervals)."""
+    try:
+        from db_manager import set_config, get_config
+        data = request.get_json() or {}
+        
+        updated = []
+        errors = []
+        
+        for task_name, interval in data.items():
+            try:
+                # Validate interval is positive integer
+                interval_int = int(interval)
+                if interval_int < 1:
+                    errors.append(f"{task_name}: interval must be >= 1 second")
+                    continue
+                
+                key = f"scheduler_interval_{task_name}"
+                set_config(key, str(interval_int), f"Interval for {task_name} task")
+                updated.append(f"{task_name}={interval_int}s")
+            except (ValueError, TypeError):
+                errors.append(f"{task_name}: invalid interval value")
+        
+        message = f"Updated {len(updated)} setting(s). App restart required."
+        if errors:
+            message += f" Errors: {', '.join(errors)}"
+        
+        return jsonify({
+            "status": "success" if not errors else "partial",
+            "updated": updated,
+            "errors": errors,
+            "message": message,
+            "restart_required": True
+        })
+    except Exception as e:
+        logger.exception("Error updating scheduler settings")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scheduler/status", methods=["GET"])
+def get_scheduler_status():
+    """Get scheduler runtime status and task execution counts."""
+    try:
+        from scheduler import _task_stats
+        return jsonify({
+            "status": "success",
+            "scheduler_running": True,
+            "task_stats": _task_stats
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "scheduler_running": False,
+            "error": str(e)
+        }), 500
 
 
 if __name__ == "__main__":

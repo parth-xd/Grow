@@ -1053,10 +1053,10 @@ def start_scheduler():
     _register("auto_analysis",    _task_auto_analysis,  300, initial_delay=15)
     _register("news_prefetch",    _task_news_prefetch,   600, initial_delay=20)
 
-    # Tier 4: 30s — trading tasks (need candles + predictions ready)
-    _register("fno_auto_trade",   _task_fno_auto_trade,  300, initial_delay=30)
-    _register("cash_auto_trade",      _task_cash_auto_trade,  300, initial_delay=35)
-    _register("auto_close_trades", _task_auto_close_trades, 30, initial_delay=36)  # Check every 30s for TP/SL hits
+    # Tier 4: 5s — trading tasks (need candles + predictions ready)
+    _register("fno_auto_trade",   _task_fno_auto_trade,  5, initial_delay=2)
+    _register("cash_auto_trade",      _task_cash_auto_trade,  5, initial_delay=3)
+    _register("auto_close_trades", _task_auto_close_trades, 5, initial_delay=4)  # Check every 5s for TP/SL hits
     _register("fno_capital_sync", _task_fno_capital_sync, 600, initial_delay=40)
 
     # Tier 5: 60s — secondary data feeds

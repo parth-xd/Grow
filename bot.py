@@ -689,6 +689,7 @@ def get_prediction(symbol, intraday_candles=None):
             trade_budget = available if available > 0 else MAX_TRADE_VALUE
         except:
             trade_budget = MAX_TRADE_VALUE
+        trade_budget = _apply_paper_trade_amount_limit(trade_budget)
         qty = int(trade_budget / price) if price > 0 else 1
         cost_info = costs.min_profitable_move(price, qty, product=DEFAULT_PRODUCT, exchange=DEFAULT_EXCHANGE)
         cost_data = {
@@ -825,6 +826,31 @@ def is_paper_mode():
         return False
 
 
+def get_paper_trade_amount_limit():
+    """Optional rupee cap for each auto paper trade. Zero keeps current sizing."""
+    try:
+        from db_manager import get_config
+        raw = get_config("paper_trade_amount_limit", "0")
+        return max(float(raw or 0), 0.0)
+    except Exception:
+        return 0.0
+
+
+def _apply_paper_trade_amount_limit(trade_budget):
+    """Clamp auto paper-trade sizing without affecting real-trade behavior."""
+    if not is_paper_mode():
+        return trade_budget
+
+    amount_limit = get_paper_trade_amount_limit()
+    if amount_limit <= 0:
+        return trade_budget
+
+    if trade_budget <= 0:
+        return amount_limit
+
+    return min(trade_budget, amount_limit)
+
+
 def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", reason="", prediction=None):
     """
     Record a simulated paper trade using the unified paper_trader system.
@@ -924,6 +950,8 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
             prediction=safe_prediction,
             trigger="auto",
             is_paper=True,
+            trade_id=trade["id"],
+            entry_time=trade.get("entry_time"),
         )
         logger.info(f"✓ Synced paper trade {trade['id']} to trade journal as {journal_entry.get('trade_id')}")
     except Exception as e:
@@ -971,6 +999,8 @@ def place_buy(symbol, quantity=None, price=None, reason="", prediction=None):
         except:
             # Paper trading mode: allocate reasonable per-trade budget
             trade_budget = MAX_TRADE_VALUE * 0.05  # 5% of max value = ~₹50M per trade
+
+        trade_budget = _apply_paper_trade_amount_limit(trade_budget)
         
         quantity = int(trade_budget / price) if price > 0 else 1
         # Cap at MAX_TRADE_QUANTITY (1000 shares) per trade
@@ -1256,6 +1286,7 @@ def auto_trade():
                     trade_budget = available if available > 0 else MAX_TRADE_VALUE
                 except:
                     trade_budget = MAX_TRADE_VALUE
+                trade_budget = _apply_paper_trade_amount_limit(trade_budget)
                 qty = int(trade_budget / price) if price > 0 else 1
                 cost_info = costs.min_profitable_move(price, qty, product=DEFAULT_PRODUCT, exchange=DEFAULT_EXCHANGE)
                 breakeven_pct = cost_info["min_move_pct"]
@@ -1268,13 +1299,15 @@ def auto_trade():
                     })
                     continue
 
-                # Create pre-trade journal report BEFORE placing the order
-                journal_report = trade_journal.create_pre_trade_report(
-                    symbol=symbol, side="BUY", quantity=qty,
-                    entry_price=price, prediction=pred, trigger="auto",
-                )
+                journal_report = None
+                if not is_paper_mode():
+                    # Real trades still create the journal entry before order placement.
+                    journal_report = trade_journal.create_pre_trade_report(
+                        symbol=symbol, side="BUY", quantity=qty,
+                        entry_price=price, prediction=pred, trigger="auto",
+                    )
 
-                # 🔥 Pass the calculated quantity to place_buy to ensure consistent qty
+                # Pass the calculated quantity to place_buy to ensure consistent qty
                 trade = place_buy(symbol, quantity=qty, price=price,
                                   reason=pred.get("reason", ""),
                                   prediction=pred)
@@ -1287,8 +1320,11 @@ def auto_trade():
                     logger.warning("GTT SL failed for %s: %s", symbol, e)
 
                 open_symbols.add(symbol)
-                trade["trade_id"] = journal_report["trade_id"]
-                actions.append({"symbol": symbol, "action": "BUY", "trade": trade, "trade_id": journal_report["trade_id"]})
+                trade_trade_id = trade.get("trade_id") or trade.get("order_id")
+                if journal_report is not None:
+                    trade["trade_id"] = journal_report["trade_id"]
+                    trade_trade_id = journal_report["trade_id"]
+                actions.append({"symbol": symbol, "action": "BUY", "trade": trade, "trade_id": trade_trade_id})
             except Exception as e:
                 actions.append({"symbol": symbol, "action": "ERROR", "reason": str(e)})
 

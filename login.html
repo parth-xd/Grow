@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Groww AI Trading Platform</title>
+    <title>Groww - Trade Smarter</title>
     <style>
         * {
             margin: 0;
@@ -11,562 +11,902 @@
             box-sizing: border-box;
         }
 
+        html {
+            scroll-behavior: smooth;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+            background: #0a0a0a;
+            color: #ffffff;
+            min-height: 100vh;
+            cursor: none;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        #animated-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+        }
+
+        .cursor {
+            position: fixed;
+            width: 8px;
+            height: 8px;
+            background: rgba(139, 58, 58, 0.8);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 9999;
+            transform: translate(-50%, -50%);
+            will-change: transform;
+            opacity: 0.8;
+            box-shadow: 0 0 8px rgba(88, 32, 32, 0.4);
+            mix-blend-mode: screen;
+            transition: width 0.15s ease, height 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .page-wrapper {
+            position: relative;
+            z-index: 2;
             min-height: 100vh;
             display: flex;
+            flex-direction: column;
+        }
+
+        /* Header Navigation */
+        .header-nav {
+            padding: 24px 48px;
+            display: flex;
+            justify-content: space-between;
             align-items: center;
-            justify-content: center;
-            overflow: hidden;
+            border-bottom: 1px solid rgba(88, 32, 32, 0.08);
+        }
+
+        .nav-logo {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            color: #ffffff;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            align-items: center;
+        }
+
+        .nav-links a {
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.6);
+            text-decoration: none;
+            transition: color 0.3s ease;
+            position: relative;
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 0;
+            width: 0;
+            height: 1px;
+            background: #8b3a3a;
+            transition: width 0.4s ease;
+        }
+
+        .nav-links a:hover {
+            color: #ffffff;
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
         }
 
         .container {
-            width: 100%;
-            max-width: 450px;
-            padding: 20px;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 64px 20px 48px;
         }
 
-        .card {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            padding: 40px;
-            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
-            border: 1px solid rgba(255, 255, 255, 0.18);
+        .content {
+            max-width: 520px;
+            width: 100%;
         }
 
         .logo {
-            text-align: center;
-            margin-bottom: 30px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            color: #ffffff;
+            margin-bottom: 72px;
+            opacity: 0.65;
         }
 
-        .logo h1 {
-            font-size: 32px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 8px;
+        .header h1 {
+            font-size: clamp(48px, 6vw, 64px);
+            font-weight: 700;
+            line-height: 1.15;
+            margin-bottom: 18px;
+            color: #ffffff;
+            letter-spacing: -0.02em;
+            opacity: 1;
         }
 
-        .logo p {
-            color: #666;
-            font-size: 14px;
+        .header h1 span {
+            color: #582020;
+            position: relative;
+        }
+
+        .header h1 span::after {
+            content: '';
+            position: absolute;
+            bottom: -6px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #582020;
+            transform: scaleX(0);
+            transform-origin: left;
+            transition: transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .header h1:hover span::after {
+            transform: scaleX(1);
+        }
+
+        .header p {
+            font-size: clamp(14px, 1.5vw, 16px);
+            font-weight: 400;
+            color: rgba(255, 255, 255, 0.58);
+            line-height: 1.7;
+            margin-bottom: 40px;
+            letter-spacing: 0.2px;
+        }
+
+        .card {
+            background: rgba(13, 13, 13, 0.5);
+            border: 1px solid rgba(88, 32, 32, 0.15);
+            padding: 36px;
+            overflow: hidden;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 26px;
         }
 
         label {
             display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-            font-size: 14px;
-        }
-
-        input[type="email"],
-        input[type="password"],
-        input[type="text"] {
-            width: 100%;
-            padding: 12px 16px;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            font-size: 14px;
-            transition: all 0.3s;
-            background: rgba(255, 255, 255, 0.8);
-        }
-
-        input[type="email"]:focus,
-        input[type="password"]:focus,
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-            background: white;
-        }
-
-        .btn {
-            width: 100%;
-            padding: 12px 16px;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
+            font-size: 10px;
             font-weight: 600;
+            margin-bottom: 12px;
+            color: rgba(255, 255, 255, 0.54);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 0;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid rgba(139, 58, 58, 0.25);
+            color: #ffffff;
+            font-size: 15px;
+            transition: border-color 0.4s ease, color 0.3s ease;
+            font-family: inherit;
+            letter-spacing: 0.3px;
+        }
+
+        input::placeholder {
+            color: rgba(255, 255, 255, 0.25);
+        }
+
+        input:focus {
+            outline: none;
+            border-bottom-color: #582020;
+            color: #ffffff;
+        }
+
+        button {
+            font-family: inherit;
+            font-weight: 600;
+            border: none;
             cursor: pointer;
-            transition: all 0.3s;
-            text-align: center;
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            font-size: 11px;
+            padding: 14px 0;
+            width: 100%;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-bottom: 14px;
+            background: transparent;
+            color: #ffffff;
+            position: relative;
+            overflow: hidden;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            margin-top: 10px;
+            color: #8b3a3a;
+            border-bottom: 2px solid #8b3a3a;
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+            color: #582020;
+            border-bottom-color: #582020;
+            letter-spacing: 1.8px;
         }
 
-        .btn-primary:active {
-            transform: translateY(0);
+        .btn-secondary {
+            color: rgba(255, 255, 255, 0.68);
+            border-bottom: 1px solid rgba(139, 58, 58, 0.25);
         }
 
-        .btn-google {
-            background: white;
-            color: #333;
-            border: 1px solid #ddd;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            margin-bottom: 16px;
-        }
-
-        .btn-google:hover {
-            background: #f8f8f8;
-            border-color: #999;
-        }
-
-        .btn-google svg {
-            width: 20px;
-            height: 20px;
+        .btn-secondary:hover {
+            color: #ffffff;
+            border-bottom-color: rgba(139, 58, 58, 0.45);
+            letter-spacing: 1.7px;
         }
 
         .divider {
             text-align: center;
-            margin: 20px 0;
-            color: #999;
-            font-size: 14px;
+            color: rgba(255, 255, 255, 0.25);
+            margin: 28px 0;
+            font-size: 11px;
             position: relative;
+            letter-spacing: 0.5px;
         }
 
-        .divider::before {
+        .divider::before,
+        .divider::after {
             content: '';
             position: absolute;
-            left: 0;
             top: 50%;
-            width: 100%;
+            width: 45%;
             height: 1px;
-            background: #ddd;
-            z-index: 0;
+            background: rgba(139, 58, 58, 0.15);
         }
 
-        .divider span {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 0 10px;
-            position: relative;
-            z-index: 1;
-        }
+        .divider::before { left: 0; }
+        .divider::after { right: 0; }
 
-        .toggle-form {
+        .form-toggle {
             text-align: center;
-            margin-top: 20px;
-            color: #666;
-            font-size: 14px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.54);
+            margin-top: 28px;
+            letter-spacing: 0.3px;
         }
 
-        .toggle-form a {
-            color: #667eea;
-            cursor: pointer;
+        .form-toggle a {
+            color: #6b5d35;
             text-decoration: none;
             font-weight: 600;
+            position: relative;
+            border-bottom: 1px solid transparent;
+            transition: all 0.3s ease;
         }
 
-        .toggle-form a:hover {
-            text-decoration: underline;
+        .form-toggle a:hover {
+            color: #6b5d35;
+            border-bottom-color: #6b5d35;
         }
 
-        .error {
-            background: #fee;
-            color: #c33;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            font-size: 14px;
-            border-left: 4px solid #c33;
-        }
-
-        .success {
-            background: #efe;
-            color: #3c3;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            font-size: 14px;
-            border-left: 4px solid #3c3;
-        }
-
-        .hidden {
+        #sign-up-form {
             display: none;
+            overflow: hidden;
         }
 
-        .loading {
-            opacity: 0.6;
+        /* Footer */
+        .footer {
+            margin-top: auto;
+            padding: 48px 48px 32px;
+            border-top: 1px solid rgba(88, 32, 32, 0.08);
+            background: linear-gradient(180deg, rgba(10, 10, 10, 0), rgba(10, 10, 10, 0.5));
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.48);
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+            overflow: hidden;
+        }
+
+        .footer-intro {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 28px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(139, 58, 58, 0.08);
+        }
+
+        .footer-kicker {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2.2px;
+            color: rgba(255, 255, 255, 0.68);
+        }
+
+        .footer-caption {
+            max-width: 300px;
+            text-align: right;
+            line-height: 1.6;
+            color: rgba(255, 255, 255, 0.48);
+            font-size: 10px;
+            letter-spacing: 0.3px;
+        }
+
+        .footer-brand-wrap {
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+            padding-top: 12px;
+            padding-bottom: 0;
+            border-top: 1px solid rgba(139, 58, 58, 0.06);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 14px;
+        }
+
+        .footer-brand {
+            position: relative;
+            left: -0.04em;
+            bottom: auto;
+            width: 100%;
+            font-size: clamp(48px, 8vw, 96px);
+            line-height: 0.84;
+            font-weight: 800;
+            letter-spacing: -0.06em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.9);
+            white-space: nowrap;
+            user-select: none;
             pointer-events: none;
+            transform-origin: left center;
+            transition: transform 1s cubic-bezier(0.16, 1, 0.3, 1), letter-spacing 0.8s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease;
         }
 
-        .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-top-color: white;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
+        .footer:hover .footer-brand {
+            transform: scaleX(1.01) translateY(-1px);
+            letter-spacing: -0.035em;
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        .footer-copy {
+            position: relative;
+            z-index: 1;
+            max-width: 180px;
+            margin-top: 4px;
+            font-size: 9px;
+            line-height: 1.7;
+            text-transform: uppercase;
+            letter-spacing: 1.6px;
+            color: rgba(255, 255, 255, 0.42);
         }
 
-        .api-key-form {
-            margin-top: 30px;
-            padding-top: 30px;
-            border-top: 1px solid #ddd;
+        .footer-meta-inline {
+            position: relative;
+            z-index: 1;
+            margin-left: auto;
+            margin-top: 4px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+            text-align: right;
+            font-size: 9px;
+            line-height: 1.5;
+            text-transform: uppercase;
+            letter-spacing: 1.6px;
+            color: rgba(255, 255, 255, 0.42);
+            max-width: 150px;
         }
 
-        .api-key-form h3 {
-            color: #333;
-            margin-bottom: 20px;
-            font-size: 16px;
-        }
-
-        .info {
-            background: #f0f4ff;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 13px;
-            color: #555;
+        .footer-section h3 {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
             margin-bottom: 16px;
-            border-left: 4px solid #667eea;
+            color: rgba(255, 255, 255, 0.66);
         }
 
-        @media (max-width: 600px) {
-            .card {
-                padding: 30px 20px;
+        .footer-item {
+            margin-bottom: 14px;
+            line-height: 1.7;
+        }
+
+        .footer-item a {
+            color: rgba(255, 255, 255, 0.54);
+            text-decoration: none;
+            transition: color 0.35s ease, transform 0.35s ease, letter-spacing 0.35s ease;
+            position: relative;
+            display: inline-block;
+            font-size: 10px;
+            letter-spacing: 0.2px;
+        }
+
+        .footer-item a:hover {
+            color: #ffffff;
+            transform: translateX(2px);
+            letter-spacing: 0.06em;
+        }
+
+        .footer-item a::after {
+            content: '';
+            position: absolute;
+            bottom: -3px;
+            left: 0;
+            width: 0;
+            height: 1px;
+            background: #8b3a3a;
+            transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .footer-item a:hover::after {
+            width: 100%;
+        }
+
+        .contact-label {
+            color: rgba(255, 255, 255, 0.36);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 1.3px;
+            margin-bottom: 4px;
+        }
+
+        .contact-value {
+            color: rgba(255, 255, 255, 0.76);
+            font-weight: 500;
+            display: inline-block;
+            font-variant-numeric: tabular-nums;
+            transition: color 0.35s ease;
+            font-size: 10px;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #8b3a3a;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2.4s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.9; }
+            50% { opacity: 0.4; }
+        }
+
+        .footer:hover .contact-value,
+        .footer:hover .footer-caption {
+            color: rgba(255, 255, 255, 0.62);
+        }
+
+        @media (max-width: 480px) {
+            .header-nav {
+                padding: 18px 20px;
+                flex-direction: column;
+                gap: 18px;
             }
-            
-            .logo h1 {
-                font-size: 24px;
+
+            .nav-links {
+                width: 100%;
+                justify-content: center;
+                gap: 24px;
             }
+
+            .container { padding: 48px 20px 40px; }
+            .content { max-width: 100%; }
+            .header h1 { font-size: 42px; margin-bottom: 14px; }
+            .header p { margin-bottom: 32px; }
+            .card { padding: 28px; }
+            .form-group { margin-bottom: 22px; }
+            .footer { padding: 36px 20px 24px; }
+            .footer-intro { flex-direction: column; align-items: flex-start; padding-bottom: 14px; }
+            .footer-caption { text-align: left; max-width: none; }
+            .footer-brand-wrap { min-height: 0; }
+            .footer-brand { font-size: clamp(40px, 14vw, 76px); }
+            .footer-meta-inline { align-items: flex-start; text-align: left; margin-left: 0; }
+            .nav-logo { font-size: 12px; }
         }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <div class="card">
-            <div class="logo">
-                <h1>📈 Groww AI</h1>
-                <p>Intelligent Trading Platform</p>
-            </div>
+    <canvas id="animated-bg"></canvas>
+    <div class="cursor" id="cursor"></div>
 
-            <!-- Login Form -->
-            <div id="loginForm">
-                <div id="loginError" class="error hidden"></div>
+    <div class="page-wrapper">
+        <header class="header-nav">
+            <div class="nav-logo">GROWW</div>
+            <nav class="nav-links">
+                <a href="index.html">Home</a>
+                <a href="#">Markets</a>
+                <a href="#">Docs</a>
+            </nav>
+        </header>
 
-                <!-- Quick Demo Button (Development Only) -->
-                <button type="button" class="btn btn-secondary" onclick="quickDemo()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; margin-bottom: 16px; border: none;">
-                    ⚡ Quick Demo (Skip Auth)
-                </button>
-
-                <div class="divider"><span>or</span></div>
-
-                <!-- Google OAuth Button -->
-                <button class="btn btn-google" onclick="loginWithGoogle()">
-                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                    </svg>
-                    Continue with Google
-                </button>
-
-                <div class="divider"><span>or</span></div>
-
-                <form onsubmit="handleEmailLogin(event)">
-                    <div class="form-group">
-                        <label for="loginEmail">Email</label>
-                        <input type="email" id="loginEmail" placeholder="you@example.com" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="loginPassword">Password</label>
-                        <input type="password" id="loginPassword" placeholder="••••••••" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Sign In</button>
-                </form>
-
-                <div class="toggle-form">
-                    Don't have an account? <a onclick="toggleForms()">Sign up</a>
+        <div class="container">
+            <div class="content">
+                <div class="logo">Authentication</div>
+                <div class="header">
+                    <h1>Trade <span>Smarter</span></h1>
+                    <p>Real-time market intelligence. Built for the discerning trader.</p>
                 </div>
-            </div>
 
-            <!-- Signup Form -->
-            <div id="signupForm" class="hidden">
-                <div id="signupError" class="error hidden"></div>
-
-                <!-- Google OAuth Button (Signup) -->
-                <button class="btn btn-google" onclick="loginWithGoogle()">
-                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                    </svg>
-                    Sign up with Google
-                </button>
-
-                <div class="divider"><span>or</span></div>
-
-                <form onsubmit="handleEmailSignup(event)">
-                    <div class="form-group">
-                        <label for="signupUsername">Username</label>
-                        <input type="text" id="signupUsername" placeholder="your_username" required>
+                <div class="card">
+                    <div id="sign-in-form">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="sign-in-email" placeholder="name@example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="sign-in-password" placeholder="••••••••" required>
+                        </div>
+                        <button class="btn-primary" onclick="handleSignIn()">Sign In</button>
+                        <div class="divider">or</div>
+                        <button class="btn-secondary" onclick="handleGoogleSignIn()">Continue with Google</button>
+                        <div class="form-toggle">
+                            Don't have an account? <a href="#" onclick="toggleForm(event)">Create one</a>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="signupEmail">Email</label>
-                        <input type="email" id="signupEmail" placeholder="you@example.com" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="signupPassword">Password</label>
-                        <input type="password" id="signupPassword" placeholder="••••••••" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="signupPasswordConfirm">Confirm Password</label>
-                        <input type="password" id="signupPasswordConfirm" placeholder="••••••••" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Create Account</button>
-                </form>
 
-                <div class="toggle-form">
-                    Already have an account? <a onclick="toggleForms()">Sign in</a>
+                    <div id="sign-up-form">
+                        <div class="form-group">
+                            <label>Full Name</label>
+                            <input type="text" id="sign-up-name" placeholder="John Doe" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="sign-up-email" placeholder="name@example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="sign-up-password" placeholder="••••••••" required>
+                        </div>
+                        <button class="btn-primary" onclick="handleSignUp()">Create Account</button>
+                        <div class="divider">or</div>
+                        <button class="btn-secondary" onclick="handleGoogleSignIn()">Continue with Google</button>
+                        <div class="form-toggle">
+                            Already have an account? <a href="#" onclick="toggleForm(event)">Sign in</a>
+                        </div>
+                    </div>
                 </div>
-            </div>
-
-            <!-- API Key Setup Form (shown after login) -->
-            <div id="apiKeyForm" class="api-key-form hidden">
-                <h3>🔑 Connect Your Groww Account</h3>
-                <div class="info">
-                    Enter your Groww API credentials to start automated trading. Your credentials are encrypted and never shared.
-                </div>
-                <div id="apiKeyError" class="error hidden"></div>
-                <div id="apiKeySuccess" class="success hidden"></div>
-
-                <form onsubmit="handleApiKeySetup(event)">
-                    <div class="form-group">
-                        <label for="apiKey">API Key</label>
-                        <input type="password" id="apiKey" placeholder="Your Groww API key" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="apiSecret">API Secret (optional)</label>
-                        <input type="password" id="apiSecret" placeholder="Your Groww API secret (optional)">
-                    </div>
-                    <button type="submit" class="btn btn-primary">Save & Continue</button>
-                </form>
-
-                <button onclick="skipApiKeySetup()" class="btn" style="margin-top: 10px; background: #f0f0f0; color: #666;">Skip for now</button>
             </div>
         </div>
+
+        <footer class="footer">
+            <div class="footer-intro">
+                <div class="footer-kicker">SAY HELLO</div>
+                <div class="footer-caption">Wine and white. Clean typography. Contact, location, and live time in one quiet footer.</div>
+            </div>
+
+            <div class="footer-section">
+                <h3>Navigate</h3>
+                <div class="footer-item"><a href="#">Home</a></div>
+                <div class="footer-item"><a href="#">Markets</a></div>
+                <div class="footer-item"><a href="#">Settings</a></div>
+                <div class="footer-item"><a href="#">Docs</a></div>
+            </div>
+
+            <div class="footer-section">
+                <h3>Connect</h3>
+                <div class="footer-item"><a href="mailto:hello@groww.trade">hello@groww.trade</a></div>
+                <div class="footer-item"><a href="#">Twitter</a></div>
+                <div class="footer-item"><a href="#">LinkedIn</a></div>
+            </div>
+
+            <div class="footer-section">
+                <div class="footer-item">
+                    <div class="contact-label">Location</div>
+                    <div class="contact-value">Bengaluru, IN</div>
+                </div>
+                <div class="footer-item">
+                    <div class="contact-label">Local Time</div>
+                    <div class="contact-value" id="current-time">--:--</div>
+                </div>
+                <div class="footer-item">
+                    <div class="contact-label">Status</div>
+                    <div class="contact-value"><span class="status-dot"></span>Online</div>
+                </div>
+            </div>
+
+            <div class="footer-brand-wrap">
+                <div class="footer-copy">We craft bold trading flows.</div>
+                <div class="footer-brand">GROWW</div>
+                <div class="footer-meta-inline">
+                    <span>Bengaluru, IN</span>
+                    <span id="footer-time">--:--</span>
+                </div>
+            </div>
+        </footer>
     </div>
 
     <script>
-        // Check if already logged in
-        window.addEventListener('load', () => {
-            const token = localStorage.getItem('token');
-            if (token) {
-                // Verify token is still valid
-                fetch('/api/auth/verify', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                }).then(r => {
-                    if (r.ok) {
-                        // Check if API key is set
-                        fetch('/api/auth/profile', {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        }).then(r => r.json()).then(data => {
-                            if (data.groww_api_key) {
-                                window.location.href = '/dashboard';
-                            } else {
-                                showApiKeyForm();
-                            }
-                        });
-                    } else {
-                        localStorage.removeItem('token');
-                    }
-                });
+        const canvas = document.getElementById('animated-bg');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let particles = [];
+        let mouseX = canvas.width / 2;
+        let mouseY = canvas.height / 2;
+        let frameCount = 0;
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 0.3;
+                this.vy = (Math.random() - 0.5) * 0.3;
+                this.size = Math.random() * 1 + 0.5;
+                this.opacity = Math.random() * 0.35 + 0.15;
+                this.maxOpacity = this.opacity;
             }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                if (this.x < 0) this.x = canvas.width;
+                if (this.x > canvas.width) this.x = 0;
+                if (this.y < 0) this.y = canvas.height;
+                if (this.y > canvas.height) this.y = 0;
+
+                const dx = mouseX - this.x;
+                const dy = mouseY - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < 150) {
+                    this.vx += dx * 0.00003;
+                    this.vy += dy * 0.00003;
+                    this.opacity = this.maxOpacity * (1 - distance / 150);
+                } else {
+                    this.opacity *= 0.96;
+                }
+                
+                this.vx *= 0.96;
+                this.vy *= 0.96;
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(139, 58, 58, ${this.opacity})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initParticles() {
+            particles = [];
+            for (let i = 0; i < 20; i++) {
+                particles.push(new Particle(Math.random() * canvas.width, Math.random() * canvas.height));
+            }
+        }
+
+        function animate() {
+            ctx.fillStyle = 'rgb(10, 10, 10)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (frameCount % 30 === 0) {
+                ctx.strokeStyle = `rgba(139, 58, 58, 0.015)`;
+                ctx.lineWidth = 0.3;
+                const gridSize = 250;
+
+                for (let x = 0; x < canvas.width; x += gridSize) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, canvas.height);
+                    ctx.stroke();
+                }
+
+                for (let y = 0; y < canvas.height; y += gridSize) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(canvas.width, y);
+                    ctx.stroke();
+                }
+            }
+
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update();
+                particles[i].draw();
+            }
+
+            frameCount++;
+            requestAnimationFrame(animate);
+        }
+
+        const cursor = document.getElementById('cursor');
+        let smoothX = 0, smoothY = 0;
+        
+        // Smooth mouse tracking with easing
+        document.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+        });
+        
+        function smoothCursor() {
+            smoothX += (mouseX - smoothX) * 0.15;
+            smoothY += (mouseY - smoothY) * 0.15;
+            cursor.style.transform = `translate(${smoothX}px, ${smoothY}px) translate(-50%, -50%)`;
+            requestAnimationFrame(smoothCursor);
+        }
+        smoothCursor();
+
+        document.addEventListener('mouseleave', () => {
+            cursor.style.opacity = '0';
         });
 
-        function toggleForms() {
-            document.getElementById('loginForm').classList.toggle('hidden');
-            document.getElementById('signupForm').classList.toggle('hidden');
-            clearErrors();
-        }
+        document.addEventListener('mouseenter', () => {
+            cursor.style.opacity = '0.8';
+        });
 
-        function showError(formType, message) {
-            const errorEl = document.getElementById(formType + 'Error');
-            errorEl.textContent = message;
-            errorEl.classList.remove('hidden');
-        }
+        document.querySelectorAll('button, a, input').forEach(el => {
+            el.addEventListener('mouseenter', () => {
+                cursor.style.width = '14px';
+                cursor.style.height = '14px';
+                cursor.style.boxShadow = '0 0 20px rgba(88, 32, 32, 0.6)';
+            });
+            el.addEventListener('mouseleave', () => {
+                cursor.style.width = '8px';
+                cursor.style.height = '8px';
+                cursor.style.boxShadow = '0 0 8px rgba(88, 32, 32, 0.4)';
+            });
+        });
+        
+        // Smooth scroll reveal animations
+        gsap.registerPlugin(ScrollTrigger);
+        
+        // Animate header nav on page load
+        gsap.fromTo('.header-nav', {
+            opacity: 0,
+            y: -20
+        }, {
+            opacity: 1,
+            y: 0,
+            duration: 0.8,
+            ease: 'power2.out'
+        });
+        
+        // Animate container with scroll
+        gsap.fromTo('.container', {
+            opacity: 0,
+            y: 40
+        }, {
+            scrollTrigger: {
+                trigger: '.container',
+                start: 'top 80%',
+                end: 'top 50%',
+                scrub: 1,
+                markers: false
+            },
+            opacity: 1,
+            y: 0,
+            duration: 0.6,
+            ease: 'power2.out'
+        });
+        
+        // Animate form card
+        gsap.fromTo('.card', {
+            opacity: 0,
+            scale: 0.95,
+            y: 20
+        }, {
+            scrollTrigger: {
+                trigger: '.card',
+                start: 'top 75%',
+                end: 'top 50%',
+                scrub: 1,
+                markers: false
+            },
+            opacity: 1,
+            scale: 1,
+            y: 0,
+            duration: 0.8,
+            ease: 'back.out(1.2)'
+        });
+        
+        // Animate footer
+        gsap.fromTo('.footer', {
+            opacity: 0,
+            y: 40
+        }, {
+            scrollTrigger: {
+                trigger: '.footer',
+                start: 'top 80%',
+                end: 'top 50%',
+                scrub: 1,
+                markers: false
+            },
+            opacity: 1,
+            y: 0,
+            duration: 0.8,
+            ease: 'power2.out'
+        });
 
-        function clearErrors() {
-            document.getElementById('loginError').classList.add('hidden');
-            document.getElementById('signupError').classList.add('hidden');
-            document.getElementById('apiKeyError').classList.add('hidden');
-        }
-
-        async function handleEmailLogin(e) {
+        function toggleForm(e) {
             e.preventDefault();
-            clearErrors();
+            document.getElementById('sign-in-form').style.display = 
+                document.getElementById('sign-in-form').style.display === 'none' ? 'block' : 'none';
+            document.getElementById('sign-up-form').style.display = 
+                document.getElementById('sign-up-form').style.display === 'none' ? 'block' : 'none';
+        }
 
-            const email = document.getElementById('loginEmail').value;
-            const password = document.getElementById('loginPassword').value;
-
-            try {
-                const response = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Login failed');
-                }
-
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('user', JSON.stringify(data.user));
-
-                // Redirect to dashboard or setup
-                if (data.user.groww_api_key) {
-                    window.location.href = '/dashboard';
-                } else {
-                    window.location.href = '/setup';
-                }
-            } catch (err) {
-                showError('login', err.message);
+        function handleSignIn() {
+            const email = document.getElementById('sign-in-email').value;
+            if (email) {
+                localStorage.setItem('user_email', email);
+                localStorage.setItem('logged_in', 'true');
+                window.location.href = 'setup.html';
             }
         }
 
-        async function handleEmailSignup(e) {
-            e.preventDefault();
-            clearErrors();
-
-            const username = document.getElementById('signupUsername').value;
-            const email = document.getElementById('signupEmail').value;
-            const password = document.getElementById('signupPassword').value;
-            const passwordConfirm = document.getElementById('signupPasswordConfirm').value;
-
-            if (password !== passwordConfirm) {
-                showError('signup', 'Passwords do not match');
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/auth/signup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password, username })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Signup failed');
-                }
-
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('user', JSON.stringify(data.user));
-
-                window.location.href = '/setup';
-            } catch (err) {
-                showError('signup', err.message);
+        function handleSignUp() {
+            const name = document.getElementById('sign-up-name').value;
+            const email = document.getElementById('sign-up-email').value;
+            if (name && email) {
+                localStorage.setItem('user_email', email);
+                localStorage.setItem('logged_in', 'true');
+                window.location.href = 'setup.html';
             }
         }
 
-        function loginWithGoogle() {
-            // Generate PKCE code
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            let codeVerifier = '';
-            for (let i = 0; i < 128; i++) {
-                codeVerifier += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            
-            localStorage.setItem('pkce_verifier', codeVerifier);
-
-            // Redirect to backend Google OAuth handler
-            window.location.href = '/api/auth/google';
+        function handleGoogleSignIn() {
+            localStorage.setItem('user_email', 'user@gmail.com');
+            localStorage.setItem('logged_in', 'true');
+            window.location.href = 'setup.html';
         }
 
-        function showApiKeyForm() {
-            document.getElementById('loginForm').classList.add('hidden');
-            document.getElementById('signupForm').classList.add('hidden');
-            document.getElementById('apiKeyForm').classList.remove('hidden');
-        }
-
-        async function handleApiKeySetup(e) {
-            e.preventDefault();
-            clearErrors();
-
-            const token = localStorage.getItem('token');
-            const apiKey = document.getElementById('apiKey').value;
-            const apiSecret = document.getElementById('apiSecret').value;
-
-            try {
-                const response = await fetch('/api/auth/set-api-key', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({ api_key: apiKey, api_secret: apiSecret || null })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to save API key');
-                }
-
-                // Success - redirect to dashboard
-                setTimeout(() => {
-                    window.location.href = '/dashboard';
-                }, 1000);
-            } catch (err) {
-                showError('apiKey', err.message);
+        function updateTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                hour12: false
+            });
+            document.getElementById('current-time').textContent = timeString;
+            const footerTime = document.getElementById('footer-time');
+            if (footerTime) {
+                footerTime.textContent = timeString;
             }
         }
 
-        function skipApiKeySetup() {
-            window.location.href = '/dashboard';
-        }
-
-        async function quickDemo() {
-            try {
-                const response = await fetch('/api/auth/demo', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    alert('Demo mode failed: ' + (data.error || 'Unknown error'));
-                    return;
-                }
-
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('user', JSON.stringify(data.user));
-                
-                // Go to setup page (next step in flow)
-                window.location.href = '/setup';
-            } catch (err) {
-                alert('Demo mode error: ' + err.message);
+        window.addEventListener('load', () => {
+            if (localStorage.getItem('logged_in') === 'true') {
+                window.location.href = 'index.html';
             }
-        }
+            initParticles();
+            animate();
+            updateTime();
+            setInterval(updateTime, 1000);
+        });
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        // GSAP Smooth Scroll Animations - CRAZY MODE
+        gsap.registerPlugin(ScrollTrigger);
     </script>
 </body>
 </html>

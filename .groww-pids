@@ -1,0 +1,7 @@
+# Groww Trading System - Process IDs
+# Generated: Thu Apr 30 16:43:31 IST 2026
+# Stop all: ./start-all.sh --stop
+
+FLASK_PID=4021
+NEXTJS_PID=
+GRAPHIFY_PID=

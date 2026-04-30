@@ -79,10 +79,26 @@ def _save():
             for trade in _journal:
                 existing = session.query(TradeJournalEntry).filter_by(trade_id=trade["trade_id"]).first()
                 if existing:
-                    # Update existing trade with latest status and post_trade data
+                    # Keep the DB row aligned with the latest in-memory trade state.
                     existing.status = trade.get("status", "OPEN")
+                    existing.symbol = trade.get("symbol", existing.symbol)
+                    existing.side = trade.get("side", existing.side)
+                    existing.quantity = trade.get("quantity", existing.quantity)
+                    existing.trigger = trade.get("trigger", existing.trigger)
+                    existing.is_paper = trade.get("is_paper", existing.is_paper)
+                    existing.entry_time = datetime.fromisoformat(trade["entry_time"]) if trade.get("entry_time") else existing.entry_time
+                    existing.entry_price = trade.get("entry_price", existing.entry_price)
                     existing.exit_price = trade.get("exit_price")
                     existing.exit_time = datetime.fromisoformat(trade["exit_time"]) if trade.get("exit_time") else None
+                    existing.exit_reason = trade.get("exit_reason")
+                    existing.signal = trade.get("signal") or trade.get("side")
+                    existing.confidence = trade.get("confidence")
+                    existing.stop_loss = trade.get("stop_loss")
+                    existing.projected_exit = trade.get("projected_exit")
+                    existing.peak_pnl = trade.get("peak_pnl")
+                    existing.actual_profit_pct = trade.get("actual_profit_pct")
+                    existing.breakeven_price = trade.get("breakeven_price")
+                    existing.pre_trade_json = json.dumps(trade.get("pre_trade")) if trade.get("pre_trade") else existing.pre_trade_json
                     existing.post_trade_json = json.dumps(trade.get("post_trade")) if trade.get("post_trade") else None
                     saved_count += 1
                 else:
@@ -98,6 +114,14 @@ def _save():
                         entry_price=trade.get("entry_price", 0),
                         exit_price=trade.get("exit_price"),
                         exit_time=datetime.fromisoformat(trade["exit_time"]) if trade.get("exit_time") else None,
+                        exit_reason=trade.get("exit_reason"),
+                        signal=trade.get("signal") or trade.get("side"),
+                        confidence=trade.get("confidence"),
+                        stop_loss=trade.get("stop_loss"),
+                        projected_exit=trade.get("projected_exit"),
+                        peak_pnl=trade.get("peak_pnl"),
+                        actual_profit_pct=trade.get("actual_profit_pct"),
+                        breakeven_price=trade.get("breakeven_price"),
                         pre_trade_json=json.dumps(trade.get("pre_trade")),
                         post_trade_json=json.dumps(trade.get("post_trade")) if trade.get("post_trade") else None,
                     )
@@ -119,6 +143,8 @@ def create_pre_trade_report(
     prediction: dict,
     trigger: str = "auto",
     is_paper: bool = False,
+    trade_id: Optional[str] = None,
+    entry_time: Optional[str] = None,
 ) -> dict:
     """
     Generate a comprehensive pre-trade report capturing the full reasoning
@@ -138,7 +164,17 @@ def create_pre_trade_report(
     _load()
 
     now = datetime.now()
-    trade_id = f"{symbol}-{side[0]}-{now.strftime('%Y%m%d%H%M%S')}"
+    if entry_time:
+        try:
+            now = datetime.fromisoformat(str(entry_time).replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    trade_id = trade_id or f"{symbol}-{side[0]}-{now.strftime('%Y%m%d%H%M%S%f')}"
+
+    existing = next((report for report in _journal if report["trade_id"] == trade_id), None)
+    if existing:
+        logger.info("Trade journal entry %s already exists, reusing current report", trade_id)
+        return existing
 
     # Extract all source details
     sources = prediction.get("sources", {})
@@ -182,10 +218,18 @@ def create_pre_trade_report(
         "is_paper": is_paper,
 
         # ── Timing ────────────────────────────────
-        "entry_time": now.isoformat(),
+        "entry_time": entry_time or now.isoformat(),
         "entry_price": entry_price,
         "exit_time": None,
         "exit_price": None,
+        "exit_reason": None,
+        "signal": side,
+        "confidence": prediction.get("confidence"),
+        "stop_loss": stop_loss_price,
+        "projected_exit": target_price,
+        "peak_pnl": None,
+        "actual_profit_pct": None,
+        "breakeven_price": cost_data.get("breakeven_price") if cost_data else None,
 
         # ── Pre-Trade Analysis ────────────────────
         "pre_trade": {
@@ -387,6 +431,7 @@ def close_trade_report(
     net_pnl = pnl_info["net_profit"]
     total_charges = pnl_info["total_charges"]
     move_pct = round((exit_price - entry_price) / entry_price * 100, 4) if entry_price > 0 else 0
+    profit_pct = move_pct if side == "BUY" else round((entry_price - exit_price) / entry_price * 100, 4) if entry_price > 0 else 0
 
     # Did the prediction match?
     predicted_signal = pre.get("signal")
@@ -455,6 +500,8 @@ def close_trade_report(
     report["post_trade"] = post_trade
     report["exit_time"] = now.isoformat()
     report["exit_price"] = exit_price
+    report["exit_reason"] = exit_reason
+    report["actual_profit_pct"] = profit_pct
     
     # Determine status based on what happened
     if post_trade["hit_target"]:
@@ -466,6 +513,74 @@ def close_trade_report(
 
     _save()
     return report
+
+
+def close_matching_paper_trade(
+    trade_id: str,
+    symbol: str,
+    side: str,
+    quantity: int,
+    entry_price: float,
+    entry_time: Optional[str],
+    exit_price: float,
+    exit_reason: str = "manual",
+    current_indicators: Optional[dict] = None,
+) -> Optional[dict]:
+    """Close a paper trade even if a legacy journal entry used a mismatched ID."""
+    report = close_trade_report(trade_id, exit_price, exit_reason, current_indicators)
+    if report is not None:
+        return report
+
+    _load()
+
+    try:
+        target_entry_dt = datetime.fromisoformat(str(entry_time).replace("Z", "+00:00")) if entry_time else None
+    except ValueError:
+        target_entry_dt = None
+
+    price_tolerance = max(0.5, float(entry_price or 0) * 0.0005)
+    candidates = []
+
+    for report in _journal:
+        if report.get("status") != "OPEN":
+            continue
+        if not report.get("is_paper"):
+            continue
+        if report.get("symbol") != symbol:
+            continue
+        if report.get("side") != side:
+            continue
+        if int(report.get("quantity") or 0) != int(quantity or 0):
+            continue
+
+        report_price = float(report.get("entry_price") or 0)
+        if abs(report_price - float(entry_price or 0)) > price_tolerance:
+            continue
+
+        score = 0.0
+        if target_entry_dt and report.get("entry_time"):
+            try:
+                report_entry_dt = datetime.fromisoformat(str(report["entry_time"]).replace("Z", "+00:00"))
+                delta_seconds = abs((report_entry_dt - target_entry_dt).total_seconds())
+                if delta_seconds > 5:
+                    continue
+                score += delta_seconds
+            except ValueError:
+                score += 10.0
+
+        candidates.append((score, report["trade_id"]))
+
+    if not candidates:
+        logger.warning("Paper trade %s could not be matched to any open journal entry", trade_id)
+        return None
+
+    _, matched_trade_id = min(candidates, key=lambda item: item[0])
+    logger.warning(
+        "Paper trade %s not found in journal, closing legacy matched entry %s instead",
+        trade_id,
+        matched_trade_id,
+    )
+    return close_trade_report(matched_trade_id, exit_price, exit_reason, current_indicators)
 
 
 def _source_was_correct(source_signal, side, trade_was_profitable):
