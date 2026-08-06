@@ -32,9 +32,9 @@ Your Groww Trading System has **three integrated services**, all of which are no
 - **Key Files:** graph.html, graph.json, GRAPH_REPORT.md, manifest.json
 - **Graphify Awareness:** ✅ Self-aware (meta-monitoring the other two)
 - **Knowledge:**
-  - 2,250 nodes in graph
-  - 9,010 relationships mapped
-  - 91 code communities identified
+  - 2,035 nodes in graph
+  - 8,822 relationships mapped
+  - 114 code communities identified
   - Real-time change detection
 
 ---
@@ -180,18 +180,18 @@ Files Analyzed:          128
   └─ Configuration:     ~13 files
 
 Code Size:              ~474,000 words
-Nodes in Graph:         2,250
+Nodes in Graph:         2,035
   ├─ Files:            128
   ├─ Functions/Classes: ~1,800
   └─ Entities:         ~322
 
-Edges in Graph:         9,010
+Edges in Graph:         8,822
   ├─ Imports:          ~3,000
   ├─ Dependencies:     ~4,000
   ├─ Data Flow:        ~1,500
   └─ Other:            ~510
 
-Communities:           91
+Communities:           114
   ├─ Trading Logic:    (largest cluster)
   ├─ Data Management:  (second largest)
   ├─ Analysis Engines: (third largest)
@@ -241,7 +241,7 @@ Confidence Score:      0.53 average
 ```bash
 open graphify-out/graph.html
 ```
-Shows 2,250 nodes with 9,010 relationships in interactive graph.
+Shows 2,035 nodes with 8,822 relationships in interactive graph.
 
 ### 2. Knowledge Report
 ```bash
@@ -333,7 +333,7 @@ Your Groww Trading System now has **three services working together with full aw
 
 3. **Graphify** (📊 Knowledge Graph)
    - Monitoring both services
-   - 2,250 nodes, 9,010 relationships
+   - 2,035 nodes, 8,822 relationships
    - Self-aware of the other two
 
 **All three services are:**

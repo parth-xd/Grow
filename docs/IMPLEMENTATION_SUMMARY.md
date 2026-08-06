@@ -1,5 +1,97 @@
 # 🎯 Groww Startup System - Implementation Summary
 
+## 🔄 RECENT CHANGES (Session 2026-07-03)
+
+### ✅ Completed Features
+
+**1. Commodity & Supply-Chain Data Refresh**
+- Canonical commodity pricing now flows through `commodity_tracker.py`
+- Live price validation blocks NaN/Infinity from reaching the UI or DB
+- `supply_chain_collector.py` now derives disruption watchlists from commodity metadata instead of hardcoded queries
+- Commodity snapshots and disruption events are persisted to PostgreSQL
+
+**2. Live Stock Metadata Automation**
+- `auto_metadata.py` scrapes Screener.in for company names, sector hierarchy, and peer lists
+- Commodity links are inferred from sector and description text
+- F&O configuration is seeded through the database-backed config path
+
+**3. Trading Persistence & Trailing Stops**
+- `bot.py` persists trade logs to PostgreSQL and reloads them on startup
+- Persisted ML models are stored in `models/*.joblib`
+- `paper_trader.py` tracks cost coverage, trailing stops, and syncs paper-trade closures back into the trade journal
+
+**4. API Surface Expansion**
+- Auth routes now include signup, login, demo, and API-key persistence endpoints
+- Paper-trading endpoints support intraday enter/close/scan flows
+- Control endpoints now expose trailing-stop monitoring, scheduler settings, token refresh, and F&O/global-indices data
+
+**5. Schema Expansion**
+- Added/expanded PostgreSQL models for intraday candles, commodity snapshots, disruption events, and config settings
+- The database is now the source of truth for more of the trading and analytics pipeline
+
+---
+
+## 🔄 RECENT CHANGES (Session 2026-06-22)
+
+### ✅ Completed Features
+
+**1. Intraday Paper Trading**
+- New endpoints: `/api/intraday/enter-paper`, `/api/intraday/close-paper`
+- Real market price validation - rejects trades if market data unavailable
+- Capital cap checking enforced before execution
+- Auto-trade paper mode for quick scanning
+- Trailing stop system for cost coverage
+
+**2. Settings Panel Integration**
+- Endpoint: `GET /api/scheduler/settings` - fetches all task intervals
+- Endpoint: `POST /api/scheduler/settings` - persists intervals to PostgreSQL
+- Frontend UI: Settings panel in header menu with dynamic input fields
+- Form validation: minimum 1 second interval
+- Task descriptions displayed for each scheduler task
+
+**3. Trade Journal Enhancements**
+- ✅ Fixed: Moved from in-memory JSON to PostgreSQL ORM (TradeJournalEntry)
+- Full pre-trade analysis: signal, confidence, technical indicators, costs
+- Full post-trade analysis: accuracy metrics, source validation (ML/News/Market)
+- JSON fallback for backward compatibility
+- Fixed undefined property errors in UI (move_pct, move_vs_expected, etc.)
+
+**4. Frontend Bug Fixes**
+- ✅ Fixed: Intraday auto-log JSON parsing error (endpoint path correction)
+- ✅ Fixed: Trade journal undefined properties with proper null checks
+- ✅ Fixed: Entry time formatting with fallback for missing timestamps
+- ✅ Fixed: Trade ID handling in close/open trade functions
+
+**5. Scheduler Improvements**
+- 5-second signal generation for cash_auto_trade, auto_close_trades, fno_auto_trade
+- Daily XGBoost model retraining task
+- F&O capital sync from Groww account (real-time balance)
+- Global indices fetching for market context
+- Token refresh auto-check with graceful error handling
+
+### 📊 Signal Generation Pipeline (5-second intervals)
+
+```
+[Scheduler Timer 5s] → [Get Watchlist Symbols]
+    ↓
+[For Each Symbol]
+    ├─ Fetch live 5-min candle via Groww API
+    ├─ Run XGBoost prediction (trained on 365 days)
+    ├─ Get ML signal + confidence
+    ├─ Fetch news sentiment + articles count
+    ├─ Analyze market context (Nifty trend, sector, multi-TF)
+    ├─ Combine signals (ML:30%, News:40%, Market:30% weights)
+    └─ Return: {signal: BUY/SELL/HOLD, confidence: 0-1, reason: str}
+    ↓
+[Filter by Confidence] (40%+ for paper, 65%+ for real)
+    ↓
+[Execute Trade] (if capital available)
+    ├─ Place order via Groww API
+    └─ Log to TradeJournalEntry (pre-trade analysis + metadata)
+```
+
+---
+
 ## ✅ Complete Setup
 
 Your Groww Trading System now has a comprehensive startup management system with 4 main components:

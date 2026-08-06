@@ -10,11 +10,16 @@
 ### 📚 Understanding the System
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and design
 - **[STARTUP_README.md](STARTUP_README.md)** - Comprehensive startup guide
-- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Complete system overview
+- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Complete system overview with recent changes
+
+### 📝 Recent Changes & Analysis
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and recent updates (NEW!)
+- **[graphify-out/GRAPH_REPORT.md](graphify-out/GRAPH_REPORT.md)** - Generated knowledge-graph report
+- **[graphify-out/graph.json](graphify-out/graph.json)** - Raw graph data for analysis
 
 ### 🧠 Knowledge & Intelligence  
 - **[GRAPHIFY_STATUS.md](GRAPHIFY_STATUS.md)** - Graphify knowledge graph status
-- **[graphify-out/](graphify-out/)** - Knowledge graph output (2,250 nodes, 9,010 edges)
+- **[graphify-out/](graphify-out/)** - Knowledge graph output (2,035 nodes, 8,822 edges)
 
 ### 🛠️ Development & Management
 - **[FRONTEND_SETUP_GUIDE.md](FRONTEND_SETUP_GUIDE.md)** - Frontend development
@@ -52,7 +57,7 @@
 │  3️⃣  GRAPHIFY KNOWLEDGE GRAPH                              │
 │  ├─ Monitors: All Python files                             │
 │  ├─ Monitors: Frontend components                          │
-│  ├─ Tracks: 2,250 nodes, 9,010 edges                       │
+│  ├─ Tracks: 2,035 nodes, 8,822 edges                       │
 │  ├─ Updates: Real-time as you code                         │
 │  └─ Output: graphify-out/                                  │
 │                                                              │
@@ -83,8 +88,8 @@
 3. **Graphify Knows About**
    - Flask architecture (indexed)
    - Next.js structure (indexed)
-   - 2,250 code entities
-   - 9,010 relationships
+   - 2,035 code entities
+   - 8,822 relationships
    - Code communities
    - Everything changes in real-time
 
@@ -116,9 +121,9 @@ CODE METRICS:
 └─ Documentation:      ~10 files
 
 KNOWLEDGE GRAPH:
-├─ Nodes:              2,250
-├─ Edges:              9,010
-├─ Communities:        91
+├─ Nodes:              2,035
+├─ Edges:              8,822
+├─ Communities:        114
 ├─ Extraction:         30% explicit, 70% inferred
 ├─ Average Confidence: 0.53
 └─ Last Update:        Real-time
@@ -179,21 +184,25 @@ cat graphify-out/graph.json | less     # JSON graph
 2. **Learn:** [THREE_SERVICES_AWARENESS.md](THREE_SERVICES_AWARENESS.md) (10 min)
 3. **Explore:** [ARCHITECTURE.md](ARCHITECTURE.md) (15 min)
 4. **Deep Dive:** [STARTUP_README.md](STARTUP_README.md) (20 min)
-5. **Reference:** [GRAPHIFY_STATUS.md](GRAPHIFY_STATUS.md) (as needed)
+5. **Recent Work:** [CHANGELOG.md](CHANGELOG.md) (10 min) - NEW!
+6. **Reference:** [GRAPHIFY_STATUS.md](GRAPHIFY_STATUS.md) (as needed)
+7. **Detailed Analysis:** [graphify-out/GRAPH_REPORT.md](graphify-out/GRAPH_REPORT.md) (as needed)
 
 ### 🔧 For Troubleshooting
 
 1. Check: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 2. View: `./status.sh`
 3. Check Logs: `tail -f server.log`
-4. Reset: `./stop-all.sh && rm -rf .venv frontend/node_modules && ./start-all.sh`
+4. Review Recent Changes: [CHANGELOG.md](CHANGELOG.md)
+5. Reset: `./stop-all.sh && rm -rf .venv frontend/node_modules && ./start-all.sh`
 
 ### 📚 For Development
 
 1. Frontend: [FRONTEND_SETUP_GUIDE.md](FRONTEND_SETUP_GUIDE.md)
 2. Database: [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)
 3. Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
-4. Configuration: [graphify.config.json](graphify.config.json)
+4. Detailed Analysis: [graphify-out/GRAPH_REPORT.md](graphify-out/GRAPH_REPORT.md)
+5. Configuration: [graphify.config.json](graphify.config.json)
 
 ---
 
@@ -273,7 +282,7 @@ cat graphify-out/graph.json | less     # JSON graph
 
 ### Graphify Monitor 📊
 - **Watches:** All Python and frontend files
-- **Maintains:** Knowledge graph (2,250 nodes)
+- **Maintains:** Knowledge graph (2,035 nodes)
 - **Updates:** Real-time as files change
 - **Outputs:** graph.json, graph.html, reports
 - **Awareness:** Self-aware of Flask + Next.js
@@ -336,7 +345,7 @@ cat graphify-out/graph.json            # Machine-readable
 |-----------|--------|----------|---------|
 | Flask Backend | Ready ✅ | :8000 | 60+ modules, fully indexed |
 | Next.js Frontend | Ready ✅ | :3000 | React components, fully indexed |
-| Graphify Monitor | Ready ✅ | graphify-out/ | 2,250 nodes, 9,010 edges |
+| Graphify Monitor | Ready ✅ | graphify-out/ | 2,035 nodes, 8,822 edges |
 | Documentation | Ready ✅ | .md files | 10+ comprehensive guides |
 | Startup Scripts | Ready ✅ | ./start-all.sh | One-command launch |
 | Configuration | Ready ✅ | graphify.config.json | Service definitions |

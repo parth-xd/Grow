@@ -61,6 +61,11 @@ Flask Backend (app.py)
 │   ├── News APIs (sentiment)
 │   ├── Telegram alerts
 │   └── Database (SQLite)
+├── Data Pipelines
+│   ├── Commodity snapshot refresh
+│   ├── Supply-chain disruption scoring
+│   ├── Screener-based metadata refresh
+│   └── Trailing-stop + paper-trade sync
 └── Utilities
     ├── Caching (prices, charts)
     ├── Scheduling (periodic tasks)
@@ -75,6 +80,12 @@ Flask Backend (app.py)
 | `paper_trader.py` | Paper trading engine |
 | `fno_trader.py` | Futures & Options trader |
 | `db_manager.py` | Database operations |
+| `commodity_tracker.py` | Commodity pricing and stock-commodity mapping |
+| `supply_chain_collector.py` | Commodity disruption scoring and persistence |
+| `tijori_collector.py` | Company supply-chain graph: suppliers, customers, peers, ratios, forensics, market share |
+| `deep_analysis.py` | Narrative "why is this moving" analysis per stock |
+| `auto_metadata.py` | Screener.in metadata + peer discovery |
+| `trailing_stop.py` | Breakeven and trailing-stop logic |
 | `price_fetcher.py` | Real-time price data |
 | `portfolio_analyzer.py` | Portfolio analysis |
 | `market_intelligence.py` | Market signals |
@@ -82,6 +93,59 @@ Flask Backend (app.py)
 | `trade_journal.py` | Trade tracking |
 | `auth_manager.py` | Authentication |
 | `telegram_alerts.py` | Notifications |
+
+### Supply-Chain Intelligence Flow
+
+Company-level supply-chain data (who supplies a company, who buys from it, how
+those partners are performing) flows through one collector and one read API:
+
+```
+tijori_collector.collect_for_symbol(symbol)
+  ├─ resolve_slug()            name → verified source URL (cached in external_slug_map)
+  ├─ parse_company_page()      7 independent blocks; one failing doesn't block the rest
+  ├─ _store_snapshots()        append-only rows in company_external_data
+  └─ _store_connections()      supplier/customer/competitor rows in company_connections
+
+tijori_collector.resolve_pending_connections()
+  └─ partner company name → NSE symbol, so partner performance can be tracked
+
+tijori_collector.get_supply_chain_intel(symbol)   ← single read API, 3 queries
+  ├─ active + recently-removed connections
+  ├─ _load_snapshots_bulk()    ONE query covering the company AND every partner
+  ├─ per-partner enrichment    returns ladder, PE/ROE/ROCE/mcap, forensic counts
+  ├─ _compute_health()         weighted partner 6-month performance → STRONG/MIXED/WEAK
+  └─ _impact_narrative()       plain-English read on effect on the principal company
+```
+
+**Consumers** (all three surface the same block via `renderSupplyChainBlock`):
+
+| Surface | Endpoint |
+|---|---|
+| Watchlist → View Analysis | `GET /api/watchlist/<symbol>/analysis` → `supply_chain` |
+| Portfolio Analysis → expand holding | `GET /api/supply-chain-intel/<symbol>` (lazy) |
+| Deep Analysis | `GET /api/deep-analysis/<symbol>` → `sections.supply_chain` + `supply_chain` |
+
+**Refresh:** the `tijori_refresh` scheduler task (6h) re-collects symbols older
+than `tijori.refresh_interval_days` and resolves pending partner names. New
+quarterly results detected by `_detect_new_quarter` mark a symbol stale so fresh
+numbers flow in within hours. All behaviour is config-driven via `tijori.*` keys
+in `config_settings` — nothing is hardcoded.
+
+### Performance Notes
+
+- **`get_config` is memoized** (30s TTL, write-through invalidation). Hot loops
+  should use `get_configs()` / `get_configs_prefix()` for a single batched read.
+- **Snapshot reads are batched.** `_load_snapshots_bulk` replaced per-partner
+  queries; `get_supply_chain_intel` went from `7 + 3P` queries (151 for 48
+  partners) to a flat **3**.
+- **Independent providers run concurrently.** `_do_watchlist_analysis` fans out
+  its six providers (fundamentals, annual financials, FII, commodity,
+  geopolitical, news) across a `ThreadPoolExecutor` rather than paying the sum
+  of their network latencies. `news_sentiment.get_news_sentiment` does the same
+  across its six sources.
+- **Existing concurrency idioms to match:** `research_engine.py` (7 loaders,
+  `max_workers=6`), `fno_trader.py` (yfinance fan-out), `deep_analysis.py`
+  (per-symbol executor).
 
 ### Startup
 ```bash
@@ -276,6 +340,119 @@ Graphify (Knowledge Graph)
   - `.graphify_chunk_*.json` - Individual chunks
   - `.graphify_python` - Python analysis
 - **Logs:** `graphify.log`
+
+---
+
+## REST API Endpoints (Flask Backend)
+
+### Authentication
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/auth/signup` | POST | Create new user account |
+| `/api/auth/login` | POST | Authenticate user |
+| `/api/auth/verify` | GET | Verify token validity |
+| `/api/auth/profile` | GET | Get user profile data |
+| `/api/auth/set-api-key` | POST | Set Groww API credentials |
+| `/api/auth/demo` | POST | Create demo account |
+
+### Trading - Basic
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/buy` | POST | Place buy order (real or paper) |
+| `/api/sell` | POST | Place sell order (real or paper) |
+| `/api/auto-trade` | POST | Execute auto-trade scan |
+| `/api/close-trade/<trade_id>` | POST | Close open trade |
+| `/api/monitor-trailing-stops` | POST | Check & execute trailing stops |
+| `/api/journal/stats` | GET | Trade statistics summary |
+
+### Trading - Intraday Paper
+| Endpoint | Method | Purpose | NEW |
+|----------|--------|---------|-----|
+| `/api/intraday/enter-paper` | POST | Enter intraday paper trade | ✅ |
+| `/api/intraday/close-paper` | POST | Close intraday paper trade | ✅ |
+| `/api/intraday/auto-trade-run-paper` | POST | Run auto-trade in paper mode | ✅ |
+
+### Authentication & Setup
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/auth/signup` | POST | Create a new user |
+| `/api/auth/login` | POST | Authenticate user |
+| `/api/auth/demo` | POST | Create a demo account |
+| `/api/auth/set-api-key` | POST | Store Groww API credentials |
+
+### Trading - F&O (Futures & Options)
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/fno/dashboard` | GET | F&O trading status |
+| `/api/fno/positions` | GET | Current F&O positions |
+| `/api/fno/buy` | POST | Buy F&O contract |
+| `/api/fno/sell` | POST | Sell F&O contract |
+| `/api/fno/margin` | GET | Available margin |
+| `/api/fno/global-indices` | GET | Market context indices |
+
+### Predictions & Analysis
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/predict/<symbol>` | GET | Get ML prediction for symbol |
+| `/api/scan` | GET | Scan watchlist for signals |
+| `/api/train/<symbol>` | POST | Retrain ML model for symbol |
+| `/api/portfolio-analysis` | GET | Analyze current portfolio |
+| `/api/deep-analysis/<symbol>` | GET | Deep analysis of stock |
+
+### Trade Journal & History
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/journal` | GET | Get all trade journal entries |
+| `/api/journal/stats` | GET | Trade statistics (win rate, P&L, etc.) |
+| `/api/journal/open` | GET | Get open trades |
+| `/api/journal/closed` | GET | Get closed trades |
+| `/api/journal/<trade_id>/close` | POST | Close & generate post-trade report |
+
+### Watchlist Management
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/watchlist` | GET | Get current watchlist |
+| `/api/watchlist/add` | POST | Add symbol to watchlist |
+| `/api/watchlist/remove` | POST | Remove symbol from watchlist |
+| `/api/watchlist/sync` | POST | Sync with Groww holdings |
+
+### Scheduler & Settings
+| Endpoint | Method | Purpose | NEW |
+|----------|--------|---------|-----|
+| `/api/scheduler/settings` | GET | Get all scheduler task intervals | ✅ |
+| `/api/scheduler/settings` | POST | Update scheduler task intervals | ✅ |
+| `/api/auto-trade/config` | GET | Get auto-trade configuration |
+| `/api/auto-trade/config` | POST | Update auto-trade configuration |
+
+### Commodity & Supply Chain
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/raw-materials` | GET | Commodity dashboard with price/news context |
+| `/api/raw-materials/supply-chain` | GET | Supply-chain heatmap data |
+| `/api/supply-chain/refresh` | POST | Trigger a live commodity refresh |
+
+### Metadata & Research
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/metadata/status` | GET | Show metadata coverage |
+| `/api/metadata/refresh` | POST | Refresh all stock metadata |
+| `/api/metadata/<symbol>/refresh` | POST | Refresh one symbol |
+| `/api/research/<symbol>` | GET | Generate a research report |
+
+### Market Data
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/quote/<symbol>` | GET | Real-time stock quote |
+| `/api/candles/<symbol>` | GET | Historical candle data |
+| `/api/news/<symbol>` | GET | Latest news for stock |
+| `/api/fno/global-indices` | GET | Global market indices |
+
+### Backtesting
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/backtest/run` | POST | Run backtest for symbol |
+| `/api/backtest/multi` | POST | Multi-symbol backtest |
+| `/api/backtest/results/<id>` | GET | Get backtest results |
 
 ---
 

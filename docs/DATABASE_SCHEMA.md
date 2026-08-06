@@ -74,6 +74,60 @@ updated_at          DATETIME         When record last updated
 - Historical price data at trade time
 - Used for chart replay
 
+### `intraday_candles`
+- Stores 1-minute / 5-minute intraday candles for trade replay
+- Used by paper-trade closures and chart overlays
+
+### `commodity_snapshots`
+- Latest commodity price, trend, and previous-refresh comparison
+- Updated by the supply-chain collector
+
+### `disruption_events`
+- Live disruption scoring for commodity regions
+- Persists news count, sentiment, severity, and headline samples
+
+### `stocks`
+- Master stock table with sector, peers, and commodity linkage columns
+- Holds the normalized source of truth for metadata refreshes
+
+### `config_settings`
+- Persistent config store for scheduler intervals, paper trading, and F&O settings
+- Replaces ad-hoc file-based toggles for operational configuration
+- Read through `db_manager.get_config()`, which memoizes for 30s; writes via
+  `set_config()` invalidate that key immediately. Use `get_configs()` /
+  `get_configs_prefix()` to read many keys in one query instead of looping.
+
+---
+
+## Supply-Chain Intelligence Tables (Tijori)
+
+Populated by `tijori_collector.py`. Read through
+`tijori_collector.get_supply_chain_intel(symbol)`, which serves the supply-chain
+block in watchlist analysis, portfolio analysis, and deep analysis.
+
+### `company_connections`
+- Supplier / customer / competitor relationships between companies
+- Columns: `symbol`, `relation_type` (supplier|customer|competitor),
+  `related_name`, `related_symbol` (NSE symbol once resolved), `first_seen`,
+  `last_seen`, `is_active`, `updated_at`
+- **Append-and-deactivate**, never deleted — a partner dropping off the source
+  page sets `is_active=False`, which surfaces as a "connection removed" signal
+- Unique index `idx_conn_symbol_type_name` on (symbol, relation_type, related_name)
+
+### `company_external_data`
+- **Append-only** point-in-time snapshots, one row per scrape per data block
+- Columns: `symbol`, `data_type`, `source`, `payload_json`, `scraped_at`
+- `data_type` is one of: `company_info`, `ratios`, `peers`, `returns`,
+  `forensics`, `market_share`, `corporate_actions`
+- Append-only by design so ratios/forensics can be diffed across scrapes to
+  detect what changed since last quarter
+- Index `idx_ext_symbol_type_time` on (symbol, data_type, scraped_at)
+
+### `external_slug_map`
+- Caches verified company-name → source-URL-slug resolutions
+- Columns: `company_name`, `slug`, `symbol`, `resolution_status`
+- Prevents re-guessing slugs on every collection pass
+
 ---
 
 ## API ENDPOINTS - NOW DATABASE DRIVEN
@@ -156,21 +210,36 @@ print(f"Total P&L: {total_pnl}%")
 
 ## Database Structure Summary
 
+Live row counts as of 01 Aug 2026 (`pg_stat_user_tables`):
+
 ```
 PostgreSQL Database
-├── trade_journal (PRIMARY - 56 records)
-│   ├── Basic Trade Info (trade_id, symbol, side, quantity)
-│   ├── Entry Details (entry_time, entry_price)
-│   ├── Exit Details (exit_time, exit_price, exit_reason)
-│   ├── Paper Trading Metrics (signal, confidence, stop_loss, etc.)
-│   ├── Analysis JSON (pre_trade, post_trade)
-│   └── Timestamps (created_at, updated_at)
-│
-├── paper_trades (LEGACY)
-├── trade_log (Order history)
-├── trade_snapshots (Historical prices)
-└── [Other analysis tables]
+├── stock_prices             107,936   ← largest; daily OHLCV, 5Y per symbol
+├── global_news               52,508
+├── news_articles             18,348
+├── company_connections        1,469   ← suppliers / customers / competitors
+├── shareholding_patterns        864
+├── company_external_data        728   ← append-only Tijori snapshots
+├── analysis_cache               157
+├── config_settings              140
+├── external_slug_map            138
+├── peer_comparisons              66
+├── disruption_events             22
+├── commodity_snapshots            7
+└── trade_journal / candles / predictions / … (currently empty)
 ```
+
+### Read-size discipline
+
+`stock_prices`, `global_news`, and `news_articles` are large enough that
+unbounded reads matter. Endpoints touching them take limits:
+
+| Endpoint | Bound |
+|---|---|
+| `GET /api/prices/<symbol>` | `?days=N` or `?limit=N` (max 5000); full history by default |
+| `GET /api/world-news` | `limit` clamped to 200, `days` clamped to 30 |
+| `GET /api/journal` (and the 7 endpoints sharing its loader) | newest `_JOURNAL_MAX_ROWS` (2000) |
+| `GET /api/pnl-history` | `minutes` cutoff + `limit` |
 
 ---
 
@@ -196,7 +265,22 @@ Both scripts now in codebase for future reference.
 ---
 
 ## Last Updated
-**Date:** 16 April 2026  
-**Status:** ✅ All 56 trades migrated, all APIs database-driven  
+**Date:** 01 August 2026
+**Status:** ✅ All trades migrated, PostgreSQL ORM in use, APIs database-driven
+**Added since 03 Jul:** Tijori supply-chain tables (`company_connections`,
+`company_external_data`, `external_slug_map`), a 30s memo cache on
+`get_config`, batched snapshot reads, and read limits on the large tables.
+**Recent Changes (2026-07-03):**
+  - Added commodity snapshot and disruption-event persistence
+  - Added intraday candle storage for trade replay
+  - Expanded `stocks` metadata to include peer and commodity linkage details
+  - Scheduler and paper-trading settings now persist in `config_settings`
+  - Paper-trade closures sync back into the trade journal
+**Recent Changes (2026-06-22):**
+  - Fixed TradeJournalEntry.to_dict() serialization for JSON responses
+  - Added proper null-checks for optional fields in responses
+  - Fixed trade journal UI undefined property errors
+  - Added support for pre_trade and post_trade JSON analysis documents
+  - Settings endpoints now persist to config_settings table
 **Performance:** <100ms response time for all journal endpoints  
-**Data Integrity:** Perfect sync between files and database
+**Data Integrity:** Perfect sync between ORM and database

@@ -70,7 +70,7 @@ Visit `http://localhost:8000/login` in your browser.
 
 2. **Setup Page** (`/setup`)
    - User enters Groww API credentials
-   - Credentials sent to Python backend via `/api/setup`
+   - Credentials should be sent to the Flask auth endpoint `/api/auth/set-api-key`
    - Redirects to main dashboard (`/index.html`)
 
 3. **Dashboard** (`/index.html`)
@@ -87,14 +87,15 @@ When the user submits API credentials on the setup page, it sends:
 }
 ```
 
-You'll need to add an endpoint in your Python Flask app:
+The current Flask backend already exposes the authenticated endpoint below.
+Wire the setup form to this route (or proxy it) so the frontend and backend stay in sync:
 ```python
-@app.route('/api/setup', methods=['POST'])
-def setup_api():
+@app.route('/api/auth/set-api-key', methods=['POST'])
+@require_auth
+def api_set_api_key():
     data = request.json
-    api_key = data.get('apiKey')
-    api_secret = data.get('apiSecret')
-    user_email = data.get('userEmail')
+    api_key = data.get('api_key')
+    api_secret = data.get('api_secret')
     
     # Store credentials in database
     # Validate with Groww API

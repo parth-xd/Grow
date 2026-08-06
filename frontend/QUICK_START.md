@@ -75,7 +75,7 @@ Redirected to http://localhost:8000/setup
     ↓
 Enters Groww API Key & Secret
     ↓
-Form posts to backend `/api/setup`
+Form posts to backend `/api/auth/set-api-key`
     ↓
 Backend stores credentials
     ↓
@@ -147,7 +147,7 @@ Redirected to /index.html (your dashboard)
 4. ✅ Create `.env.local` file with credentials
 5. ✅ Run `npm run dev`
 6. ✅ Test at `http://localhost:3000/login`
-7. ✅ (Optional) Add `/api/setup` endpoint to Flask
+7. ✅ (Optional) wire the setup form to `/api/auth/set-api-key`
 
 ## Need Help?
 
