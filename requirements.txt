@@ -13,3 +13,4 @@ sqlalchemy
 alembic
 PyJWT
 werkzeug
+yfinance

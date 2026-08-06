@@ -363,6 +363,13 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
         result["fundamentals"] = None
         result["fundamental_rating"] = "N/A"
 
+    # ── Tijori fallbacks: fill gaps from stored supply-chain snapshots ──
+    # (additive — live Groww/Screener data always wins when present)
+    try:
+        _apply_tijori_fallbacks(result, symbol)
+    except Exception as e:
+        logger.debug("Tijori fallback failed for %s: %s", symbol, e)
+
     # ── Generate recommendation ─────────────────────────────────────────
     recommendation = _generate_recommendation(result)
     result["recommendation"] = recommendation["action"]
@@ -370,6 +377,58 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
     result["health"] = recommendation["health"]
 
     return result
+
+
+def _apply_tijori_fallbacks(result, symbol):
+    """Fill fundamentals / peers / commodity gaps from stored Tijori snapshots
+    so the dashboard never shows empty boxes when collected data exists.
+    Only fills fields that are missing — never overwrites live data."""
+    from tijori_collector import get_supply_chain_intel, _key_ratios
+    intel = get_supply_chain_intel(symbol) or {}
+
+    # Key ratios from the Tijori ratios snapshot
+    stats = _key_ratios(intel.get("ratios") or [])
+    if result.get("pe_ratio") is None and stats.get("pe") is not None:
+        result["pe_ratio"] = stats["pe"]
+    if result.get("roe") is None and stats.get("roe") is not None:
+        result["roe"] = stats["roe"]
+    if result.get("roce") is None and stats.get("roce") is not None:
+        result["roce"] = stats["roce"]
+    if result.get("promoter_holding") is None and stats.get("promoter_holding") is not None:
+        result["promoter_holding"] = stats["promoter_holding"]
+
+    # Rating from forensic checks when Screener-based rating is unavailable
+    f = intel.get("forensics_summary") or {}
+    if (not result.get("fundamental_rating") or result.get("fundamental_rating") == "N/A") and f.get("total"):
+        g, r, t = f.get("green", 0), f.get("red", 0), max(f.get("total", 1), 1)
+        pct = round(g / t * 100)
+        result["fundamental_rating"] = ("STRONG" if g >= 2 * r and pct >= 55
+                                        else "MODERATE" if g > r else "WEAK")
+        result["fundamental_pct"] = pct
+        result["fundamental_source"] = "tijori"
+    if not result.get("fundamental_concerns") and f.get("red_flags"):
+        result["fundamental_concerns"] = f["red_flags"][:3]
+
+    # Rich peer table + market share + supply-chain summary (always attach)
+    if intel.get("peers"):
+        result["tijori_peers"] = intel["peers"]
+    if intel.get("market_share"):
+        result["market_share"] = intel["market_share"]
+    if intel.get("impact"):
+        result["supply_chain_impact"] = intel["impact"]
+    if intel.get("health"):
+        result["supply_chain_health"] = intel["health"]
+
+    # Commodity impact does not need Groww (yfinance-based) — run it if the
+    # groww-gated path above didn't
+    if "commodity_impact" not in result:
+        try:
+            from commodity_tracker import get_commodity_impact
+            ci = get_commodity_impact(symbol)
+            if ci:
+                result["commodity_impact"] = ci
+        except Exception:
+            pass
 
 
 def _generate_recommendation(analysis):

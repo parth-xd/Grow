@@ -439,6 +439,7 @@ def _capture_trade_snapshot(symbol, side, price, quantity, segment, paper_order_
                             prediction=None, reason=""):
     """Save full trade context (candles, indicators, news, reasoning) for chart replay."""
     import json as _json
+    session = None
     try:
         from db_manager import get_db, TradeSnapshot
 
@@ -516,10 +517,22 @@ def _capture_trade_snapshot(symbol, side, price, quantity, segment, paper_order_
         )
         session.add(snap)
         session.commit()
-        session.close()
         logger.info("Trade snapshot saved for %s %s @ %.2f", side, symbol, price)
     except Exception as e:
         logger.warning("Trade snapshot capture failed for %s: %s", symbol, e)
+        # Clear the aborted transaction — this runs on long-lived scheduler
+        # threads that reuse the same scoped session for every later trade.
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                logger.debug("Snapshot rollback failed", exc_info=True)
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                logger.debug("Snapshot session close failed", exc_info=True)
 
 
 def fetch_intraday_candles_for_today(symbol):
@@ -529,27 +542,29 @@ def fetch_intraday_candles_for_today(symbol):
     
     These are real-time 1-minute candles from the trading session (09:15-15:30).
     """
+    session = None
     try:
         from datetime import datetime
         from db_manager import get_db, IntradayCandle
         import pandas as pd
-        
+
         db = get_db()
         if not db or not db.Session:
             return None
-        
+
         session = db.Session()
         today_str = datetime.now().date().isoformat()  # "2026-04-11"
-        
+
         # Query today's candles for this symbol
         candles = session.query(IntradayCandle).filter(
             IntradayCandle.symbol == symbol,
             IntradayCandle.trading_date == today_str,
             IntradayCandle.interval == "1min"  # Fetch 1-min candles for precision
         ).order_by(IntradayCandle.time).all()
-        
+
         session.close()
-        
+        session = None  # already returned to the pool; skip the finally
+
         if not candles or len(candles) < 2:
             # Not enough data for analysis
             return None
@@ -574,6 +589,13 @@ def fetch_intraday_candles_for_today(symbol):
     except Exception as e:
         logger.debug(f"Could not fetch intraday candles for {symbol}: {e}")
         return None
+    finally:
+        # Only set if the query raised before the close above.
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                logger.debug("Intraday candle session close failed", exc_info=True)
 
 
 def get_prediction(symbol, intraday_candles=None):
@@ -818,16 +840,57 @@ def scan_watchlist():
 # ── Paper Trading ────────────────────────────────────────────────────────────
 
 def is_paper_mode():
-    """Check if paper trading mode is active."""
+    """Check if paper trading mode is active.
+
+    SAFETY: this gate decides simulated vs REAL money.  If we cannot read the
+    setting we must assume paper mode — the alternative is that a transient DB
+    error silently converts practice trades into live exchange orders.  Fail
+    closed, and make the failure loud rather than silent.
+    """
     try:
         from db_manager import get_config
-        return get_config("paper_trading", "false").lower() == "true"
+        raw = get_config("paper_trading", "false")
+        return _paper_flag_means_live(raw) is False
     except Exception:
+        logger.error(
+            "SAFETY: could not read paper_trading config — assuming PAPER mode "
+            "and blocking live orders until the setting is readable again",
+            exc_info=True,
+        )
+        return True
+
+
+# Only these spellings turn real money on.  Everything else — "true", "1",
+# "yes", a stray trailing space, an empty string, a typo — means PAPER.
+#
+# This asymmetry is deliberate.  The old check was `value.lower() == "true"`,
+# which meant *any* value that was not exactly "true" selected live trading:
+# "true " with one trailing space, "1", "yes", "True\n" all placed real orders
+# while the operator believed they were practising.  A safety gate must fail in
+# the direction that cannot lose money, so the burden of proof is on "live".
+_LIVE_TRADING_VALUES = frozenset({"false", "0", "no", "off"})
+
+
+def _paper_flag_means_live(raw):
+    """True only when the stored paper_trading value clearly disables paper mode."""
+    if raw is None:
         return False
+    normalized = str(raw).strip().lower()
+    if normalized in _LIVE_TRADING_VALUES:
+        return True
+    if normalized not in ("true", "1", "yes", "on"):
+        # Unrecognized value: stay in paper mode, but say so — a typo here is
+        # otherwise invisible until someone notices orders they did not expect.
+        logger.warning(
+            "paper_trading has unrecognized value %r — treating as PAPER mode. "
+            "Use 'true' or 'false'.",
+            raw,
+        )
+    return False
 
 
 def get_paper_trade_amount_limit():
-    """Optional rupee cap for each auto paper trade. Zero keeps current sizing."""
+    """Max total capital the paper trader can deploy across all open positions. Zero = unlimited."""
     try:
         from db_manager import get_config
         raw = get_config("paper_trade_amount_limit", "0")
@@ -836,19 +899,52 @@ def get_paper_trade_amount_limit():
         return 0.0
 
 
-def _apply_paper_trade_amount_limit(trade_budget):
-    """Clamp auto paper-trade sizing without affecting real-trade behavior."""
+def get_current_deployed_capital():
+    """Sum of (entry_price * quantity) for all OPEN paper trades."""
+    try:
+        from paper_trader import PaperTradeTracker
+        tracker = PaperTradeTracker()
+        open_trades = tracker.get_open_positions()
+        total = sum(
+            float(t.get('entry_price', 0)) * int(t.get('quantity', 0))
+            for t in open_trades
+        )
+        return total
+    except Exception as e:
+        logger.warning("Failed to calculate deployed capital: %s", e)
+        return 0.0
+
+
+def _check_capital_cap_allows_trade(new_trade_value):
+    """
+    Return True if adding a trade worth `new_trade_value` would stay within
+    the max-capital-deployed cap.  Returns True (allow) when:
+      • paper mode is off
+      • no cap is set (limit == 0)
+      • deployed + new_trade_value <= cap
+    """
     if not is_paper_mode():
-        return trade_budget
+        return True
 
-    amount_limit = get_paper_trade_amount_limit()
-    if amount_limit <= 0:
-        return trade_budget
+    cap = get_paper_trade_amount_limit()
+    if cap <= 0:
+        return True  # unlimited
 
-    if trade_budget <= 0:
-        return amount_limit
+    deployed = get_current_deployed_capital()
+    if deployed + new_trade_value > cap:
+        logger.info(
+            "⛔ Capital cap breach: deployed ₹%.0f + new ₹%.0f = ₹%.0f > cap ₹%.0f — SKIPPING trade",
+            deployed, new_trade_value, deployed + new_trade_value, cap,
+        )
+        return False
 
-    return min(trade_budget, amount_limit)
+    return True
+
+
+def _apply_paper_trade_amount_limit(trade_budget):
+    """Legacy helper — kept for backward compatibility but no longer caps per-trade.
+    Capital enforcement is now done via _check_capital_cap_allows_trade()."""
+    return trade_budget
 
 
 def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", reason="", prediction=None):
@@ -894,6 +990,7 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
     except Exception:
         pass
 
+    session = None
     try:
         db = get_db()
         session = db.Session()
@@ -904,9 +1001,23 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
             charges=charges, remark=reason[:500] if reason else None,
         ))
         session.commit()
-        session.close()
     except Exception as e:
         logger.warning("Paper trade DB write failed: %s", e)
+        # Roll back so the scoped session isn't left in an aborted transaction.
+        # This runs on long-lived scheduler threads, and scoped_session hands the
+        # same Session back to every later call on that thread — without the
+        # rollback, one failed commit would break every subsequent paper trade.
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                logger.debug("Paper trade rollback failed", exc_info=True)
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                logger.debug("Paper trade session close failed", exc_info=True)
 
     entry = {
         "time": datetime.now().isoformat(),
@@ -1003,13 +1114,50 @@ def place_buy(symbol, quantity=None, price=None, reason="", prediction=None):
         trade_budget = _apply_paper_trade_amount_limit(trade_budget)
         
         quantity = int(trade_budget / price) if price > 0 else 1
-        # Cap at MAX_TRADE_QUANTITY (1000 shares) per trade
-        quantity = min(quantity, MAX_TRADE_QUANTITY)
-    
-    quantity = max(1, quantity)
+
+    # SAFETY: these bounds must apply on EVERY path, not only when we sized the
+    # order ourselves.  Previously the MAX_TRADE_QUANTITY clamp lived inside the
+    # `if quantity is None` block, so a caller-supplied quantity (e.g. from
+    # POST /api/buy) bypassed the configured limit entirely.
+    # OverflowError is in the tuple because JSON genuinely carries Infinity:
+    # json.loads('{"quantity": Infinity}') succeeds, and int(inf) raises
+    # OverflowError — not ValueError — so it would otherwise escape as a 500.
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"quantity must be a finite number, got {quantity!r}")
+    quantity = max(1, min(quantity, MAX_TRADE_QUANTITY))
+
+    # SAFETY: a zero/negative price means the LTP lookup failed (fetch_live_price
+    # returns 0.0 when the symbol is missing from the response).  Placing a market
+    # order on that basis, and the divide-by-zero it causes in the cost helpers
+    # afterwards, both have to be prevented before any order reaches the exchange.
+    if price is None or price <= 0:
+        raise ValueError(
+            f"refusing to place BUY for {symbol}: no valid price available (got {price!r})"
+        )
+
+    if price * quantity > MAX_TRADE_VALUE:
+        raise ValueError(
+            f"refusing to place BUY for {symbol}: order value "
+            f"₹{price * quantity:,.2f} exceeds MAX_TRADE_VALUE ₹{MAX_TRADE_VALUE:,.2f}"
+        )
 
     # Paper trading intercept
     if is_paper_mode():
+        # ── Capital cap gate: reject trade if it would exceed deployed capital limit ──
+        new_trade_value = price * quantity
+        if not _check_capital_cap_allows_trade(new_trade_value):
+            return {
+                "time": datetime.now().isoformat(),
+                "symbol": symbol,
+                "side": "BUY",
+                "quantity": quantity,
+                "price": price,
+                "status": "SKIPPED",
+                "remark": "Capital cap exceeded — trade not placed",
+                "paper": True,
+            }
         return _paper_trade(symbol, "BUY", quantity, price, reason=reason, prediction=prediction)
 
     groww = _get_groww()
@@ -1076,8 +1224,22 @@ def place_sell(symbol, quantity=None, price=None, reason="", prediction=None):
         # Default to MAX_TRADE_QUANTITY, but could be overridden
         # For consistency with place_buy, use similar capital-based calculation
         quantity = MAX_TRADE_QUANTITY
-    
-    quantity = max(1, quantity)
+
+    # SAFETY: bound and type-check on every path — see the matching note in
+    # place_buy.  A caller-supplied quantity must not escape the configured cap.
+    # OverflowError is in the tuple because JSON genuinely carries Infinity:
+    # json.loads('{"quantity": Infinity}') succeeds, and int(inf) raises
+    # OverflowError — not ValueError — so it would otherwise escape as a 500.
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"quantity must be a finite number, got {quantity!r}")
+    quantity = max(1, min(quantity, MAX_TRADE_QUANTITY))
+
+    if price is None or price <= 0:
+        raise ValueError(
+            f"refusing to place SELL for {symbol}: no valid price available (got {price!r})"
+        )
 
     # Paper trading intercept
     if is_paper_mode():
@@ -1134,6 +1296,23 @@ def place_sell(symbol, quantity=None, price=None, reason="", prediction=None):
 
 def place_gtt_stop_loss(symbol, trigger_price, quantity, order_price=None):
     """Create a GTT stop-loss order."""
+    # Paper mode must never touch the exchange. auto_trade() calls this right
+    # after place_buy(), but OUTSIDE place_buy's paper intercept — so without
+    # this guard a simulated paper buy still created a REAL GTT sell order on
+    # the exchange. Guarding here rather than at the call site protects every
+    # caller, including any added later.
+    if is_paper_mode():
+        logger.info("[PAPER] GTT stop-loss simulated for %s @ %.2f (qty %s) — no exchange order",
+                    symbol, trigger_price, quantity)
+        return {
+            "paper": True,
+            "simulated": True,
+            "symbol": symbol,
+            "trigger_price": trigger_price,
+            "quantity": quantity,
+            "remark": "Paper mode — GTT stop-loss not sent to exchange",
+        }
+
     groww = _get_groww()
     ref_id = f"sl-{symbol[:8]}-{int(time.time())}"[:20]
 
@@ -1253,13 +1432,28 @@ def auto_trade():
     actions = []
     predictions = scan_watchlist()
 
-    # Check current positions
+    # Check current positions.
+    # SAFETY: open_symbols is the ONLY thing enforcing both the no-duplicate-entry
+    # rule and MAX_POSITIONS below.  Treating a failed lookup as "no open
+    # positions" makes both guards vanish and lets the trader re-buy every
+    # signalled symbol on every cycle.  Unknown positions != no positions —
+    # abort the cycle instead.
     try:
         groww = _get_groww()
         positions_resp = groww.get_positions_for_user(segment=DEFAULT_SEGMENT)
         current_positions = positions_resp.get("positions", [])
-    except Exception:
-        current_positions = []
+    except Exception as e:
+        logger.error(
+            "SAFETY: could not fetch current positions (%s) — aborting auto-trade "
+            "cycle rather than trading blind with the duplicate/limit guards off", e
+        )
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "actions": [],
+            "predictions": predictions,
+            "error": "position_lookup_failed",
+            "reason": str(e),
+        }
 
     open_symbols = {p["trading_symbol"] for p in current_positions if p.get("quantity", 0) > 0}
 
@@ -1296,6 +1490,15 @@ def auto_trade():
                     actions.append({
                         "symbol": symbol, "action": "SKIP",
                         "reason": f"Cost-gated: expected {expected_return_pct:.2f}% < breakeven {breakeven_pct:.2f}%",
+                    })
+                    continue
+
+                # ── Capital cap gate: skip if adding this trade exceeds the cap ──
+                new_trade_value = price * qty
+                if not _check_capital_cap_allows_trade(new_trade_value):
+                    actions.append({
+                        "symbol": symbol, "action": "SKIP",
+                        "reason": f"Capital cap exceeded: deployed ₹{get_current_deployed_capital():,.0f} + ₹{new_trade_value:,.0f} > cap ₹{get_paper_trade_amount_limit():,.0f}",
                     })
                     continue
 

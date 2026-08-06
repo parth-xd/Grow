@@ -261,37 +261,32 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
                         f"Trailing SL: ₹{ts:.2f} | Peak P&L: +{trade.get('peak_pnl', 0):.2f}%)"
                     )
         
-        # CHECK 1: HARD FLOOR - If price at breakeven, close (no point holding)
-        if not should_close:
-            if signal == 'BUY':
-                at_breakeven = current_price <= breakeven
-            elif signal == 'SELL':
-                at_breakeven = current_price >= breakeven
-            else:
-                at_breakeven = False
-            
-            if at_breakeven and current_pnl <= 0:
-                should_close = True
-                if signal == 'BUY':
-                    exit_reason = f"BREAKEVEN_FLOOR (P&L: {current_pnl:.2f}% | Price: ₹{current_price:.2f} ≤ Breakeven: ₹{breakeven:.2f})"
-                else:
-                    exit_reason = f"BREAKEVEN_FLOOR (P&L: {current_pnl:.2f}% | Price: ₹{current_price:.2f} ≥ Breakeven: ₹{breakeven:.2f})"
+        # CHECK 1: (Removed) BREAKEVEN_FLOOR was closing trades at tiny losses
+        # (-0.03%) when the hard SL is at -2%. The hard SL handles real risk.
+        # Trades need room to breathe before the hard SL is hit.
         
-        # CHECK 2: AGGRESSIVE PEAK PROFIT PROTECTION (for both BUY and SELL)
-        elif current_pnl > 0 and not should_close:  # Trade is profitable
+        # CHECK 2: PEAK PROFIT PROTECTION (only once trade has reached meaningful profit)
+        # NOTE: this was `elif`, which made it unreachable because it was chained to the
+        # `if not should_close:` block above.  Both checks should run independently.
+        if current_pnl > 0 and not should_close:
             peak_pnl = trade['peak_pnl']
             
-            # AGGRESSIVE PROTECTION: Once profit > +1%, protect it aggressively
-            if peak_pnl >= 1.0:
+            # Only activate trailing protection once profit exceeds +1.5%
+            # Below that, let the hard SL handle risk
+            if peak_pnl >= 1.5:
                 # Determine trailing stop distance based on peak profit level
-                if peak_pnl >= 2.0:
-                    # Peak > +2%: ULTRA_TIGHT trailing (0.25% allowed erosion)
-                    trailing_distance = 0.25
-                    stop_type = "ULTRA_TIGHT_TRAILING"
-                else:
-                    # Peak +1% to +2%: TIGHT trailing (0.5% allowed erosion)
+                if peak_pnl >= 3.0:
+                    # Peak > +3%: ULTRA_TIGHT trailing (0.5% allowed erosion)
                     trailing_distance = 0.5
+                    stop_type = "ULTRA_TIGHT_TRAILING"
+                elif peak_pnl >= 2.0:
+                    # Peak +2% to +3%: TIGHT trailing (0.75% allowed erosion)
+                    trailing_distance = 0.75
                     stop_type = "TIGHT_TRAILING"
+                else:
+                    # Peak +1.5% to +2%: MODERATE trailing (1.0% allowed erosion)
+                    trailing_distance = 1.0
+                    stop_type = "MODERATE_TRAILING"
                 
                 # Calculate trailing stop threshold
                 trailing_threshold = peak_pnl - trailing_distance
@@ -300,20 +295,11 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
                     should_close = True
                     exit_reason = f"{stop_type} (Peak: +{peak_pnl:.2f}% → Current: {current_pnl:.2f}%, Distance: {trailing_distance:.2f}%)"
                 
-                # ALSO CHECK: If profit eroded >50% from peak, close it (prevents giving back all gains)
+                # ALSO CHECK: If profit eroded >60% from peak and peak was meaningful, close
                 profit_erosion_pct = ((peak_pnl - current_pnl) / peak_pnl) * 100
-                if profit_erosion_pct > 50 and current_pnl > 0:
+                if profit_erosion_pct > 60 and peak_pnl >= 1.5 and current_pnl > 0:
                     should_close = True
-                    exit_reason = f"PEAK_EROSION_50 (Peak: +{peak_pnl:.2f}% → Current: {current_pnl:.2f}%, Eroded: {profit_erosion_pct:.1f}%)"
-            
-            else:
-                # Still building to +1%: use loose trailing (1.0% distance)
-                trailing_distance = 1.0
-                trailing_threshold = peak_pnl - trailing_distance
-                
-                if current_pnl < trailing_threshold:
-                    should_close = True
-                    exit_reason = f"LOOSE_TRAILING (Peak: +{peak_pnl:.2f}% → Current: {current_pnl:.2f}%, Distance: {trailing_distance:.1f}%)"
+                    exit_reason = f"PEAK_EROSION_60 (Peak: +{peak_pnl:.2f}% → Current: {current_pnl:.2f}%, Eroded: {profit_erosion_pct:.1f}%)"
         
         if should_close:
             # CHECK: Is this a manual trade that system cannot touch?

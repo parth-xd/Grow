@@ -50,14 +50,19 @@ def _persist_articles(symbol: str, articles: list):
         return
     try:
         from db_manager import NewsArticle
+        # Preload existing hashes in one query rather than a SELECT per article
+        hashes = {_title_hash(a.title) for a in articles}
+        existing = set()
+        if hashes:
+            existing = {r[0] for r in session.query(NewsArticle.title_hash)
+                        .filter(NewsArticle.symbol == symbol,
+                                NewsArticle.title_hash.in_(list(hashes))).all()}
         added = 0
         for a in articles:
             th = _title_hash(a.title)
-            exists = session.query(NewsArticle.id).filter_by(
-                symbol=symbol, title_hash=th
-            ).first()
-            if exists:
+            if th in existing:
                 continue
+            existing.add(th)   # guard against duplicates within this batch
             dt = _parse_published_date(a.published)
             session.add(NewsArticle(
                 symbol=symbol,
@@ -671,13 +676,31 @@ def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentimen
     company = _get_symbol_names().get(symbol, symbol)
     search_query = f"{company} share price NSE"
 
+    # These six sources are independent, so fetch them concurrently — serially
+    # this was 8 HTTP round-trips (each up to a 10s timeout) on the request path.
+    # Order is preserved so downstream dedup keeps the same source precedence.
+    from concurrent.futures import ThreadPoolExecutor
+    _sources = [
+        (_fetch_google_news, (search_query,), {"limit": 10}),
+        (_fetch_newsapi, (f"{company} stock",), {"limit": 10}),
+        (_fetch_et_rss, (symbol,), {"limit": 5}),
+        (_fetch_moneycontrol_rss, (symbol,), {"limit": 5}),
+        (_fetch_extra_rss, (symbol,), {"limit": 5}),
+        (_fetch_x_posts, (symbol,), {"limit": 5}),
+    ]
+
+    def _safe_fetch(spec):
+        fn, args, kwargs = spec
+        try:
+            return fn(*args, **kwargs) or []
+        except Exception as e:
+            logger.debug("News source %s failed: %s", getattr(fn, "__name__", fn), e)
+            return []
+
     fresh = []
-    fresh.extend(_fetch_google_news(search_query, limit=10))
-    fresh.extend(_fetch_newsapi(f"{company} stock", limit=10))
-    fresh.extend(_fetch_et_rss(symbol, limit=5))
-    fresh.extend(_fetch_moneycontrol_rss(symbol, limit=5))
-    fresh.extend(_fetch_extra_rss(symbol, limit=5))
-    fresh.extend(_fetch_x_posts(symbol, limit=5))
+    with ThreadPoolExecutor(max_workers=6) as _ex:
+        for chunk in _ex.map(_safe_fetch, _sources):
+            fresh.extend(chunk)
 
     # 3. Deduplicate fresh articles against DB + each other
     new_articles = []

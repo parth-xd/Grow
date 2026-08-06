@@ -2,16 +2,20 @@
 PostgreSQL database manager — unified ORM for all persistent data.
 Models: Candle, CommoditySnapshot, DisruptionEvent, NewsArticle, GlobalNews,
         Stock, TradeJournalEntry, TradeLogEntry, StockThesis, AnalysisCache,
-        WatchlistNote, ConfigSetting.
+        WatchlistNote, ConfigSetting, CompanyConnection, CompanyExternalData,
+        ExternalSlugMap.
 """
 
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta
 import pandas as pd
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Index, Text, Boolean, text
+from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Index, Text, Boolean, text, update
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import IntegrityError, DataError
 from sqlalchemy.orm import sessionmaker, scoped_session
 
 logger = logging.getLogger(__name__)
@@ -539,6 +543,135 @@ class CandleTrainingMetadata(Base):
         return f"<CandleTrainingMetadata {self.event_type} @ {self.timestamp}>"
 
 
+# ── Company Connections (suppliers / customers from external sources) ────────
+
+class CompanyConnection(Base):
+    """
+    Supplier/customer relationships between companies, scraped from external
+    sources (Tijori Finance etc.). Tracks when relationships appear/disappear.
+    """
+    __tablename__ = "company_connections"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), nullable=False, index=True)       # our stock (e.g. ASIANPAINT)
+    relation_type = Column(String(20), nullable=False)            # "supplier" / "customer" / "competitor"
+    related_name = Column(String(200), nullable=False)            # e.g. "Atul Ltd."
+    related_symbol = Column(String(20), index=True)               # NSE symbol if resolved (e.g. ATUL), else NULL
+    related_slug = Column(String(200))                            # source page slug if known
+    source = Column(String(50), default="tijori")                 # data source
+    first_seen = Column(DateTime, default=datetime.utcnow)        # when we first saw this relationship
+    last_seen = Column(DateTime, default=datetime.utcnow)         # last scrape that still listed it
+    is_active = Column(Boolean, default=True)                     # False if it disappeared from source
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_conn_symbol_type_name", "symbol", "relation_type", "related_name", unique=True),
+    )
+
+    def to_dict(self):
+        return {
+            "symbol": self.symbol,
+            "relation_type": self.relation_type,
+            "related_name": self.related_name,
+            "related_symbol": self.related_symbol,
+            "source": self.source,
+            "first_seen": self.first_seen.isoformat() if self.first_seen else None,
+            "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+            "is_active": self.is_active,
+        }
+
+
+class CompanyExternalData(Base):
+    """
+    Snapshots of externally-sourced company data (ratios, peers, forensics,
+    returns, market share...). Append-only: every scrape adds a new snapshot so
+    we can compare current vs previous and analyse changes over time.
+    """
+    __tablename__ = "company_external_data"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    data_type = Column(String(50), nullable=False)   # "ratios" / "peers" / "returns" / "forensics" / "market_share" / "corporate_actions" / "company_info"
+    source = Column(String(50), default="tijori")
+    payload_json = Column(Text, nullable=False)      # raw structured JSON as scraped
+    scraped_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("idx_ext_symbol_type_time", "symbol", "data_type", "scraped_at"),
+    )
+
+    def get_payload(self):
+        try:
+            return json.loads(self.payload_json) if self.payload_json else None
+        except Exception:
+            return None
+
+
+class ExternalSlugMap(Base):
+    """
+    Verified mapping of company name/symbol → external source page slug.
+    Avoids re-guessing slugs on every scrape; self-heals when sources change.
+    """
+    __tablename__ = "external_slug_map"
+
+    id = Column(Integer, primary_key=True)
+    source = Column(String(50), default="tijori", nullable=False)
+    company_name = Column(String(200), nullable=False)            # name we resolved from
+    symbol = Column(String(20), index=True)                       # NSE symbol (may be NULL for unlisted)
+    slug = Column(String(200))                                    # verified slug, NULL if resolution failed
+    external_id = Column(String(50))                              # source's internal company id if available
+    resolution_status = Column(String(20), default="pending")     # "resolved" / "unlisted" / "failed" / "pending"
+    verified_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_slugmap_source_name", "source", "company_name", unique=True),
+    )
+
+
+# ── Idempotency (duplicate-order protection) ─────────────────────────────────
+
+class IdempotencyKey(Base):
+    """
+    One row per client-supplied Idempotency-Key, scoped to an endpoint.
+
+    Protects the money paths: if a buy request is retried — because the user
+    double-clicked, or because the response was lost on the way back while the
+    order actually went through — the retry replays the stored response instead
+    of placing a second order.
+
+    The `state` column is what makes a mid-flight retry safe. A row is inserted
+    as "in_flight" BEFORE the handler runs, so a second request arriving while
+    the first is still working sees the claim and is rejected rather than
+    finding no record and executing a duplicate.
+
+    `user_id` is nullable today and unused; it is here so the multi-tenant
+    migration can scope keys per user without a second schema change.
+    """
+    __tablename__ = "idempotency_keys"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String(255), nullable=False)             # client-supplied UUID
+    scope = Column(String(100), nullable=False)           # endpoint name, e.g. "buy"
+    user_id = Column(Integer, index=True)                 # reserved for multi-tenant
+    state = Column(String(20), nullable=False, default="in_flight")  # in_flight/completed/failed
+    request_fingerprint = Column(String(64))              # sha256 of request body
+    response_json = Column(Text)                          # stored response body to replay
+    status_code = Column(Integer)                         # stored HTTP status to replay
+    content_type = Column(String(100))                    # so replay reproduces the original type
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+    __table_args__ = (
+        # The uniqueness here is the concurrency primitive: two racing requests
+        # both try to INSERT, and the database guarantees exactly one wins.
+        Index("idx_idem_key_scope", "key", "scope", unique=True),
+        Index("idx_idem_created", "created_at"),          # for retention pruning
+    )
+
+
 class CandleDatabase:
     """Database manager for candle storage and retrieval."""
 
@@ -556,10 +689,11 @@ class CandleDatabase:
 
         self.engine = create_engine(
             db_url,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=5,
+            max_overflow=10,
             echo=False,
             pool_pre_ping=True,  # Verify connections before using
+            pool_recycle=300,    # Recycle stale connections every 5 min
             connect_args={"connect_timeout": 3},
             pool_timeout=5,
         )
@@ -907,13 +1041,75 @@ def set_cached(cache_key, data, cache_type="general", db=None):
 
 # ── Config Setting helpers ───────────────────────────────────────────────────
 
+# Short-lived memo so hot paths (scheduler loops, tijori HTTP helpers, the
+# settings endpoints) don't open a session + SELECT for every single lookup.
+# Writes through set_config invalidate immediately, so saving from the Settings
+# tab still takes effect at once; the TTL only bounds staleness for values
+# changed directly in the DB by another process.
+_CONFIG_CACHE_TTL = 30.0
+_config_cache = {}
+_config_cache_lock = threading.Lock()
+
+
+def invalidate_config_cache(key=None):
+    """Drop one key (or the whole config memo) so the next read hits the DB."""
+    with _config_cache_lock:
+        if key is None:
+            _config_cache.clear()
+        else:
+            _config_cache.pop(key, None)
+
+
 def get_config(key, default=None, db=None):
-    """Get a config value from DB."""
+    """Get a config value from DB (memoized for _CONFIG_CACHE_TTL seconds)."""
+    now = time.monotonic()
+    with _config_cache_lock:
+        hit = _config_cache.get(key)
+        if hit and hit[1] > now:
+            return hit[0] if hit[0] is not None else default
+
     db = db or get_db()
     session = db.Session()
     try:
         entry = session.query(ConfigSetting).filter_by(key=key).first()
-        return entry.value if entry else default
+        value = entry.value if entry else None
+    finally:
+        session.close()
+
+    with _config_cache_lock:
+        _config_cache[key] = (value, time.monotonic() + _CONFIG_CACHE_TTL)
+    return value if value is not None else default
+
+
+def get_configs(keys, db=None):
+    """Batch-read many config keys in ONE query. Returns {key: value} for keys
+    that exist. Use this instead of calling get_config in a loop."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    db = db or get_db()
+    session = db.Session()
+    try:
+        rows = session.query(ConfigSetting).filter(ConfigSetting.key.in_(keys)).all()
+        out = {r.key: r.value for r in rows}
+    finally:
+        session.close()
+
+    expiry = time.monotonic() + _CONFIG_CACHE_TTL
+    with _config_cache_lock:
+        for k in keys:
+            _config_cache[k] = (out.get(k), expiry)
+    return out
+
+
+def get_configs_prefix(prefix, db=None):
+    """Batch-read every config key starting with `prefix` in ONE query."""
+    db = db or get_db()
+    session = db.Session()
+    try:
+        rows = (session.query(ConfigSetting)
+                .filter(ConfigSetting.key.like(f"{prefix}%")).all())
+        return {r.key: r.value for r in rows}
     finally:
         session.close()
 
@@ -932,11 +1128,277 @@ def set_config(key, value, description=None, db=None):
         else:
             session.add(ConfigSetting(key=key, value=str(value), description=description))
         session.commit()
+        invalidate_config_cache(key)
     except Exception as e:
         session.rollback()
         logger.error(f"Error setting config: {e}")
     finally:
         session.close()
+
+
+# ── Idempotency helpers ──────────────────────────────────────────────────────
+# These back the @idempotent decorator in app.py. They are deliberately
+# low-level and side-effect free apart from their own table, so they can be
+# unit-tested without Flask.
+
+# Outcomes of trying to claim a key:
+IDEM_CLAIMED = "claimed"        # we own it — caller should run the handler
+IDEM_REPLAY = "replay"          # already completed — return the stored response
+IDEM_IN_FLIGHT = "in_flight"    # another request is running right now
+IDEM_MISMATCH = "mismatch"      # same key, different request body
+IDEM_INVALID = "invalid"        # key unusable (empty / longer than the column)
+
+# Must match the `key` column width. A longer key would raise DataError on
+# INSERT, and an error on the claim path is exactly where a silent fail-open
+# would disable protection entirely — so oversize keys are rejected up front.
+IDEM_KEY_MAX_LEN = 255
+IDEM_SCOPE_MAX_LEN = 100
+
+
+def _idem_rollback(session):
+    """Roll back, swallowing a secondary failure on an already-broken session."""
+    try:
+        session.rollback()
+    except Exception as e:
+        logger.error("Idempotency rollback failed: %s", e)
+
+
+def _idem_close(session):
+    """
+    Close, swallowing a secondary failure.
+
+    If a broken connection made close() raise out of a finally block, the
+    exception would escape the claim and 500 the request. These helpers sit on
+    the money path, so cleanup must never be the thing that breaks it.
+    """
+    try:
+        session.close()
+    except Exception as e:
+        logger.error("Idempotency session close failed: %s", e)
+
+
+def claim_idempotency_key(key, scope, fingerprint=None, user_id=None, db=None):
+    """
+    Atomically claim an idempotency key before running a money-path handler.
+
+    Returns (outcome, record_dict_or_None). The uniqueness constraint on
+    (key, scope) is what makes this safe under concurrency: two racing requests
+    both attempt the INSERT and the database lets exactly one through, so the
+    loser gets IDEM_IN_FLIGHT instead of placing a second order.
+
+    A previously FAILED key is re-claimable — the order did not go through, so
+    letting the user retry is correct.
+
+    Failure policy is asymmetric on purpose:
+      * INSERT path fails OPEN — if the table is unreachable (not migrated yet,
+        DB down), we have learned nothing about this key, so behaviour reverts
+        to what it was before this feature existed.
+      * Every path AFTER a duplicate has been PROVEN fails CLOSED. Once the
+        unique index has told us a row exists, we know a request with this key
+        is in flight or done; letting the handler run anyway would manufacture
+        the exact duplicate this table exists to prevent.
+    """
+    # Bound the inputs before they reach the driver. Oversize values raise
+    # DataError, which is a sibling of IntegrityError rather than a subclass,
+    # so it would otherwise land in the fail-open branch and quietly turn
+    # protection off for every request carrying that key.
+    if not key or len(key) > IDEM_KEY_MAX_LEN:
+        logger.warning(
+            "Rejecting unusable idempotency key for %s (empty or >%d chars)",
+            scope, IDEM_KEY_MAX_LEN,
+        )
+        return IDEM_INVALID, None
+    if not scope or len(scope) > IDEM_SCOPE_MAX_LEN:
+        logger.error("Idempotency scope %r is empty or too long — refusing to claim", scope)
+        return IDEM_INVALID, None
+
+    db = db or get_db()
+    session = db.Session()
+    try:
+        # Fast path: try to take the key. If nobody holds it, we win.
+        rec = IdempotencyKey(
+            key=key, scope=scope, user_id=user_id,
+            state="in_flight", request_fingerprint=fingerprint,
+        )
+        session.add(rec)
+        session.commit()
+        return IDEM_CLAIMED, None
+    except IntegrityError:
+        # Someone already holds this key — inspect what state it is in.
+        _idem_rollback(session)
+    except DataError as e:
+        # Malformed input rather than broken infrastructure. Length is already
+        # checked above, so this means something we did not anticipate — treat
+        # it as a bad request, never as permission to place the order.
+        _idem_rollback(session)
+        logger.error("Idempotency claim rejected bad data for %s/%s: %s", scope, key, e)
+        return IDEM_INVALID, None
+    except Exception as e:
+        _idem_rollback(session)
+        logger.error("Idempotency claim failed for %s/%s: %s", scope, key, e)
+        # Fail OPEN here only: nothing is known about this key yet, so this
+        # restores pre-feature behaviour rather than creating a new hazard.
+        return IDEM_CLAIMED, None
+    finally:
+        _idem_close(session)
+
+    # ── A row exists. From here on, a duplicate is PROVEN — fail closed. ──
+    session = db.Session()
+    try:
+        existing = session.query(IdempotencyKey).filter_by(key=key, scope=scope).first()
+        if existing is None:
+            # The INSERT hit the unique index, yet the row is gone — a prune or
+            # a rollback landed in between. Retry the claim once; if that also
+            # fails we refuse rather than run unrecorded, because a handler that
+            # runs with no row leaves nothing for a retry to replay.
+            logger.warning(
+                "Idempotency row for %s/%s vanished after a unique-constraint "
+                "hit — retrying the claim once", scope, key,
+            )
+            try:
+                retry = IdempotencyKey(
+                    key=key, scope=scope, user_id=user_id,
+                    state="in_flight", request_fingerprint=fingerprint,
+                )
+                session.add(retry)
+                session.commit()
+                return IDEM_CLAIMED, None
+            except Exception:
+                _idem_rollback(session)
+                logger.error(
+                    "Idempotency re-claim for %s/%s failed — refusing to run "
+                    "the handler unrecorded", scope, key,
+                )
+                return IDEM_IN_FLIGHT, None
+
+        # The failed case is checked BEFORE the fingerprint comparison: a failed
+        # attempt placed nothing, so there is no stored result to protect and a
+        # corrected payload under the same key is legitimate.
+        if existing.state == "failed":
+            # Previous attempt errored out before placing anything, so a retry
+            # is legitimate — but read-then-write is not safe here. Two retries
+            # can both read "failed" and both proceed, and this is the one path
+            # the unique index does not cover. A conditional UPDATE lets the
+            # database pick the winner: exactly one gets rowcount == 1.
+            #
+            # created_at is deliberately NOT refreshed, so a key that keeps
+            # failing still ages out of the retention window on schedule.
+            result = session.execute(
+                update(IdempotencyKey)
+                .where(
+                    IdempotencyKey.id == existing.id,
+                    IdempotencyKey.state == "failed",
+                )
+                .values(
+                    state="in_flight",
+                    request_fingerprint=fingerprint,
+                    completed_at=None,
+                )
+            )
+            session.commit()
+            if result.rowcount == 1:
+                return IDEM_CLAIMED, None
+            # Lost the race — the other retry owns it now.
+            logger.warning(
+                "Concurrent retry of failed key %s/%s — rejecting this one", scope, key,
+            )
+            return IDEM_IN_FLIGHT, None
+
+        if fingerprint and existing.request_fingerprint and \
+                existing.request_fingerprint != fingerprint:
+            # Same key reused for a DIFFERENT payload — a client bug we must
+            # surface loudly rather than silently replaying the wrong response.
+            return IDEM_MISMATCH, None
+
+        if existing.state == "completed":
+            return IDEM_REPLAY, {
+                "response_json": existing.response_json,
+                "status_code": existing.status_code,
+                "content_type": existing.content_type,
+            }
+
+        return IDEM_IN_FLIGHT, None
+    except Exception as e:
+        _idem_rollback(session)
+        logger.error("Idempotency lookup failed for %s/%s: %s", scope, key, e)
+        # We only get here because the INSERT proved a row exists. Failing open
+        # would place a second order on a key we KNOW is already taken.
+        return IDEM_IN_FLIGHT, None
+    finally:
+        _idem_close(session)
+
+
+def complete_idempotency_key(key, scope, response_json, status_code,
+                             content_type=None, db=None):
+    """Record the handler's result so a later retry replays it verbatim."""
+    db = db or get_db()
+    session = db.Session()
+    try:
+        rec = session.query(IdempotencyKey).filter_by(key=key, scope=scope).first()
+        if rec is None:
+            # The handler ran but there is nothing to attach its result to, so a
+            # retry would execute again. Never silent — this is the shape of a
+            # duplicate order and an operator needs to see it.
+            logger.error(
+                "No idempotency row to complete for %s/%s — the handler ran but "
+                "its result was NOT stored, so a retry would re-execute it",
+                scope, key,
+            )
+            return
+        rec.state = "completed"
+        rec.response_json = response_json
+        rec.status_code = status_code
+        rec.content_type = content_type
+        rec.completed_at = datetime.utcnow()
+        session.commit()
+    except Exception as e:
+        _idem_rollback(session)
+        logger.error("Idempotency completion failed for %s/%s: %s", scope, key, e)
+    finally:
+        _idem_close(session)
+
+
+def fail_idempotency_key(key, scope, db=None):
+    """
+    Mark a key failed so the user can retry.
+
+    Only call this when the handler raised BEFORE any order could have been
+    placed. If we are unsure whether the broker received the order, the key
+    must stay in_flight — a stuck key is far cheaper than a duplicate trade.
+    """
+    db = db or get_db()
+    session = db.Session()
+    try:
+        rec = session.query(IdempotencyKey).filter_by(key=key, scope=scope).first()
+        if rec is None:
+            return
+        rec.state = "failed"
+        rec.completed_at = datetime.utcnow()
+        session.commit()
+    except Exception as e:
+        _idem_rollback(session)
+        logger.error("Idempotency failure-marking failed for %s/%s: %s", scope, key, e)
+    finally:
+        _idem_close(session)
+
+
+def prune_idempotency_keys(retention_hours=48, db=None):
+    """Delete keys older than the retention window. Returns rows removed."""
+    db = db or get_db()
+    session = db.Session()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=int(retention_hours))
+        removed = session.query(IdempotencyKey).filter(
+            IdempotencyKey.created_at < cutoff
+        ).delete(synchronize_session=False)
+        session.commit()
+        return removed
+    except Exception as e:
+        _idem_rollback(session)
+        logger.error("Idempotency prune failed: %s", e)
+        return 0
+    finally:
+        _idem_close(session)
 
 
 # ── Seed data — populate Stock table on first run ────────────────────────────
@@ -1003,7 +1465,7 @@ def seed_stocks(db=None):
             {"symbol": "JSWSTEEL", "company_name": "JSW Steel", "sector": "METALS", "sector_display": "Steel", "commodity": "Iron Ore / Steel", "commodity_ticker": "TIO=F", "commodity_relationship": "direct", "commodity_weight": 0.40},
             {"symbol": "HINDALCO", "company_name": "Hindalco Industries", "sector": "METALS", "sector_display": "Aluminium", "commodity": "Aluminium", "commodity_ticker": "ALI=F", "commodity_relationship": "direct", "commodity_weight": 0.45},
             {"symbol": "VEDL", "company_name": "Vedanta", "sector": "METALS", "sector_display": "Base Metals", "commodity": "Zinc / Base Metals", "commodity_ticker": "ZNC=F", "commodity_relationship": "direct", "commodity_weight": 0.35},
-            {"symbol": "COALINDIA", "company_name": "Coal India", "sector": "METALS", "sector_display": "Coal", "commodity": "Coal", "commodity_ticker": "MTF=F", "commodity_relationship": "direct", "commodity_weight": 0.50},
+            {"symbol": "COALINDIA", "company_name": "Coal India", "sector": "METALS", "sector_display": "Coal", "commodity": "Coal", "commodity_ticker": "BTU", "commodity_relationship": "direct", "commodity_weight": 0.50},
             # Infra / Telecom / Cement
             {"symbol": "LT", "company_name": "Larsen & Toubro", "sector": "INFRA", "sector_display": "Engineering / Infrastructure", "competitors": ["SIEMENS", "ABB", "BHEL", "THERMAX"]},
             {"symbol": "BHARTIARTL", "company_name": "Bharti Airtel", "sector": "TELECOM", "sector_display": "Telecom", "competitors": ["JIO", "VODAFONEIDEA", "TATACOMM"]},

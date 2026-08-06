@@ -100,13 +100,14 @@ COMMODITY_IMPACT_TEMPLATES = {
 
 def _get_stock_info(symbol):
     """Get stock info from DB (sector, company name, commodity mapping)."""
+    session = None
     try:
         from config import DB_URL
         from db_manager import get_db, Stock
         session = get_db(DB_URL).Session()
         stock = session.query(Stock).filter(Stock.symbol == symbol).first()
         if stock:
-            info = {
+            return {
                 "symbol": symbol,
                 "company_name": stock.company_name,
                 "sector": stock.sector or "",
@@ -115,11 +116,16 @@ def _get_stock_info(symbol):
                 "commodity_relationship": stock.commodity_relationship,
                 "commodity_weight": stock.commodity_weight or 0,
             }
-            session.close()
-            return info
-        session.close()
     except Exception as e:
         logger.debug("DB stock lookup failed for %s: %s", symbol, e)
+    finally:
+        # Runs on ThreadPoolExecutor workers with no Flask context, so the
+        # app teardown never fires here — close explicitly on every path.
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                logger.debug("Stock info session close failed", exc_info=True)
 
     # Fallback: try commodity_tracker's fallback map
     try:
@@ -648,6 +654,70 @@ def generate_deep_analysis(symbol):
     except Exception:
         pass
 
+    # ── 7. Supply Chain Intelligence (Tijori: suppliers/customers/forensics) ──
+    supply_chain = None
+    try:
+        import tijori_collector
+        intel = tijori_collector.get_supply_chain_intel(symbol)
+        if intel and intel.get("available"):
+            supply_chain = intel
+            sc_parts = []
+            n_sup = len(intel.get("suppliers") or [])
+            n_cust = len(intel.get("customers") or [])
+            if n_sup or n_cust:
+                sc_parts.append(f"{company} has {n_sup} tracked suppliers and {n_cust} tracked customers.")
+
+            health = intel.get("health")
+            if health:
+                status = health.get("status")
+                avg_ret = health.get("avg_partner_return_6m")
+                declining = health.get("partners_declining", 0)
+                tracked = health.get("partners_tracked", 0)
+                sc_parts.append(
+                    f"Supply-chain health is {status} — listed partners average "
+                    f"{avg_ret:+.1f}% over 6 months ({tracked} tracked)."
+                )
+                if status == "WEAK" or declining >= 2:
+                    risk_score -= 1
+                    key_factors.append({
+                        "factor": f"Supply-chain weakness: {declining} partner(s) declining >10%",
+                        "impact": "negative",
+                        "direction": "headwind",
+                    })
+                elif status == "STRONG":
+                    risk_score += 0.5
+                    key_factors.append({
+                        "factor": f"Healthy supply chain (partners avg {avg_ret:+.1f}% / 6m)",
+                        "impact": "positive",
+                        "direction": "tailwind",
+                    })
+
+            forensics = intel.get("forensics_summary")
+            if forensics:
+                red = forensics.get("red") or 0
+                green = forensics.get("green") or 0
+                total = forensics.get("total") or 0
+                if total:
+                    sc_parts.append(f"Forensic checks: {green}/{total} green, {red} red flags.")
+                if red >= 3:
+                    risk_score -= 1
+                    key_factors.append({
+                        "factor": f"Accounting forensics: {red} red flags",
+                        "impact": "negative",
+                        "direction": "headwind",
+                    })
+                for flag in (forensics.get("red_flags") or [])[:2]:
+                    sc_parts.append(f"⚠ {flag}.")
+
+            changes = intel.get("changes") or []
+            for ch in changes[:3]:
+                sc_parts.append(f"Change: {ch.get('detail')}.")
+
+            if sc_parts:
+                sections["supply_chain"] = " ".join(sc_parts)
+    except Exception as e:
+        logger.debug("Supply chain intel failed in deep analysis for %s: %s", symbol, e)
+
     # ── Synthesize Full Narrative ─────────────────────────────────────────
     narrative_parts = []
     narrative_parts.append(f"**{company} ({symbol})** — Deep Analysis")
@@ -671,6 +741,10 @@ def generate_deep_analysis(symbol):
 
     if sections.get("fundamentals"):
         narrative_parts.append(f"**Fundamentals:** {sections['fundamentals']}")
+        narrative_parts.append("")
+
+    if sections.get("supply_chain"):
+        narrative_parts.append(f"**Supply Chain:** {sections['supply_chain']}")
         narrative_parts.append("")
 
     # ── Overall Assessment ────────────────────────────────────────────────
@@ -717,6 +791,7 @@ def generate_deep_analysis(symbol):
         "overall_sentiment": overall,
         "risk_score": risk_score,
         "relevant_news": relevant_news[:10],
+        "supply_chain": supply_chain,
         "generated_at": datetime.utcnow().isoformat() + "Z",
     }
 

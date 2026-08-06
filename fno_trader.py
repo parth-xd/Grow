@@ -16,12 +16,37 @@ Strategy: Buy cheap OTM options on directional conviction from news/technicals.
 
 import logging
 import json
+import math
 import os
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Track recently-exited positions to prevent 3x sells per 5s cycle. Broker
+# position data lags fills by seconds, so without this, a position that hit its
+# stop gets sold, still shows open on the next tick (broker lag), and gets sold
+# again. Key: (trading_symbol, exit_reason), value: datetime of last exit.
+# Resets every cycle, so an intent that was skipped 20s ago is fair game again.
+_RECENT_EXITS = {}
+_EXIT_COOLDOWN_SECONDS = 300  # 5 min: one exit per symbol per reason within this window
+
+
+def _record_exit(trading_symbol: str, exit_reason: str):
+    """Mark that this (symbol, reason) was just exited."""
+    key = (trading_symbol, exit_reason)
+    _RECENT_EXITS[key] = datetime.utcnow()
+
+
+def _is_exit_on_cooldown(trading_symbol: str, exit_reason: str) -> bool:
+    """True if this (symbol, reason) was exited recently (within cooldown window)."""
+    key = (trading_symbol, exit_reason)
+    if key not in _RECENT_EXITS:
+        return False
+    elapsed = (datetime.utcnow() - _RECENT_EXITS[key]).total_seconds()
+    return elapsed < _EXIT_COOLDOWN_SECONDS
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. INSTRUMENT KNOWLEDGE BASE
@@ -1529,6 +1554,55 @@ def _analyze_fno_opportunity_heuristic(instrument_key):
 # 6. ORDER PLACEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _finite_positive(value, name):
+    """Coerce a number for the money path; return (number, error_message).
+
+    NaN and Infinity are valid JSON literals and survive float(), after which
+    every comparison against them is False — so a capital gate written as
+    `if cost > available: refuse` silently *passes* for NaN and places the
+    order anyway. int(Infinity) also raises OverflowError rather than
+    ValueError, escaping the usual except clause. Both are handled here.
+    """
+    if value is None:
+        return None, f"{name} is required"
+    if isinstance(value, bool):
+        return None, f"{name} must be a number"
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None, f"{name} must be a number"
+    if not math.isfinite(num):
+        return None, f"{name} must be a finite number (got {value!r})"
+    if num <= 0:
+        return None, f"{name} must be greater than zero (got {num})"
+    return num, None
+
+
+def _contract_belongs_to_instrument(trading_symbol, inst, instrument_key):
+    """Return an error string if trading_symbol is not a contract on inst's underlying.
+
+    lot_size, exchange and segment are all taken from `instrument_key`, while the
+    contract being bought comes from `trading_symbol`. Nothing previously checked
+    that the two agree, so `{"instrument": "NIFTY", "trading_symbol":
+    "BANKNIFTY...CE"}` placed a BANKNIFTY order using NIFTY's lot size of 75
+    instead of 15 — five times the intended position, on real money.
+    """
+    symbol = str(trading_symbol).strip().upper()
+    if not symbol:
+        return "trading_symbol is required"
+    if not symbol.isalnum():
+        return f"trading_symbol has an unexpected format: {trading_symbol!r}"
+
+    underlying = str(inst.get("underlying") or instrument_key).upper()
+    if not symbol.startswith(underlying):
+        return (
+            f"trading_symbol {symbol!r} is not a {underlying} contract — "
+            f"instrument was given as {instrument_key!r}. Refusing: lot size and "
+            f"exchange come from the instrument, so these must agree."
+        )
+    return None
+
+
 def place_fno_buy(trading_symbol, instrument_key, premium_per_unit, quantity=None, reason="", prediction=None):
     """
     Place an F&O BUY order (option buying only — within capital limits).
@@ -1538,23 +1612,52 @@ def place_fno_buy(trading_symbol, instrument_key, premium_per_unit, quantity=Non
     if not inst:
         return {"error": f"Unknown instrument: {instrument_key}"}
 
+    # Validate before any capital arithmetic: every gate below is a comparison,
+    # and comparisons cannot defend themselves against NaN.
+    mismatch = _contract_belongs_to_instrument(trading_symbol, inst, instrument_key)
+    if mismatch:
+        logger.error("REFUSED F&O buy — %s", mismatch)
+        return {"error": mismatch}
+
+    premium_per_unit, err = _finite_positive(premium_per_unit, "premium")
+    if err:
+        logger.error("REFUSED F&O buy for %s — %s", trading_symbol, err)
+        return {"error": err}
+
     lot_size = inst["lot_size"]
     if quantity is None:
         quantity = lot_size  # 1 lot
+    else:
+        qty_num, err = _finite_positive(quantity, "quantity")
+        if err:
+            logger.error("REFUSED F&O buy for %s — %s", trading_symbol, err)
+            return {"error": err}
+        quantity = int(qty_num)
 
     total_premium = premium_per_unit * quantity
     costs = calculate_fno_costs(premium_per_unit, quantity, exchange=inst["exchange"])
     all_in = total_premium + costs.total
 
-    # Paper trading intercept
+    # Paper trading intercept.
+    # SAFETY: this block must never fall through to the live order below.  It
+    # previously swallowed every exception, so a failure to READ paper mode — or
+    # a failure to RECORD the paper trade — silently placed a real exchange
+    # order instead.  Any error here aborts the order.
     try:
         from bot import is_paper_mode, _paper_trade
-        if is_paper_mode():
+        paper = is_paper_mode()
+    except Exception as e:
+        logger.exception("SAFETY: paper-mode check failed for %s — refusing to place a live order", trading_symbol)
+        return {"error": f"Paper-mode check failed, order not placed: {e}"}
+
+    if paper:
+        try:
             return _paper_trade(trading_symbol, "BUY", quantity, premium_per_unit,
                                 segment=inst["segment"], product="NRML", reason=reason,
                                 prediction=prediction)
-    except Exception:
-        pass
+        except Exception as e:
+            logger.exception("Paper trade recording failed for %s", trading_symbol)
+            return {"error": f"Paper trade failed, no live order placed: {e}"}
 
     # Capital check
     available = get_available_capital()
@@ -1629,14 +1732,21 @@ def place_fno_sell(trading_symbol, instrument_key, quantity=None):
     if quantity is None:
         quantity = inst["lot_size"]
 
-    # Paper trading intercept
+    # Paper trading intercept — see the safety note in place_fno_buy.
     try:
         from bot import is_paper_mode, _paper_trade
-        if is_paper_mode():
+        paper = is_paper_mode()
+    except Exception as e:
+        logger.exception("SAFETY: paper-mode check failed for %s — refusing to place a live order", trading_symbol)
+        return {"error": f"Paper-mode check failed, order not placed: {e}"}
+
+    if paper:
+        try:
             return _paper_trade(trading_symbol, "SELL", quantity, 0,
                                 segment=inst["segment"], product="NRML")
-    except Exception:
-        pass
+        except Exception as e:
+            logger.exception("Paper trade recording failed for %s", trading_symbol)
+            return {"error": f"Paper trade failed, no live order placed: {e}"}
 
     try:
         groww = _get_groww()
@@ -1651,15 +1761,29 @@ def place_fno_sell(trading_symbol, instrument_key, quantity=None):
             transaction_type="SELL",
         )
 
-        # Get sell premium from position/order
+        # Free deployed capital: need to know the original entry cost to correctly
+        # unwind the ledger.  Ideally this would be read from the position record,
+        # but we don't have that context here.  For now: log and continue.
+        # NOTE: If the capital ledger falls out of sync (deployed > total), call
+        # sync_capital_from_groww() to recompute from the live Groww balance.
         try:
             ltp = groww.get_ltp(trading_symbol=trading_symbol, exchange=inst["exchange"],
                                 segment=inst["segment"])
-            sell_price = ltp.get("ltp", 0) if ltp else 0
-            freed_capital = sell_price * quantity
-            update_used_capital(-freed_capital)
-        except Exception:
-            pass
+            if ltp:
+                sell_price = ltp.get("ltp", 0) or 0
+                # WARNING: this frees based on sell proceeds, not entry cost, which
+                # creates asymmetry and a growing gap in the ledger over time.  The
+                # _correct_ amount to free is the original deployment (entry + charges),
+                # but that's not available without the position record.
+                freed_capital = sell_price * quantity
+                update_used_capital(-freed_capital)
+            else:
+                logger.warning("Could not get LTP for %s to update capital ledger", trading_symbol)
+        except Exception as e:
+            logger.warning(
+                "SAFETY: could not update capital ledger after SELL %s — "
+                "capital is still marked as deployed; call sync_capital_from_groww() to reconcile", trading_symbol, exc_info=True
+            )
 
         _log_fno_trade({
             "time": datetime.now().isoformat(),
@@ -2115,10 +2239,13 @@ def _check_position_exits():
 
             # Stop-loss check
             if pnl_pct <= -cfg["stop_loss_pct"]:
-                logger.info("AUTO-EXIT STOP-LOSS: %s at %.1f%% (bought %.2f, now %.2f)",
-                           trading_symbol, pnl_pct, buy_price, ltp)
-                if instrument_key:
+                if _is_exit_on_cooldown(trading_symbol, "STOP_LOSS"):
+                    logger.debug("STOP-LOSS COOLDOWN: %s (exited recently, skipping)", trading_symbol)
+                elif instrument_key:
+                    logger.info("AUTO-EXIT STOP-LOSS: %s at %.1f%% (bought %.2f, now %.2f)",
+                               trading_symbol, pnl_pct, buy_price, ltp)
                     result = place_fno_sell(trading_symbol, instrument_key, quantity)
+                    _record_exit(trading_symbol, "STOP_LOSS")
                     actions.append({
                         "action": "STOP_LOSS_EXIT",
                         "symbol": trading_symbol,
@@ -2130,10 +2257,13 @@ def _check_position_exits():
 
             # Target check
             elif pnl_pct >= cfg["target_pct"]:
-                logger.info("AUTO-EXIT TARGET: %s at %.1f%% (bought %.2f, now %.2f)",
-                           trading_symbol, pnl_pct, buy_price, ltp)
-                if instrument_key:
+                if _is_exit_on_cooldown(trading_symbol, "TARGET"):
+                    logger.debug("TARGET COOLDOWN: %s (exited recently, skipping)", trading_symbol)
+                elif instrument_key:
+                    logger.info("AUTO-EXIT TARGET: %s at %.1f%% (bought %.2f, now %.2f)",
+                               trading_symbol, pnl_pct, buy_price, ltp)
                     result = place_fno_sell(trading_symbol, instrument_key, quantity)
+                    _record_exit(trading_symbol, "TARGET")
                     actions.append({
                         "action": "TARGET_EXIT",
                         "symbol": trading_symbol,
@@ -2158,10 +2288,13 @@ def _check_position_exits():
                     elif peak_price > 0:
                         drawdown_from_peak = ((peak_price - ltp) / peak_price) * 100
                         if drawdown_from_peak > 15:  # 15% drop from peak
-                            logger.info("AUTO-EXIT TRAILING SL: %s dropped %.1f%% from peak %.2f",
-                                       trading_symbol, drawdown_from_peak, peak_price)
-                            if instrument_key:
+                            if _is_exit_on_cooldown(trading_symbol, "TRAILING_SL"):
+                                logger.debug("TRAILING_SL COOLDOWN: %s (exited recently, skipping)", trading_symbol)
+                            elif instrument_key:
+                                logger.info("AUTO-EXIT TRAILING SL: %s dropped %.1f%% from peak %.2f",
+                                           trading_symbol, drawdown_from_peak, peak_price)
                                 result = place_fno_sell(trading_symbol, instrument_key, quantity)
+                                _record_exit(trading_symbol, "TRAILING_SL")
                                 actions.append({
                                     "action": "TRAILING_SL_EXIT",
                                     "symbol": trading_symbol,

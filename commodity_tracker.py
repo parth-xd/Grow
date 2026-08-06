@@ -12,6 +12,7 @@ Stock-commodity mappings are now read from the DB `stocks` table.
 """
 
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, timedelta
 
@@ -19,6 +20,109 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for running blocking calls with timeouts
 _executor = ThreadPoolExecutor(max_workers=2)
+
+
+# ── Canonical commodity price fetcher ────────────────────────────────────────
+# This is the SINGLE SOURCE OF TRUTH for fetching commodity prices.
+# All modules (supply_chain_collector, app.py, get_commodity_impact)
+# must import and use this function — no duplicating yfinance logic.
+
+def _safe_float(value, default=0.0):
+    """Convert to float, returning default if NaN, Inf, or unconvertible."""
+    try:
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
+
+
+def fetch_commodity_price(ticker, timeout=15):
+    """
+    Fetch 3-month daily commodity price data from yfinance.
+
+    Returns validated dict with:
+      - current_price: latest close (float, never NaN)
+      - price_change_1m: 1-month % change (float, never NaN)
+      - price_change_3m: 3-month % change (float, never NaN)
+      - trend: "RISING" / "FALLING" / "STABLE"
+    Returns None if the ticker is invalid, delisted, or data is insufficient.
+
+    Every numeric value is validated through _safe_float() — NaN and Infinity
+    can never leak out of this function.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("yfinance not installed — commodity price fetch disabled")
+        return None
+
+    try:
+        future = _executor.submit(
+            yf.download, ticker, period="3mo", interval="1d", progress=False,
+        )
+        try:
+            data = future.result(timeout=timeout)
+        except (FuturesTimeout, Exception) as e:
+            logger.warning("yfinance download timed out / failed for %s: %s", ticker, e)
+            try:
+                future.cancel()
+            except Exception:
+                pass
+            return None
+
+        if data is None or data.empty or len(data) < 5:
+            logger.debug("Insufficient data for %s (%d rows)", ticker, len(data) if data is not None else 0)
+            return None
+
+        # Extract Close column — yfinance may return multi-level columns
+        close_col = data["Close"]
+        if hasattr(close_col, "columns"):
+            close_col = close_col.iloc[:, 0]
+
+        # Drop NaN/null values — yfinance returns NaN for incomplete (current)
+        # candles and occasionally for missing data points
+        close_col = close_col.dropna()
+        if len(close_col) < 5:
+            logger.debug("Too few valid prices for %s after dropna (%d)", ticker, len(close_col))
+            return None
+
+        # Extract and validate every price through _safe_float
+        current = _safe_float(close_col.iloc[-1])
+        if current <= 0:
+            logger.warning("Invalid current price for %s: %s", ticker, close_col.iloc[-1])
+            return None
+
+        # ~20 trading days ≈ 1 calendar month
+        price_1m = _safe_float(
+            close_col.iloc[-20] if len(close_col) >= 20 else close_col.iloc[0],
+            default=current,
+        )
+        price_3m = _safe_float(close_col.iloc[0], default=current)
+
+        # Calculate percentage changes — guarded against division by zero
+        chg_1m = ((current - price_1m) / price_1m * 100) if price_1m > 0 else 0.0
+        chg_3m = ((current - price_3m) / price_3m * 100) if price_3m > 0 else 0.0
+
+        # Final validation — _safe_float catches any arithmetic edge cases
+        chg_1m = _safe_float(chg_1m)
+        chg_3m = _safe_float(chg_3m)
+
+        weighted = chg_1m * 0.6 + chg_3m * 0.4
+        trend = "RISING" if weighted > 5 else "FALLING" if weighted < -5 else "STABLE"
+
+        return {
+            "current_price": round(current, 2),
+            "price_change_1m": round(chg_1m, 1),
+            "price_change_3m": round(chg_3m, 1),
+            "trend": trend,
+        }
+
+    except Exception as e:
+        logger.warning("yfinance failed for %s: %s", ticker, e)
+        return None
+
 
 # ── Stock-to-Commodity dependency — loaded from DB ─────────────────────────
 _FALLBACK_COMMODITY_MAP = {
@@ -33,7 +137,7 @@ _FALLBACK_COMMODITY_MAP = {
     "JSWSTEEL":   {"commodity": "Iron Ore / Steel", "ticker": "TIO=F", "relationship": "direct", "weight": 0.40},
     "HINDALCO":   {"commodity": "Aluminium", "ticker": "ALI=F", "relationship": "direct", "weight": 0.45},
     "VEDL":       {"commodity": "Zinc / Base Metals", "ticker": "ZNC=F", "relationship": "direct", "weight": 0.35},
-    "COALINDIA":  {"commodity": "Coal", "ticker": "MTF=F", "relationship": "direct", "weight": 0.50},
+    "COALINDIA":  {"commodity": "Coal", "ticker": "BTU", "relationship": "direct", "weight": 0.50},
     "TCS":        {"commodity": "USD/INR", "ticker": "USDINR=X", "relationship": "direct", "weight": 0.20},
     "INFY":       {"commodity": "USD/INR", "ticker": "USDINR=X", "relationship": "direct", "weight": 0.20},
     "WIPRO":      {"commodity": "USD/INR", "ticker": "USDINR=X", "relationship": "direct", "weight": 0.20},
@@ -250,7 +354,7 @@ def collect_geopolitical_news():
             for term in search_terms:
                 try:
                     from news_sentiment import _fetch_google_news
-                    articles = _fetch_google_news(term, max_results=5)
+                    articles = _fetch_google_news(term, limit=5)
                     for a in articles:
                         new_articles.append({
                             "title": a.get("title", "")[:200],
@@ -337,14 +441,10 @@ def get_commodity_impact(symbol):
     """
     Fetch commodity data for a stock and return its impact analysis.
 
-    Returns dict with:
-      - commodity: name of the commodity
-      - ticker: yfinance ticker
-      - relationship: "inverse" or "direct"
-      - trend: "RISING" / "FALLING" / "STABLE"
-      - price_change_pct: % change over lookback period
-      - current_price: latest commodity price
-      - summary: human-readable impact summary
+    Uses the canonical fetch_commodity_price() for all data fetching —
+    no direct yfinance calls here.
+
+    Returns dict with commodity, trend, price_change_pct, current_price, summary.
     Returns None if the stock has no known commodity dependency.
     """
     mapping = _get_commodity_map().get(symbol)
@@ -356,81 +456,45 @@ def get_commodity_impact(symbol):
     relationship = mapping["relationship"]
     weight = mapping["weight"]
 
-    try:
-        import yfinance as yf
-
-        future = _executor.submit(yf.download, ticker, period="3mo", interval="1wk", progress=False)
-        try:
-            data = future.result(timeout=15)
-        except FuturesTimeout:
-            logger.warning("yfinance download timed out for %s (%s)", commodity_name, ticker)
-            future.cancel()
-            return _fallback_result(commodity_name, relationship)
-
-        if data.empty or len(data) < 4:
-            logger.warning("Insufficient commodity data for %s (%s)", commodity_name, ticker)
-            return _fallback_result(commodity_name, relationship)
-
-        # Handle multi-level columns from yfinance
-        close_col = data["Close"]
-        if hasattr(close_col, "columns"):
-            close_col = close_col.iloc[:, 0]
-
-        current_price = float(close_col.iloc[-1])
-        price_1m_ago = float(close_col.iloc[-4]) if len(close_col) >= 4 else current_price
-        price_3m_ago = float(close_col.iloc[0])
-
-        # Short-term (1 month) change
-        change_1m_pct = ((current_price - price_1m_ago) / price_1m_ago * 100) if price_1m_ago > 0 else 0
-        # Longer-term (3 month) change
-        change_3m_pct = ((current_price - price_3m_ago) / price_3m_ago * 100) if price_3m_ago > 0 else 0
-
-        # Determine trend from weighted short + long term
-        weighted_change = change_1m_pct * 0.6 + change_3m_pct * 0.4
-
-        if weighted_change > 5:
-            trend = "RISING"
-        elif weighted_change < -5:
-            trend = "FALLING"
-        else:
-            trend = "STABLE"
-
-        # Build summary
-        if relationship == "inverse":
-            if trend == "RISING":
-                impact = "negative (higher input costs)"
-            elif trend == "FALLING":
-                impact = "positive (lower input costs)"
-            else:
-                impact = "neutral (stable input costs)"
-        else:
-            if trend == "RISING":
-                impact = "positive (higher revenue/realizations)"
-            elif trend == "FALLING":
-                impact = "negative (lower revenue/realizations)"
-            else:
-                impact = "neutral (stable prices)"
-
-        summary = f"{commodity_name} is {trend.lower()} ({change_1m_pct:+.1f}% 1M, {change_3m_pct:+.1f}% 3M) → {impact} for {symbol}"
-
-        return {
-            "commodity": commodity_name,
-            "ticker": ticker,
-            "relationship": relationship,
-            "weight": weight,
-            "trend": trend,
-            "price_change_pct": round(change_1m_pct, 1),
-            "price_change_3m_pct": round(change_3m_pct, 1),
-            "current_price": round(current_price, 2),
-            "summary": summary,
-        }
-
-    except ImportError:
-        logger.warning("yfinance not installed — commodity tracking disabled")
-        return None
-    except Exception as e:
-        logger.warning("Failed to fetch commodity data for %s (%s): %s", symbol, ticker, e)
+    # Use canonical fetcher — guaranteed no NaN/Inf in result
+    price_data = fetch_commodity_price(ticker)
+    if not price_data:
         return _fallback_result(commodity_name, relationship)
+
+    trend = price_data["trend"]
+    change_1m_pct = price_data["price_change_1m"]
+    change_3m_pct = price_data["price_change_3m"]
+    current_price = price_data["current_price"]
+
+    # Build human-readable impact summary
+    if relationship == "inverse":
+        if trend == "RISING":
+            impact = "negative (higher input costs)"
+        elif trend == "FALLING":
+            impact = "positive (lower input costs)"
+        else:
+            impact = "neutral (stable input costs)"
+    else:
+        if trend == "RISING":
+            impact = "positive (higher revenue/realizations)"
+        elif trend == "FALLING":
+            impact = "negative (lower revenue/realizations)"
+        else:
+            impact = "neutral (stable prices)"
+
+    summary = f"{commodity_name} is {trend.lower()} ({change_1m_pct:+.1f}% 1M, {change_3m_pct:+.1f}% 3M) → {impact} for {symbol}"
+
+    return {
+        "commodity": commodity_name,
+        "ticker": ticker,
+        "relationship": relationship,
+        "weight": weight,
+        "trend": trend,
+        "price_change_pct": change_1m_pct,
+        "price_change_3m_pct": change_3m_pct,
+        "current_price": current_price,
+        "summary": summary,
+    }
 
 
 def _fallback_result(commodity_name, relationship):

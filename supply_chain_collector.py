@@ -26,7 +26,7 @@ COMMODITY_TICKERS = {
     "Gold": "GC=F",
     "Aluminium": "ALI=F",
     "Zinc / Base Metals": "ZNC=F",
-    "Coal": "MTF=F",
+    "Coal": "BTU",
     "USD/INR": "USDINR=X",
 }
 
@@ -126,32 +126,16 @@ _disruption_watch_cache = None
 
 
 def _fetch_commodity_price(ticker):
-    """Fetch 3-month weekly data for a commodity from yfinance with timeout."""
+    """
+    Fetch commodity price data for a ticker.
+    Delegates to the canonical fetch_commodity_price() in commodity_tracker —
+    single source of truth for all yfinance commodity fetching.
+    """
     try:
-        import yfinance as yf
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(yf.download, ticker, period="3mo", interval="1wk", progress=False)
-            data = future.result(timeout=15)
-        if data.empty or len(data) < 4:
-            return None
-        close_col = data["Close"]
-        if hasattr(close_col, "columns"):
-            close_col = close_col.iloc[:, 0]
-        current = float(close_col.iloc[-1])
-        price_1m = float(close_col.iloc[-4]) if len(close_col) >= 4 else current
-        price_3m = float(close_col.iloc[0])
-        chg_1m = ((current - price_1m) / price_1m * 100) if price_1m > 0 else 0
-        chg_3m = ((current - price_3m) / price_3m * 100) if price_3m > 0 else 0
-        weighted = chg_1m * 0.6 + chg_3m * 0.4
-        trend = "RISING" if weighted > 5 else "FALLING" if weighted < -5 else "STABLE"
-        return {
-            "current_price": round(current, 2),
-            "price_change_1m": round(chg_1m, 1),
-            "price_change_3m": round(chg_3m, 1),
-            "trend": trend,
-        }
-    except Exception as e:
-        logger.warning("yfinance failed for %s: %s", ticker, e)
+        from commodity_tracker import fetch_commodity_price
+        return fetch_commodity_price(ticker)
+    except ImportError:
+        logger.warning("commodity_tracker not available, cannot fetch price for %s", ticker)
         return None
 
 
@@ -287,7 +271,9 @@ def collect_once(db_url=None):
                     snap.price_change_1m = price_data["price_change_1m"]
                     snap.price_change_3m = price_data["price_change_3m"]
                     snap.trend = new_trend
-                    snap.updated_at = now
+                # Always update timestamp when we successfully fetched data
+                # (so UI shows "last checked" time, not just "last changed" time)
+                snap.updated_at = now
             elif snap.current_price is None:
                 # First run, no price yet — still mark as updated
                 snap.updated_at = now
@@ -344,10 +330,16 @@ def collect_once(db_url=None):
                         len(disruptions))
 
         except Exception as e:
-            session.rollback()
+            try:
+                session.rollback()
+            except Exception:
+                logger.debug("Rollback failed for %s", commodity, exc_info=True)
             logger.error("  ✗ %s collection failed: %s", commodity, e)
 
-    session.close()
+    try:
+        session.close()
+    except Exception:
+        logger.debug("Supply chain session close failed", exc_info=True)
     logger.info("✅ Supply chain collector: pass complete")
 
 

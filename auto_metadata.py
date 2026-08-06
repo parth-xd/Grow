@@ -69,13 +69,13 @@ _COMMODITY_RULES = [
      "commodity": "Zinc / Base Metals", "ticker": "ZNC=F", "rel": "direct", "weight": 0.40},
     # Coal
     {"about_kw": ["coal mining", "coal india", "thermal coal"],
-     "commodity": "Coal", "ticker": "MTF=F", "rel": "direct", "weight": 0.50},
+     "commodity": "Coal", "ticker": "BTU", "rel": "direct", "weight": 0.50},
     # Gold / Jewellery
     {"about_kw": ["gold", "jewellery", "jewelry", "ornament"],
      "commodity": "Gold", "ticker": "GC=F", "rel": "direct", "weight": 0.30},
     # Power / Energy companies using coal
     {"about_kw": ["power generation", "thermal power", "power plant"],
-     "commodity": "Coal", "ticker": "MTF=F", "rel": "inverse", "weight": 0.25},
+     "commodity": "Coal", "ticker": "BTU", "rel": "inverse", "weight": 0.25},
 ]
 
 

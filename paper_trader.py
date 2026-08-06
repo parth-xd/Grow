@@ -218,11 +218,11 @@ class PaperTradeTracker:
                         exit_reason=journal_exit_reason,
                     )
                     if journal_entry:
-                        logger.info("Synced paper trade closure %s to trade journal", trade_id)
+                        logger.info("✓ Synced paper trade closure %s to trade journal", trade_id)
                     else:
-                        logger.warning("Paper trade closure %s could not be synced to the trade journal", trade_id)
+                        logger.error("❌ Paper trade closure %s could not be synced to trade journal (no journal entry created)", trade_id)
                 except Exception as e:
-                    logger.warning(f"Failed to sync paper trade closure to journal: {e}")
+                    logger.error(f"❌ CRITICAL: Failed to sync paper trade closure {trade_id} to journal: {e}", exc_info=True)
                 
                 return trade
         
@@ -231,14 +231,20 @@ class PaperTradeTracker:
     def update_trailing_stop(self, trade_id, current_price):
         """
         Update trailing stop for an open trade based on current price.
-        
+
         The trailing stop only ever moves in the profit-protecting direction:
         - BUY:  stop ratchets UP   (uses max so it never drops back down)
         - SELL: stop ratchets DOWN (uses min so it never rises back up)
-        
-        Buffer: 1.5 rupees below/above current price.
+
+        Buffer: 1.5% of current price (was incorrectly ₹1.50 absolute, which was
+        0.04% on a ₹3900 stock — smaller than a rounding error, so stops fired
+        on ordinary bid-ask noise).
         """
-        TRAILING_BUFFER = 1.5  # Buffer in rupees
+        # SAFETY: buffer as a percentage of price, not absolute.  Otherwise a ₹50
+        # stock and a ₹3900 stock have completely different stop behavior.  On LT
+        # at ₹3900, 1.5 rupees was 0.04% (30 ticks) and stops were firing on every
+        # bid-ask bounce, closing every winning trade prematurely.
+        TRAILING_BUFFER_PCT = 0.015  # 1.5% of current price
         
         for trade in self.trades:
             if trade['id'] == trade_id and trade.get('status') == 'OPEN':
@@ -247,16 +253,18 @@ class PaperTradeTracker:
                 
                 if signal == 'BUY':
                     pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
-                    if pnl_pct > 0.5:  # More than 0.5% profit
-                        new_stop = round(current_price - TRAILING_BUFFER, 2)
+                    if pnl_pct > 1.5:  # Only start trailing after +1.5% profit
+                        buffer = current_price * TRAILING_BUFFER_PCT
+                        new_stop = round(current_price - buffer, 2)
                         old_stop = trade.get('trailing_stop')
                         # Only move the stop UP, never down
                         trade['trailing_stop'] = max(new_stop, old_stop) if old_stop is not None else new_stop
                         trade['highest_price_reached'] = max(trade.get('highest_price_reached', entry_price), current_price)
                 else:  # SELL
                     pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price else 0
-                    if pnl_pct > 0.5:  # More than 0.5% profit
-                        new_stop = round(current_price + TRAILING_BUFFER, 2)
+                    if pnl_pct > 1.5:  # Only start trailing after +1.5% profit
+                        buffer = current_price * TRAILING_BUFFER_PCT
+                        new_stop = round(current_price + buffer, 2)
                         old_stop = trade.get('trailing_stop')
                         # Only move the stop DOWN, never up
                         trade['trailing_stop'] = min(new_stop, old_stop) if old_stop is not None else new_stop

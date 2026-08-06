@@ -761,13 +761,15 @@ def _get_paper_pnl():
     """Calculate paper trading P&L from DB."""
     try:
         from db_manager import get_db, PaperTrade
+        from sqlalchemy import and_
         db = get_db()
-        today = datetime.now(IST).date()
+        today_utc = datetime.now(IST).date()
+        today_midnight = datetime(today_utc.year, today_utc.month, today_utc.day)  # naive UTC midnight
         with db.Session() as session:
-            trades = [
-                trade for trade in session.query(PaperTrade).all()
-                if trade.created_at and trade.created_at.date() >= today
-            ]
+            # Bound the read to today only — no N tables worth of scans
+            trades = session.query(PaperTrade).filter(
+                PaperTrade.created_at >= today_midnight
+            ).all()
             if not trades:
                 return None
             buys = {}
