@@ -11,19 +11,26 @@ targets:
     platform: iOS
     sources:
       - path: ParthS
+    # THIS is the source of truth for Info.plist — xcodegen rewrites
+    # ParthS/Info.plist from this block on every `xcodegen generate`.
+    # Editing that file by hand does not survive. (It briefly looked like
+    # the file was authoritative, because the generated output happened to
+    # be byte-identical to it; deleting this block proved otherwise by
+    # silently dropping NSFaceIDUsageDescription, which crashes the app on
+    # its first Face ID call.)
     info:
       path: ParthS/Info.plist
       properties:
+        # Empty dict = plain system launch screen. Without any launch
+        # screen the app runs letterboxed instead of filling the display.
         UILaunchScreen: {}
+        # REQUIRED: iOS terminates the app on its first LocalAuthentication
+        # call if this is absent. Shown verbatim in the Face ID prompt.
         NSFaceIDUsageDescription: "Face ID confirms it's you before showing your trading dashboard."
-        NSAppTransportSecurity:
-          NSExceptionDomains:
-            # Scoped to the Tailscale hostname only — see DashboardWebView.swift
-            # for why this is plain http:// (Tailscale's own WireGuard tunnel is
-            # the real encryption layer) and why this is NOT a blanket ATS bypass.
-            parths-mac.tailnet.ts.net:
-              NSExceptionAllowsInsecureHTTPLoads: true
-              NSIncludesSubdomains: false
+        # No NSAppTransportSecurity block on purpose — Tailscale Serve
+        # terminates TLS with a real cert for the *.ts.net hostname, so the
+        # app speaks ordinary HTTPS. If DashboardWebView.swift's URL is ever
+        # pointed back at plain http://, an exception has to come back too.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.parthsharma.ParthS

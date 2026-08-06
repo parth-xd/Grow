@@ -35,6 +35,25 @@ log_status() {
   echo -e "${CYAN}ℹ${NC} $1"
 }
 
+FLASK_LAUNCHD_LABEL="com.parthsharma.parths.flask"
+
+# If Flask is running under the launchd service (launchd/README.md), a raw
+# `kill` on its PID looks identical to a crash — the plist's KeepAlive.
+# SuccessfulExit=false has no signal handler in app.py to tell the two
+# apart, so launchd relaunches it within ThrottleInterval seconds and this
+# script's kill appears to silently do nothing. `launchctl bootout` is the
+# correct stop: it tells launchd to stop managing the job, not just kill it.
+stop_flask_via_launchd() {
+  local uid; uid=$(id -u)
+  if launchctl print "gui/$uid/$FLASK_LAUNCHD_LABEL" >/dev/null 2>&1; then
+    echo -n "  Stopping Flask Backend (launchd: $FLASK_LAUNCHD_LABEL)... "
+    launchctl bootout "gui/$uid/$FLASK_LAUNCHD_LABEL" 2>/dev/null || true
+    echo "done"
+    return 0
+  fi
+  return 1   # not running under launchd — caller falls back to PID/port kill
+}
+
 kill_process() {
   local pid=$1
   local name=$2
@@ -67,27 +86,34 @@ echo ""
 
 if [ -f "$PID_FILE" ]; then
   [ "$VERBOSE" ] && log_status "Reading PIDs from $PID_FILE..."
-  
+
   FLASK_PID=$(grep "FLASK_PID=" "$PID_FILE" 2>/dev/null | cut -d= -f2 | tr -d ' ')
   NEXTJS_PID=$(grep "NEXTJS_PID=" "$PID_FILE" 2>/dev/null | cut -d= -f2 | tr -d ' ')
   GRAPHIFY_PID=$(grep "GRAPHIFY_PID=" "$PID_FILE" 2>/dev/null | cut -d= -f2 | tr -d ' ')
-  
-  [ -n "$FLASK_PID" ] && kill_process "$FLASK_PID" "Flask Backend"
+
+  stop_flask_via_launchd || { [ -n "$FLASK_PID" ] && kill_process "$FLASK_PID" "Flask Backend"; }
   [ -n "$NEXTJS_PID" ] && kill_process "$NEXTJS_PID" "Next.js Frontend"
   [ -n "$GRAPHIFY_PID" ] && kill_process "$GRAPHIFY_PID" "Graphify"
-  
+
   rm -f "$PID_FILE"
 else
   log_warn "No PID file found at $PID_FILE"
   log_status "Attempting to kill by port..."
-  
-  local pids=$(lsof -ti:8000 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    echo -n "  Killing Flask Backend (port 8000)... "
-    echo "$pids" | xargs kill -9 2>/dev/null || true
-    echo "done"
+
+  if ! stop_flask_via_launchd; then
+    # `local` outside a function is a bash error — bash silently drops the
+    # assignment and this kill never actually ran, on any exit path through
+    # here, since before this patch existed. Pre-existing, found while
+    # reviewing the launchd integration; fixed here since this branch is now
+    # reachable again (when the launchd job isn't currently bootstrapped).
+    pids=$(lsof -ti:8000 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+      echo -n "  Killing Flask Backend (port 8000)... "
+      echo "$pids" | xargs kill -9 2>/dev/null || true
+      echo "done"
+    fi
   fi
-  
+
   pids=$(lsof -ti:3000 2>/dev/null || true)
   if [ -n "$pids" ]; then
     echo -n "  Killing Next.js Frontend (port 3000)... "

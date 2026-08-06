@@ -6,14 +6,18 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            if biometricsPassed {
-                DashboardWebView()
-                    .ignoresSafeArea()
-            }
+            // Unconditional — an earlier version gated this behind
+            // `if biometricsPassed`, which made SwiftUI destroy and recreate
+            // the WKWebView every time the gate re-locked. sessionStorage
+            // lives inside that WKWebView's browsing context, so the PIN/
+            // token this view's own comment claimed would "stay" was in fact
+            // wiped on every single backgrounding, forcing a full reload and
+            // a re-entered PIN each time — the opposite of the intent below.
+            // Keeping the view alive and only covering it is what actually
+            // preserves the session across a Face ID re-check.
+            DashboardWebView()
+                .ignoresSafeArea()
 
-            // Layered on top rather than swapped out, so returning from the
-            // background re-locks instantly instead of showing a frame of
-            // the dashboard first.
             if !biometricsPassed {
                 BiometricGateView {
                     biometricsPassed = true
@@ -23,9 +27,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 // Re-lock on backgrounding. The dashboard's own PIN/token
-                // stays in sessionStorage inside the WebView — only this
-                // outer biometric layer resets, so unlocking again doesn't
-                // require re-entering the PIN too.
+                // now genuinely does stay in sessionStorage inside the
+                // WebView (see above) — only this outer biometric layer
+                // resets, so unlocking again doesn't require re-entering
+                // the PIN too.
                 biometricsPassed = false
             }
         }

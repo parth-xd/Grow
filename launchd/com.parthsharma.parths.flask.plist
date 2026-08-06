@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.parthsharma.parths.flask</string>
+
+    <!--
+      Runs Flask directly, not through start.sh. start.sh's own restart loop
+      pipes python through `tee` without `set -o pipefail`, so the exit code
+      it checks is tee's, not python's — tee exits 0 almost regardless of how
+      python died, so start.sh's crash detection likely never actually fires
+      today. `exec` here replaces this shell with python in place (same PID,
+      no pipe in between), so launchd sees python's real exit status and
+      KeepAlive below can act on it correctly.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/parthsharma/Desktop/Grow &amp;&amp; lsof -ti:8000 | xargs kill -9 2>/dev/null; exec .venv/bin/python3 app.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/parthsharma/Desktop/Grow</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+      Restart on crash, not on a clean/intentional stop. app.py has no
+      SIGTERM handler, so a kill-by-PID and a genuine crash look identical to
+      launchd — both are "unsuccessful" exits. That means the correct way to
+      stop this job is `launchctl bootout`, which tells launchd to stop
+      managing it (so it won't restart), NOT a raw `kill` on the PID (which
+      launchd would see as a crash and immediately relaunch). stop-all.sh is
+      patched accordingly — see stop-all.sh's launchd-aware Flask branch.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Minimum seconds between restarts, so a genuine crash loop doesn't spin. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!--
+      NOT server.log inside the project — that's under ~/Desktop, which is
+      TCC-protected on modern macOS. xpcproxy (what launchd actually uses to
+      spawn a LaunchAgent) has no standing grant to touch files there, and
+      redirecting stdout/stderr to a Desktop path was denied before Python
+      ever got to run at all — every launch failed with exit 78 (EX_CONFIG),
+      confirmed via `log show`:
+        kernel: (Sandbox) System Policy: xpcproxy(...) deny(1) file-read-data
+          /Users/parthsharma/Desktop/Grow/server.log
+      ~/Library/Logs is the standard, unrestricted location for this.
+    -->
+    <key>StandardOutPath</key>
+    <string>/Users/parthsharma/Library/Logs/ParthS/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/parthsharma/Library/Logs/ParthS/server.log</string>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
