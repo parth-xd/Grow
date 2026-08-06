@@ -96,67 +96,191 @@ def seed_cost_rates():
 
 
 def update_cost_rates():
-    """Check for updated trading cost rates and persist to DB.
-    
-    Scrapes rates from Groww's charges page. Falls back to keeping
-    existing DB values if scraping fails.
+    """
+    AUTOMATED COST UPDATE SYSTEM — Main orchestrator
+
+    Complete cost update workflow:
+    1. Scrape latest costs from Groww
+    2. Validate costs
+    3. Compare with existing values
+    4. Update database with audit trail
+    5. Send notifications
+    6. Reload in-memory cache
+
+    Called by scheduler every 45 days.
+    Also called manually via API for verification.
+
+    Returns:
+        {
+            "success": bool,
+            "timestamp": ISO datetime,
+            "scrape": {...},
+            "update": {...},
+            "notifications": {...},
+            "summary": {...}
+        }
     """
     try:
-        import requests
-        from bs4 import BeautifulSoup
-        from db_manager import get_config, set_config
+        import json
+        from datetime import datetime
+        from cost_scraper import scrape
+        from cost_updater import update_costs
+        from cost_notifications import send_cost_change_notification
 
-        # Try to fetch current rates from Groww charges page
-        resp = requests.get(
-            "https://groww.in/charges",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.info("Cost rates page returned %d, keeping existing rates", resp.status_code)
-            return
+        logger.info("╔════════════════════════════════════════════════════════════════════╗")
+        logger.info("║                  COST UPDATE WORKFLOW STARTED                       ║")
+        logger.info("╚════════════════════════════════════════════════════════════════════╝")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text().lower()
+        result = {
+            "success": False,
+            "timestamp": datetime.utcnow().isoformat(),
+            "scrape": None,
+            "update": None,
+            "notifications": None,
+            "summary": {
+                "costs_checked": 0,
+                "costs_updated": 0,
+                "costs_unchanged": 0,
+                "suspicious_changes": [],
+                "total_errors": 0,
+            }
+        }
 
-        # Parse known rate patterns from the page
-        updates = {}
+        # Step 1: SCRAPE
+        logger.info("\n[1/4] SCRAPING COSTS FROM GROWW...")
+        scrape_result = scrape()
+        result["scrape"] = scrape_result
 
-        # Check STT delivery rate
-        import re
-        stt_match = re.search(r"stt[^\d]*delivery[^\d]*([\d.]+)\s*%", text)
-        if stt_match:
-            updates["STT_DELIVERY_PCT"] = float(stt_match.group(1))
+        if not scrape_result["success"]:
+            logger.error(f"Scrape failed: {scrape_result.get('error')}")
+            result["summary"]["total_errors"] += 1
+            return result
 
-        stt_intra = re.search(r"stt[^\d]*intraday[^\d]*([\d.]+)\s*%", text)
-        if stt_intra:
-            updates["STT_INTRADAY_SELL_PCT"] = float(stt_intra.group(1))
+        new_costs = scrape_result.get("charges", {})
+        logger.info(f"✓ Scraped {len(new_costs)} costs")
 
-        stamp_del = re.search(r"stamp[^\d]*delivery[^\d]*([\d.]+)\s*%", text)
-        if stamp_del:
-            updates["STAMP_DUTY_DELIVERY_PCT"] = float(stamp_del.group(1))
+        # Step 2: COMPARE
+        logger.info("\n[2/4] COMPARING WITH EXISTING COSTS...")
+        comparison = scrape_result.get("comparison")
 
-        dp_match = re.search(r"dp\s*charges?[^\d]*([\d.]+)", text)
-        if dp_match:
-            val = float(dp_match.group(1))
-            if 5 < val < 50:  # sanity check
-                updates["DP_CHARGES"] = val
+        if comparison:
+            costs_changed = comparison.get("changed", False)
+            change_count = comparison.get("change_count", 0)
+            result["summary"]["costs_checked"] = len(new_costs)
+            result["summary"]["costs_unchanged"] = len(new_costs) - change_count
+            result["summary"]["costs_updated"] = change_count
 
-        if updates:
-            for key, val in updates.items():
-                old = get_config(f"cost.{key}")
-                if old is not None and abs(float(old) - val) > 0.0001:
-                    set_config(f"cost.{key}", str(val))
-                    logger.info("Cost rate updated: %s = %s (was %s)", key, val, old)
-            reload_rates()
-            logger.info("✓ Cost rates checked, %d updated", len(updates))
+            if costs_changed:
+                logger.warning(f"⚠ {change_count} costs differ from existing values")
+                suspicious = [c["key"] for c in comparison.get("changes", []) if c.get("suspicious")]
+                result["summary"]["suspicious_changes"] = suspicious
+                if suspicious:
+                    logger.warning(f"🚨 {len(suspicious)} suspicious changes flagged for review")
+            else:
+                logger.info("✓ All costs match existing values")
         else:
-            logger.info("Cost rates checked, no changes detected")
+            result["summary"]["costs_checked"] = len(new_costs)
 
-    except ImportError:
-        logger.debug("beautifulsoup4 not available, skipping cost rate scraping")
+        # Step 3: UPDATE DATABASE
+        logger.info("\n[3/4] UPDATING DATABASE...")
+        changes = scrape_result.get("comparison", {}).get("changes", []) if scrape_result.get("comparison") else None
+        update_result = update_costs(new_costs, changes=changes)
+        result["update"] = update_result
+
+        if not update_result["success"]:
+            result["summary"]["total_errors"] += update_result.get("failed_count", 0)
+            logger.error("Database update had errors")
+        else:
+            logger.info(f"✓ Database updated successfully")
+
+        # Step 4: SEND NOTIFICATIONS & RELOAD CACHE
+        logger.info("\n[4/4] SENDING NOTIFICATIONS & RELOADING CACHE...")
+        try:
+            notif_result = send_cost_change_notification(update_result, scrape_result)
+            result["notifications"] = notif_result
+            logger.info("✓ Notifications sent")
+        except Exception as e:
+            logger.warning(f"Notification sending failed: {e}")
+            result["notifications"] = {"error": str(e)}
+
+        # Reload in-memory cache
+        reload_rates()
+        logger.info("✓ In-memory cache reloaded")
+
+        # Final summary
+        result["success"] = result["summary"]["total_errors"] == 0
+        logger.info("\n" + "=" * 70)
+        logger.info("COST UPDATE WORKFLOW SUMMARY")
+        logger.info("=" * 70)
+        logger.info(f"Status: {'✅ SUCCESS' if result['success'] else '⚠️ PARTIAL SUCCESS'}")
+        logger.info(f"Costs Checked: {result['summary']['costs_checked']}")
+        logger.info(f"Costs Updated: {result['summary']['costs_updated']}")
+        logger.info(f"Costs Unchanged: {result['summary']['costs_unchanged']}")
+        if result["summary"]["suspicious_changes"]:
+            logger.warning(f"Suspicious Changes: {len(result['summary']['suspicious_changes'])}")
+            for key in result["summary"]["suspicious_changes"]:
+                logger.warning(f"  - {key}")
+        if result["summary"]["total_errors"] > 0:
+            logger.warning(f"Errors: {result['summary']['total_errors']}")
+        logger.info("=" * 70 + "\n")
+
+        return result
+
     except Exception as e:
-        logger.warning("Cost rate update failed: %s", e)
+        logger.error(f"Cost update workflow failed: {e}", exc_info=True)
+        # Fallback to old simple method if new system fails
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+            from db_manager import get_config, set_config
+
+            resp = requests.get(
+                "https://groww.in/charges",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.info("Cost rates page returned %d, keeping existing rates", resp.status_code)
+                return
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = soup.get_text().lower()
+
+            updates = {}
+            import re
+            stt_match = re.search(r"stt[^\d]*delivery[^\d]*([\d.]+)\s*%", text)
+            if stt_match:
+                updates["STT_DELIVERY_PCT"] = float(stt_match.group(1))
+
+            stt_intra = re.search(r"stt[^\d]*intraday[^\d]*([\d.]+)\s*%", text)
+            if stt_intra:
+                updates["STT_INTRADAY_SELL_PCT"] = float(stt_intra.group(1))
+
+            stamp_del = re.search(r"stamp[^\d]*delivery[^\d]*([\d.]+)\s*%", text)
+            if stamp_del:
+                updates["STAMP_DUTY_DELIVERY_PCT"] = float(stamp_del.group(1))
+
+            dp_match = re.search(r"dp\s*charges?[^\d]*([\d.]+)", text)
+            if dp_match:
+                val = float(dp_match.group(1))
+                if 5 < val < 50:
+                    updates["DP_CHARGES"] = val
+
+            if updates:
+                for key, val in updates.items():
+                    old = get_config(f"cost.{key}")
+                    if old is not None and abs(float(old) - val) > 0.0001:
+                        set_config(f"cost.{key}", str(val))
+                        logger.info("Cost rate updated: %s = %s (was %s)", key, val, old)
+                reload_rates()
+                logger.info("✓ Cost rates checked (fallback), %d updated", len(updates))
+            else:
+                logger.info("Cost rates checked (fallback), no changes detected")
+
+        except ImportError:
+            logger.debug("beautifulsoup4 not available, skipping cost rate scraping")
+        except Exception as fallback_error:
+            logger.warning("Fallback cost rate update also failed: %s", fallback_error)
 
 
 @dataclass
