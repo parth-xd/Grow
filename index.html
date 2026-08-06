@@ -2,8 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- viewport-fit=cover lets the page paint into the notch/home-indicator
+     areas, which the safe-area-inset padding in the mobile CSS already
+     accounts for. Without it, standalone mode leaves grey bars there. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Parth S.</title>
+
+<!-- ── Home-screen install ──────────────────────────────────────────────
+     These are what make iOS treat this as an app rather than a bookmark:
+     added from Safari's Share -> Add to Home Screen, it gets its own icon
+     and launches fullscreen with no Safari chrome at all.
+     apple-mobile-web-app-capable is the one that actually removes the
+     browser UI; iOS ignores manifest.json's "display": "standalone". -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Parth S." />
+<meta name="theme-color" content="#1e1d20" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+<link rel="manifest" href="/manifest.json" />
 <style>
   :root {
     --bg: #fbfbfd; --surface: #ffffff; --border: #d2d2d7;

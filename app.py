@@ -72,6 +72,39 @@ def get_pg_conn():
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
+
+# ── Static-file exposure ─────────────────────────────────────────────────────
+# static_folder="." + static_url_path="" makes EVERY file in the project root
+# fetchable over HTTP. Verified: GET /.env returned 200 with the live
+# GROWW_API_KEY in the body, as did /app.py and /paper_trades.json. That was
+# already true while the server was localhost-only; it became materially worse
+# the moment Tailscale made this reachable from other devices on the tailnet.
+#
+# index.html, login.html and setup.html are entirely self-contained — no
+# external CSS, JS, or image references — so the catch-all static route isn't
+# needed to render anything. Allow-list the few files that genuinely must be
+# publicly fetchable (PWA manifest and icons) and 404 everything else.
+# Allow-list rather than deny-list on purpose: a deny-list silently fails open
+# for every file nobody thought to add to it.
+_PUBLIC_STATIC_FILES = {
+    "manifest.json",
+    "apple-touch-icon.png",
+    "icon-192.png",
+    "icon-512.png",
+    "favicon.ico",
+}
+
+
+@app.before_request
+def _block_project_file_exposure():
+    if request.endpoint != "static":
+        return None
+    filename = (request.view_args or {}).get("filename", "")
+    if filename in _PUBLIC_STATIC_FILES:
+        return None
+    logger.warning("Blocked static file request: %s", request.path)
+    return jsonify({"error": "Not found"}), 404
+
 # ── Cross-origin policy ──────────────────────────────────────────────────────
 # Previously this was a bare CORS(app), which sends Access-Control-Allow-Origin: *
 # and lets ANY page the operator visits read this API's responses.  Restrict it to
