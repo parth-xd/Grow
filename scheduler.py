@@ -14,7 +14,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import numpy as np
 
+from config import APP_DEVICE_TOKEN
+
 logger = logging.getLogger(__name__)
+
+# app.py now requires X-Device-Token on every mutating request, including
+# these same-machine calls to its own API — see app.py's
+# _block_cross_origin_mutations for why "no Origin header" is no longer
+# treated as automatically trusted.
+_DEVICE_HEADERS = {'X-Device-Token': APP_DEVICE_TOKEN} if APP_DEVICE_TOKEN else {}
 
 # ── Task definitions ─────────────────────────────────────────────────────────
 
@@ -65,69 +73,178 @@ def _task_supply_chain():
 
 
 def _task_cache_refresh():
-    """Refresh analysis caches (fundamentals, etc.)."""
-    from config import WATCHLIST
+    """Refresh fundamentals cache for ALL dashboard stocks (hourly).
+
+    Each symbol only truly re-scrapes when its 6h cache expires, so the hourly
+    pass is cheap and scrape load spreads out naturally. Also detects freshly
+    published quarterly results and queues an immediate Tijori refresh so
+    new-quarter numbers flow into analysis within hours instead of days.
+    """
     import fundamental_analysis as fa
-    for symbol in WATCHLIST:
+
+    symbols = []
+    try:
+        from db_manager import get_db
+        from sqlalchemy import text as _text
+        db = get_db()
+        with db.Session() as session:
+            rows = session.execute(_text("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol")).fetchall()
+            symbols = [r[0] for r in rows]
+    except Exception as e:
+        logger.debug("Dashboard universe query failed (%s); using config WATCHLIST", e)
+    if not symbols:
+        from config import WATCHLIST
+        symbols = list(WATCHLIST)
+
+    for symbol in symbols:
         try:
-            fa.get_fundamental_analysis(None, symbol)
+            result = fa.get_fundamental_analysis(None, symbol)
+            _detect_new_quarter(symbol, result)
         except Exception as e:
             logger.debug("Cache refresh failed for %s: %s", symbol, e)
 
 
-def _task_update_watchlist_prices():
-    """Fetch and store latest close prices for all watchlist stocks in database."""
+def _detect_new_quarter(symbol, fundamentals):
+    """Earnings-aware refresh: when the latest quarterly revenue changes vs
+    what we last recorded, new results were just published — mark the symbol's
+    Tijori data stale so the next tijori_refresh pass (≤6h) re-collects it."""
     try:
-        from config import WATCHLIST
-        from datetime import datetime
+        from db_manager import get_config, set_config
+        qrev = ((fundamentals or {}).get("financials") or {}).get("latest_quarterly_revenue")
+        if qrev is None:
+            return
+        key = f"earnings.last_qrev.{symbol}"
+        prev = get_config(key)
+        if prev is not None and str(prev) != str(qrev):
+            set_config(f"tijori.last_collected.{symbol}", "1970-01-01T00:00:00")
+            logger.info("📊 New quarterly results detected for %s (rev %s → %s) — Tijori refresh queued",
+                        symbol, prev, qrev)
+        set_config(key, str(qrev))
+    except Exception as e:
+        logger.debug("New-quarter detection failed for %s: %s", symbol, e)
+
+
+def _task_update_watchlist_prices():
+    """Fetch and store latest close prices for all watchlist stocks in database.
+
+    Runs every hour.  During market hours (9:15–15:30 IST) it does a quick
+    live-price snapshot via Groww API.  After market close (16:00+) it does a
+    full backfill via yfinance for any stock with stale data (> 1 day behind).
+    """
+    import os
+    from datetime import datetime, timedelta
+
+    conn = None
+    try:
         import psycopg2
         from dotenv import load_dotenv
-        import os
-        
         load_dotenv()
+
         db_url = os.getenv("DB_URL")
         if not db_url:
-            logger.debug("Database not configured for watchlist price updates")
             return
-        
-        # Get live prices from bot
+
+        conn = psycopg2.connect(db_url, connect_timeout=3)
+        cursor = conn.cursor()
+
+        now = datetime.now()
+        today = now.date()
+        is_after_hours = now.hour >= 16 or os.environ.get("_FORCE_BACKFILL") == "1"
+
+        # Get ALL unique symbols in stock_prices (not just WATCHLIST config)
+        cursor.execute("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol")
+        all_symbols = [r[0] for r in cursor.fetchall()]
+
+        # Also include WATCHLIST config symbols that might not be in DB yet
+        try:
+            from config import WATCHLIST
+            for s in WATCHLIST:
+                if s not in all_symbols:
+                    all_symbols.append(s)
+        except ImportError:
+            pass
+
+        if not all_symbols:
+            cursor.close()
+            return
+
+        updated = 0
+        backfilled = 0
+
+        # ── Phase 1: Quick live-price update (Groww API) ─────────────────
         try:
             import bot
-            conn = psycopg2.connect(db_url, connect_timeout=3)
-            cursor = conn.cursor()
-            
-            today = datetime.now().date()
-            updated_count = 0
-            failed_count = 0
-            
-            for symbol in WATCHLIST:
+            for symbol in all_symbols:
                 try:
-                    # Fetch latest live price from Groww API
                     ltp = bot.fetch_live_price(symbol)
                     if ltp and ltp > 0:
-                        # Insert latest price into stock_prices table
-                        # Using UPSERT to avoid duplicates if already recorded today
                         cursor.execute("""
                             INSERT INTO stock_prices (symbol, date, close)
                             VALUES (%s, %s, %s)
-                            ON CONFLICT (symbol, date) DO UPDATE
-                            SET close = EXCLUDED.close
+                            ON CONFLICT (symbol, date) DO UPDATE SET close = EXCLUDED.close
                         """, (symbol, today, ltp))
-                        updated_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    logger.debug("Failed to update price for %s: %s", symbol, e)
-            
+                        updated += 1
+                except Exception:
+                    pass
             conn.commit()
-            cursor.close()
-            conn.close()
-            
-            if updated_count > 0:
-                logger.info("✓ Updated watchlist prices: %d stocks (failed: %d)", updated_count, failed_count)
         except ImportError:
-            logger.debug("Bot module not available for price updates")
+            pass
+
+        # ── Phase 2: After-hours yfinance backfill for stale stocks ──────
+        if is_after_hours:
+            try:
+                import yfinance as yf
+
+                # Find stocks with stale data (latest date > 1 trading day behind)
+                cursor.execute("""
+                    SELECT symbol, MAX(date) as latest
+                    FROM stock_prices
+                    GROUP BY symbol
+                    HAVING MAX(date) < %s
+                """, (today - timedelta(days=1),))
+                stale_stocks = cursor.fetchall()
+
+                for symbol, latest_date in stale_stocks:
+                    try:
+                        # Fetch missing days from yfinance
+                        start = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                        nse_ticker = f"{symbol}.NS"
+                        data = yf.download(nse_ticker, start=start, interval="1d", progress=False)
+
+                        if data is not None and not data.empty:
+                            close_col = data["Close"]
+                            if hasattr(close_col, "columns"):
+                                close_col = close_col.iloc[:, 0]
+
+                            for dt_idx, price in close_col.dropna().items():
+                                dt = dt_idx.date() if hasattr(dt_idx, "date") else dt_idx
+                                p = float(price)
+                                if p > 0:
+                                    cursor.execute("""
+                                        INSERT INTO stock_prices (symbol, date, close)
+                                        VALUES (%s, %s, %s)
+                                        ON CONFLICT (symbol, date) DO NOTHING
+                                    """, (symbol, dt, round(p, 2)))
+                            backfilled += 1
+                    except Exception as e:
+                        logger.debug("yfinance backfill failed for %s: %s", symbol, e)
+
+                conn.commit()
+            except ImportError:
+                logger.debug("yfinance not available for backfill")
+
+        if updated > 0 or backfilled > 0:
+            logger.info("✓ Watchlist prices: %d live-updated, %d backfilled via yfinance", updated, backfilled)
+
+        cursor.close()
     except Exception as e:
         logger.warning("Watchlist price update failed: %s", e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _task_collect_5min_candles():
@@ -352,6 +469,16 @@ def _task_cost_rate_update():
         logger.warning("Cost rate update failed: %s", e)
 
 
+def _task_tijori_refresh():
+    """Refresh Tijori supply-chain & fundamentals data for stale symbols."""
+    try:
+        import tijori_collector
+        result = tijori_collector.collect_stale_symbols()
+        logger.info("Tijori refresh: %s", result)
+    except Exception as e:
+        logger.warning("Tijori refresh failed: %s", e)
+
+
 def _task_geopolitical_collect():
     """Collect and store geopolitical news for commodities."""
     try:
@@ -385,6 +512,18 @@ def _task_fno_capital_sync():
             logger.debug("F&O capital synced: ₹%.2f", synced)
     except Exception as e:
         logger.warning("F&O capital sync failed: %s", e)
+
+
+def _task_prune_idempotency_keys():
+    """Drop expired idempotency keys so the table stays small."""
+    try:
+        from db_manager import prune_idempotency_keys, get_config
+        hours = int(get_config("idempotency.retention_hours", 48) or 48)
+        removed = prune_idempotency_keys(retention_hours=hours)
+        if removed:
+            logger.info("Pruned %d expired idempotency key(s)", removed)
+    except Exception as e:
+        logger.warning("Idempotency key prune failed: %s", e)
 
 
 def _task_global_indices():
@@ -751,6 +890,7 @@ def _task_record_pnl():
             response = requests.post(
                 'http://127.0.0.1:8000/api/live-prices',
                 json={'symbols': symbols},
+                headers=_DEVICE_HEADERS,
                 timeout=5
             )
             if response.status_code == 200:
@@ -961,7 +1101,11 @@ def _task_build_daily_snapshots():
         # Call the build endpoint which will attach real market candles
         import requests
         try:
-            response = requests.post('http://localhost:8000/api/paper-trading/build-daily-snapshots-with-candles', timeout=180)
+            response = requests.post(
+                'http://localhost:8000/api/paper-trading/build-daily-snapshots-with-candles',
+                headers=_DEVICE_HEADERS,
+                timeout=180
+            )
             if response.status_code == 200:
                 result = response.json()
                 count = result.get('snapshots_count', 0)
@@ -977,6 +1121,40 @@ def _task_build_daily_snapshots():
 
 
 # ── Scheduler engine ─────────────────────────────────────────────────────────
+
+def _load_interval_overrides() -> dict:
+    """
+    Read every `scheduler_interval_*` override in ONE query.
+
+    Called once per dispatch pass, never per task. Doing it per task meant ~29
+    distinct keys every 15s — and because each key is different, the 30s memo in
+    get_config could not dedupe them, so it was ~83,000 queries a day for values
+    that almost never change. That is the exact "never call get_config in a
+    loop" case in CLAUDE.md standard #1.
+
+    Returns {} on any failure, so a config-table problem leaves the scheduler
+    running on its compiled-in defaults rather than stopping.
+    """
+    try:
+        from db_manager import get_configs_prefix
+        return get_configs_prefix("scheduler_interval_") or {}
+    except Exception as e:
+        logger.debug("Could not batch-read scheduler interval overrides: %s", e)
+        return {}
+
+
+def _resolve_interval(overrides: dict, task_name: str, default_interval: int) -> int:
+    """Pick a task's interval from a pre-loaded override map. No I/O."""
+    raw = overrides.get(f"scheduler_interval_{task_name}")
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            logger.debug("Ignoring non-numeric interval override for %s: %r", task_name, raw)
+    return default_interval
+
 
 def _run_task_safe(task):
     """Run a single task with its own lock (prevents self-overlap)."""
@@ -1017,6 +1195,8 @@ def _scheduler_loop():
 
         now = time.time()
         elapsed = now - start_time
+        # ONE query per pass for all interval overrides, not one per task.
+        interval_overrides = _load_interval_overrides()
         for task in _tasks:
             # Honour initial_delay: skip until enough time has passed since start
             if not task["_started"]:
@@ -1025,7 +1205,8 @@ def _scheduler_loop():
                 task["_started"] = True
                 task["last_run"] = 0  # ensure it fires immediately once delay elapses
 
-            if now - task["last_run"] >= task["interval"]:
+            interval = _resolve_interval(interval_overrides, task["name"], task["interval"])
+            if now - task["last_run"] >= interval:
                 # Submit to pool — non-blocking; lock prevents self-overlap
                 _pool.submit(_run_task_safe, task)
                 task["last_run"] = now  # mark scheduled (even if lock skips it)
@@ -1059,6 +1240,9 @@ def start_scheduler():
     _register("auto_close_trades", _task_auto_close_trades, 5, initial_delay=4)  # Check every 5s for TP/SL hits
     _register("fno_capital_sync", _task_fno_capital_sync, 600, initial_delay=40)
 
+    # Maintenance: housekeeping, not a trading task despite sitting near them.
+    _register("prune_idempotency", _task_prune_idempotency_keys, 3600, initial_delay=120)
+
     # Tier 5: 60s — secondary data feeds
     _register("global_indices",   _task_global_indices,  900, initial_delay=60)
     _register("world_news",      _task_world_news,    900, initial_delay=65)
@@ -1067,7 +1251,10 @@ def start_scheduler():
     _register("telegram_summary",    _task_telegram_daily_summary, 1800, initial_delay=80)
     _register("paper_eod_summary",    _task_paper_eod_summary, 1800, initial_delay=85)
     _register("build_daily_snapshots", _task_build_daily_snapshots, 900, initial_delay=86)  # Check every 15 minutes after 4 PM
-    _register("cost_rate_update", _task_cost_rate_update, 259200, initial_delay=90)
+    # Cost scraper: every 45 days (3,888,000 seconds) with random 0-170s startup delay
+    import random
+    cost_scraper_delay = random.randint(0, 170)
+    _register("cost_scraper", _task_cost_rate_update, 3888000, initial_delay=cost_scraper_delay)
 
     # Tier 6: 120s — heavy compute / rare tasks
     _register("deep_analysis",   _task_deep_analysis, 1800, initial_delay=120)
@@ -1076,6 +1263,9 @@ def start_scheduler():
     _register("ml_retrain",       _task_ml_retrain,    86400, initial_delay=150)
     _register("retrain_xgb_daily", _task_retrain_xgb_daily, 86400, initial_delay=160)
     _register("auto_metadata",       _task_auto_metadata, 604800, initial_delay=170)
+    # Tijori supply-chain/fundamentals: check every 6h, refreshes only symbols
+    # whose data is older than tijori.refresh_interval_days (config-driven)
+    _register("tijori_refresh",      _task_tijori_refresh, 21600, initial_delay=180)
 
     thread = threading.Thread(target=_scheduler_loop, daemon=True, name="master-scheduler")
     thread.start()

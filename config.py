@@ -36,6 +36,11 @@ MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 
+# App lock: PIN hash and shared device token checked server-side by
+# /api/unlock and _block_cross_origin_mutations in app.py.
+APP_PIN_HASH = os.getenv("APP_PIN_HASH", "")
+APP_DEVICE_TOKEN = os.getenv("APP_DEVICE_TOKEN", "")
+
 # Database settings
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")

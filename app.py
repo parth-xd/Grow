@@ -6,17 +6,21 @@ for the AI trading bot.
 import sys
 sys.setrecursionlimit(10000)  # Prevent recursion errors from scheduler/threaded calls
 
+import hashlib
 import logging
+import math
 import os
 import time
 import threading
 import json
 import pytz
 from datetime import datetime
+from functools import wraps
 from flask import Flask, jsonify, request, send_file, redirect, url_for
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 
-from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL
+from config import FLASK_HOST, FLASK_PORT, WATCHLIST, DEFAULT_PRODUCT, DEFAULT_EXCHANGE, MAX_TRADE_QUANTITY, MAX_TRADE_VALUE, DB_URL, APP_PIN_HASH, APP_DEVICE_TOKEN
 from auth_manager import (
     require_auth, get_current_user, generate_jwt, register_user, authenticate_email,
     authenticate_google, update_groww_api_key, User
@@ -36,9 +40,463 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 CLOSED_TRADE_STATUSES = ("CLOSED", "HIT_TARGET", "HIT_SL")
+# Upper bound on rows pulled from trade_journal in one read (see
+# _load_journal_entries_from_db). Generous enough to cover the full history
+# today, but stops the endpoint degrading as trades accumulate.
+_JOURNAL_MAX_ROWS = 2000
+
+
+# ── Safe psycopg2 connection helper ──────────────────────────────────────────
+# All raw psycopg2 usage MUST go through this context manager to prevent
+# connection leaks that cause "too many clients" PostgreSQL errors.
+from contextlib import contextmanager
+
+@contextmanager
+def get_pg_conn():
+    """Context manager for safe psycopg2 connections. Always closes on exit."""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    conn = None
+    try:
+        db_url = os.getenv("DB_URL")
+        if not db_url:
+            raise RuntimeError("DB_URL not configured")
+        conn = psycopg2.connect(db_url, connect_timeout=3)
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 app = Flask(__name__, static_folder=".", static_url_path="")
-CORS(app)
+
+# ── Cross-origin policy ──────────────────────────────────────────────────────
+# Previously this was a bare CORS(app), which sends Access-Control-Allow-Origin: *
+# and lets ANY page the operator visits read this API's responses.  Restrict it to
+# the dashboard's own origins.  Add more via ALLOWED_ORIGINS (comma-separated).
+_DEFAULT_ORIGINS = [
+    f"http://localhost:{FLASK_PORT}",
+    f"http://127.0.0.1:{FLASK_PORT}",
+    "http://localhost:3000",   # Next.js frontend in frontend/
+    "http://127.0.0.1:3000",
+]
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", ",".join(_DEFAULT_ORIGINS)).split(",")
+    if o.strip()
+]
+CORS(app, origins=ALLOWED_ORIGINS)
+
+
+# ── CSRF guard ───────────────────────────────────────────────────────────────
+# The server binds to 127.0.0.1, so the realistic attacker is not a remote host —
+# it is any web page the operator happens to have open.  Such a page can POST to
+# this API from the operator's own browser, and several state-changing endpoints
+# (including /api/buy and /api/paper-trading/toggle) place or enable real orders.
+#
+# A browser always attaches an Origin header to cross-origin state-changing
+# requests, and a page cannot forge it.  So: reject any mutating request whose
+# Origin/Referer is present and not ours.  Requests with no Origin at all are
+# non-browser callers (curl, the scheduler's localhost calls, Telegram) and are
+# left alone — this closes the browser attack path without changing anything
+# about how the dashboard or the existing scripts behave.
+
+_CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _origin_is_allowed(origin: str) -> bool:
+    if not origin:
+        return True          # non-browser client; nothing to spoof
+    return origin.rstrip("/") in {o.rstrip("/") for o in ALLOWED_ORIGINS}
+
+
+# ── App lock: PIN check + device token ────────────────────────────────────────
+# The Origin check above stops a stray browser tab from firing a request, but it
+# never asked whether *you* unlocked the app — the PIN screen in index.html
+# compared the hash entirely in JS, so the server had no opinion on it, and a
+# caller with no Origin header (the exact shape of a native app's request) was
+# waved through with no check at all. This closes that: the correct PIN,
+# checked here, is the only way to obtain APP_DEVICE_TOKEN, and
+# _block_cross_origin_mutations below now requires that token on every mutating
+# request — browser or native, Origin present or not.
+
+_unlock_attempts = {}   # ip -> [timestamp, ...] of recent failures
+_UNLOCK_MAX_ATTEMPTS = 5
+_UNLOCK_WINDOW_SECONDS = 15 * 60
+
+
+def _unlock_rate_limited(ip: str) -> bool:
+    now = time.time()
+    recent = [t for t in _unlock_attempts.get(ip, []) if now - t < _UNLOCK_WINDOW_SECONDS]
+    _unlock_attempts[ip] = recent
+    return len(recent) >= _UNLOCK_MAX_ATTEMPTS
+
+
+@app.route("/api/unlock", methods=["POST"])
+def unlock():
+    if not APP_PIN_HASH or not APP_DEVICE_TOKEN:
+        # Fail closed: an unset PIN hash must never be treated as "any PIN works".
+        return jsonify({"error": "App lock is not configured on the server"}), 500
+
+    ip = request.remote_addr or "unknown"
+    if _unlock_rate_limited(ip):
+        return jsonify({"error": "Too many attempts. Try again later."}), 429
+
+    data = request.get_json(silent=True) or {}
+    pin_hash = hashlib.sha256(str(data.get("pin", "")).encode()).hexdigest()
+
+    if pin_hash != APP_PIN_HASH:
+        _unlock_attempts.setdefault(ip, []).append(time.time())
+        return jsonify({"error": "Incorrect PIN"}), 401
+
+    _unlock_attempts.pop(ip, None)
+    return jsonify({"success": True, "token": APP_DEVICE_TOKEN})
+
+
+def _device_token_is_valid() -> bool:
+    if not APP_DEVICE_TOKEN:
+        return True   # not configured on this deployment — nothing to enforce
+    return request.headers.get("X-Device-Token", "") == APP_DEVICE_TOKEN
+
+
+@app.before_request
+def _block_cross_origin_mutations():
+    if request.method in _CSRF_SAFE_METHODS:
+        return None
+    if request.path == "/api/unlock":
+        return None   # this IS how a client proves it knows the PIN
+
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        # Fall back to Referer, which browsers also send and pages cannot forge.
+        referer = request.headers.get("Referer", "")
+        if referer:
+            from urllib.parse import urlparse
+            parsed = urlparse(referer)
+            origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
+
+    if not _origin_is_allowed(origin):
+        logger.warning(
+            "Blocked cross-origin %s %s from origin=%r", request.method, request.path, origin
+        )
+        return jsonify({
+            "error": "Cross-origin request rejected",
+            "detail": "This endpoint changes state and may only be called from the dashboard.",
+        }), 403
+
+    if not _device_token_is_valid():
+        logger.warning("Blocked %s %s: missing or invalid device token", request.method, request.path)
+        return jsonify({
+            "error": "Unauthorized",
+            "detail": "This endpoint requires the app to be unlocked first.",
+        }), 401
+
+    return None
+
+
+# ── Connection-pool safety: release the thread's session at end of request ───
+# db_manager uses scoped_session, which hands each thread its own Session and
+# keeps it alive until the thread dies. Flask runs with threaded=True (a new
+# thread per request), so without this teardown a request that opened a session
+# and hit an exception before close() would keep its connection checked out
+# until GC collected the dead thread. The pool is pool_size=5 + max_overflow=10,
+# so ~15 of those in flight and every later query blocks for pool_timeout then
+# raises. remove() closes the session and returns the connection; the next
+# Session() call in a thread transparently creates a fresh one, so no calling
+# code needs to change.
+@app.teardown_appcontext
+def _release_db_session(exc=None):
+    try:
+        from db_manager import get_db
+        get_db(DB_URL).Session.remove()
+    except Exception as e:
+        # Never let cleanup mask the real response/exception — but this must be
+        # visible. If remove() starts failing, the connection leak this teardown
+        # exists to prevent comes back, and at debug level (below the configured
+        # INFO) an operator would see nothing until the pool was exhausted.
+        logger.warning("Session teardown failed — connections may leak: %s", e)
+
+
+def clamp_arg(name, default, maximum, minimum=1):
+    """
+    Read an integer query param and force it into [minimum, maximum].
+
+    Never trust the client's number: these params sit in front of tables that
+    only grow (stock_prices, trade_snapshots, pnl_snapshots), so an unbounded
+    `?limit=` is both a slow query and a way for one caller to hurt everyone
+    else. Garbage input falls back to the default rather than raising, so a
+    stray `?limit=abc` cannot 500 the endpoint.
+    """
+    raw = request.args.get(name)
+    if raw is None or raw == "":
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.debug("Ignoring non-numeric %s=%r, using default %s", name, raw, default)
+            value = default
+    return max(minimum, min(value, maximum))
+
+
+# Values a boolean config key may be written as, and what they normalize to.
+# Stored values are always exactly "true" or "false" so that readers can compare
+# without having to guess at spacing or spelling — see bot.is_paper_mode.
+_CONFIG_BOOL_WORDS = {
+    "true": "true", "1": "true", "yes": "true", "on": "true",
+    "false": "false", "0": "false", "no": "false", "off": "false",
+}
+
+
+def _normalize_config_value(key, value, old_value):
+    """
+    Clean and type-check a config value before it is stored.
+
+    Returns (normalized_string, error_message). Exactly one is meaningful.
+
+    Config values were previously stored as a bare `str(value)`, so a trailing
+    space survived into the database. For `paper_trading` that single character
+    was the difference between simulated and real orders. Rather than special-
+    casing that one key, the existing value tells us the type: a key currently
+    holding "true"/"false" is a flag and only accepts flag words; a key holding
+    a number only accepts a finite number.
+    """
+    text = str(value).strip()
+    if not text:
+        return None, f"'{key}' cannot be set to an empty value"
+
+    prior = str(old_value).strip().lower() if old_value is not None else ""
+
+    if prior in ("true", "false"):
+        word = _CONFIG_BOOL_WORDS.get(text.lower())
+        if word is None:
+            return None, (
+                f"'{key}' is a true/false setting — got {text!r}. "
+                "Use 'true' or 'false'."
+            )
+        return word, None
+
+    if prior:
+        try:
+            prior_num = float(prior)
+        except (TypeError, ValueError):
+            prior_num = None
+        if prior_num is not None:
+            try:
+                num = float(text)
+            except (TypeError, ValueError):
+                return None, f"'{key}' is a numeric setting — got {text!r}"
+            if not math.isfinite(num):
+                return None, f"'{key}' must be a finite number — got {text!r}"
+
+    return text, None
+
+
+def require_finite_positive(value, name, allow_zero=False):
+    """
+    Coerce a client-supplied number and reject anything that cannot be money.
+
+    Returns (number, error_message); exactly one is meaningful.
+
+    `float()` alone is not a validation. JSON permits the literals NaN,
+    Infinity and -Infinity, and float() accepts all three — after which every
+    comparison against them is False. A capital check written as
+    `if cost > available: refuse` therefore *passes* for NaN, and the order goes
+    through. int() has a matching trap: int(inf) raises OverflowError, not
+    ValueError, so it escapes the usual `except (TypeError, ValueError)`.
+
+    Every money path takes its numbers through here so those two holes are
+    closed in one place rather than twelve.
+    """
+    if value is None:
+        return None, f"{name} is required"
+    if isinstance(value, bool):  # bool is an int subclass; True would become 1.0
+        return None, f"{name} must be a number"
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None, f"{name} must be a number — got {value!r}"
+    if not math.isfinite(num):
+        return None, f"{name} must be a finite number — got {value!r}"
+    if num < 0 or (num == 0 and not allow_zero):
+        return None, f"{name} must be greater than zero — got {num}"
+    return num, None
+
+
+# ── Idempotency: duplicate-order protection on the money paths ───────────────
+# A trade request can arrive twice for reasons that have nothing to do with the
+# user changing their mind: a double-click, or — the nastier one — the order
+# reaching the broker and the RESPONSE being lost on the way back, so the
+# client retries something that already succeeded.
+#
+# Endpoints wrapped with @idempotent("<scope>") accept an Idempotency-Key
+# header. The first request with a given key runs normally and its response is
+# stored; any retry with the same key replays that stored response instead of
+# placing a second order.
+#
+# This is deliberately OPT-IN and backward compatible: a request WITHOUT the
+# header behaves exactly as it does today. Once every client sends a key, flip
+# the `idempotency.require_key` config to "1" to start rejecting keyless
+# requests on the money paths.
+
+def _idempotency_required():
+    """Whether keyless requests should be rejected (config, not a constant)."""
+    try:
+        from db_manager import get_config
+        return str(get_config("idempotency.require_key", "0")).strip() in ("1", "true", "True")
+    except Exception:
+        return False
+
+
+def idempotent(scope):
+    """Wrap a money-path endpoint with replay-safe duplicate protection."""
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            from db_manager import (claim_idempotency_key, complete_idempotency_key,
+                                    IDEM_CLAIMED, IDEM_REPLAY, IDEM_IN_FLIGHT,
+                                    IDEM_MISMATCH, IDEM_INVALID, IDEM_KEY_MAX_LEN)
+
+            key = (request.headers.get("Idempotency-Key") or "").strip()
+
+            if not key:
+                if _idempotency_required():
+                    return jsonify({
+                        "error": "Idempotency-Key header is required for this endpoint",
+                        "detail": "Send a unique key (e.g. a UUID) per order attempt so "
+                                  "retries cannot place a duplicate trade.",
+                    }), 400
+                # Legacy caller — preserve today's behaviour exactly.
+                return view(*args, **kwargs)
+
+            # Reject an unusable key rather than letting it reach the driver. A
+            # key wider than the column raises DataError deep in the claim, and
+            # an error there is precisely where a fail-open would silently turn
+            # protection off for every request carrying that key.
+            if len(key) > IDEM_KEY_MAX_LEN:
+                logger.warning("Oversize Idempotency-Key (%d chars) for %s — rejected", len(key), scope)
+                return jsonify({
+                    "error": f"Idempotency-Key must be at most {IDEM_KEY_MAX_LEN} characters",
+                    "detail": "Use a short unique value such as a UUID.",
+                }), 400
+
+            # Fingerprint the body so the same key reused for a different order
+            # is caught instead of silently replaying the wrong response.
+            try:
+                body = request.get_data(cache=True) or b""
+            except Exception:
+                body = b""
+            fingerprint = hashlib.sha256(body).hexdigest()
+
+            outcome, stored = claim_idempotency_key(key, scope, fingerprint)
+
+            if outcome == IDEM_REPLAY:
+                logger.info("Idempotent replay for %s key=%s — no new order placed", scope, key)
+                return app.response_class(
+                    stored.get("response_json") or "{}",
+                    status=stored.get("status_code") or 200,
+                    content_type=stored.get("content_type") or "application/json",
+                )
+
+            if outcome == IDEM_INVALID:
+                return jsonify({
+                    "error": "Idempotency-Key was rejected as unusable",
+                    "detail": "Use a short unique value such as a UUID.",
+                }), 400
+
+            if outcome == IDEM_IN_FLIGHT:
+                logger.warning("Duplicate in-flight request for %s key=%s — rejected", scope, key)
+                return jsonify({
+                    "error": "A request with this Idempotency-Key is already being processed",
+                    "detail": "The original request is still running, or a previous attempt "
+                              "did not finish cleanly. Check your positions before retrying — "
+                              "retrying now risks a duplicate order.",
+                }), 409
+
+            if outcome == IDEM_MISMATCH:
+                logger.warning("Idempotency-Key reuse with different body for %s key=%s", scope, key)
+                return jsonify({
+                    "error": "This Idempotency-Key was already used with a different request",
+                    "detail": "Generate a new key for each distinct order.",
+                }), 422
+
+            # We own the key — run the real handler.
+            try:
+                rv = view(*args, **kwargs)
+            except Exception:
+                # The handler blew up somewhere we cannot see. The broker may
+                # already have the order, so the key deliberately stays
+                # in_flight: a retry gets 409 instead of a second fill, and the
+                # scheduled prune clears it after the retention window.
+                #
+                # Marking it failed here would make it re-claimable, which is
+                # exactly how a crash after a fill turns into a duplicate trade.
+                logger.exception(
+                    "Handler raised under idempotency key %s/%s — leaving the key "
+                    "in_flight; the order may or may not have reached the broker",
+                    scope, key,
+                )
+                raise
+
+            # Normalise whatever the view returned into a Response we can store.
+            try:
+                resp = app.make_response(rv)
+
+                # Every outcome is stored as terminal, success or not. It is
+                # tempting to mark errors retryable, but these routes call the
+                # broker BEFORE returning 4xx — /api/fno/buy returns 400 with
+                # whatever place_fno_buy() reported — so a non-2xx response does
+                # NOT prove the order was never placed. Replaying the original
+                # error is safe; re-running the handler is not. A caller who
+                # genuinely wants another order sends a new key.
+                if not (200 <= resp.status_code < 300):
+                    logger.warning(
+                        "Storing non-2xx (%s) under idempotency key %s/%s — a retry "
+                        "with this key will replay it rather than re-ordering",
+                        resp.status_code, scope, key,
+                    )
+
+                # Replay reproduces the content type, so a future non-JSON route
+                # cannot be silently served back as JSON.
+                complete_idempotency_key(
+                    key, scope, resp.get_data(as_text=True), resp.status_code,
+                    content_type=resp.content_type,
+                )
+                return resp
+            except Exception as e:
+                # Storing the result must never break a successful order.
+                logger.error("Idempotency result capture failed for %s key=%s: %s", scope, key, e)
+                return rv
+
+        return wrapper
+    return decorator
+
+
+# ── Custom JSON provider: sanitize NaN / Infinity → null ─────────────────────
+# Python's float('nan') serializes as NaN in JSON which is invalid.
+# This provider walks all data and replaces NaN/Infinity with None before encoding.
+
+class SafeJSONProvider(DefaultJSONProvider):
+    """JSON provider that converts NaN and Infinity to null."""
+
+    def dumps(self, obj, **kwargs):
+        return super().dumps(self._sanitize(obj), **kwargs)
+
+    @staticmethod
+    def _sanitize(obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        if isinstance(obj, dict):
+            return {k: SafeJSONProvider._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [SafeJSONProvider._sanitize(v) for v in obj]
+        return obj
+
+app.json_provider_class = SafeJSONProvider
+app.json = SafeJSONProvider(app)
 
 # Auto-refresh Groww token on startup (before any API calls)
 try:
@@ -99,12 +557,18 @@ try:
         seed_fno_config()
     except Exception as e:
         logger.warning("⚠️  F&O config seed failed (non-fatal): %s", e)
+    # Seed Tijori supply-chain collector config
+    try:
+        from tijori_collector import seed_tijori_config
+        seed_tijori_config()
+    except Exception as e:
+        logger.warning("⚠️  Tijori config seed failed (non-fatal): %s", e)
 except ImportError:
     logger.warning("⚠️  Database modules not installed. Run: pip install -r requirements.txt")
     logger.warning("    Portfolio and predictions will work but without persistent storage.")
 except Exception as e:
     logger.error(f"✗ Database initialization failed: {e}")
-    logger.warning("⚠️  Make sure PostgreSQL is running and .env is configured. See DATABASE_SETUP.md for details.")
+    logger.warning("⚠️  Make sure PostgreSQL is running and .env is configured. See docs/DATABASE_SCHEMA.md for details.")
 
 
 # ── Pages ────────────────────────────────────────────────────────────────────
@@ -254,7 +718,19 @@ def api_set_api_key():
 
 @app.route("/api/auth/demo", methods=["POST"])
 def api_demo():
-    """Create demo user for quick testing. REMOVE IN PRODUCTION."""
+    """Create demo user for quick testing.
+
+    DISABLED BY DEFAULT.  This endpoint hands out a valid JWT to any caller with
+    no credentials, which also defeats @require_auth on every protected route.
+    Set ALLOW_DEMO_LOGIN=1 in the environment to re-enable it for local testing.
+    """
+    if os.getenv("ALLOW_DEMO_LOGIN", "").strip().lower() not in ("1", "true", "yes"):
+        logger.warning("Demo login attempt rejected (ALLOW_DEMO_LOGIN not set)")
+        return jsonify({
+            "error": "Demo login is disabled",
+            "detail": "Set ALLOW_DEMO_LOGIN=1 to enable this endpoint for local testing.",
+        }), 403
+
     try:
         from db_manager import Base
         from sqlalchemy import create_engine
@@ -293,14 +769,12 @@ def api_demo():
 
 # ── Manual Trade Management ──────────────────────────────────────────────────
 
-@app.route("/api/close-trade", methods=["POST", "GET"])
+@app.route("/api/close-trade", methods=["POST"])
+@idempotent("close_trade")
 def api_close_trade():
     """Manually close a specific trade."""
     try:
-        if request.method == 'POST':
-            data = request.json or {}
-        else:  # GET
-            data = request.args.to_dict()
+        data = request.json or {}
         
         trade_id = data.get('trade_id')
         symbol = data.get('symbol')
@@ -313,6 +787,33 @@ def api_close_trade():
             exit_price = float(exit_price)
         except:
             return jsonify({"success": False, "message": "exit_price must be a number"}), 400
+
+        # exit_price arrives from the client and lands directly in the P&L
+        # ledger, so it gets sanity-checked here. A non-positive price is never
+        # legitimate — that is a bug, not a trade.
+        if exit_price <= 0:
+            logger.warning("Rejected close of %s with non-positive exit_price %r", symbol, exit_price)
+            return jsonify({"success": False, "message": "exit_price must be greater than zero"}), 400
+
+        # Compare against the live market price. This WARNS rather than blocks:
+        # a stale or unavailable feed must not stop someone closing a position.
+        # Set close_trade.max_price_divergence_pct in Settings to tune.
+        price_warning = None
+        try:
+            from paper_trader import get_live_price
+            from db_manager import get_config
+            live = get_live_price(symbol)
+            if live and float(live) > 0:
+                divergence = abs(exit_price - float(live)) / float(live) * 100
+                limit = float(get_config("close_trade.max_price_divergence_pct", 20) or 20)
+                if divergence > limit:
+                    price_warning = (
+                        f"exit_price ₹{exit_price:.2f} is {divergence:.1f}% away from "
+                        f"the live price ₹{float(live):.2f} — recorded as given"
+                    )
+                    logger.error("SUSPECT CLOSE PRICE: %s — %s", symbol, price_warning)
+        except Exception as e:
+            logger.debug("Could not price-check close of %s: %s", symbol, e)
 
         from paper_trader import PaperTradeTracker
 
@@ -334,8 +835,10 @@ def api_close_trade():
         )
         
         return jsonify({
-            "success": True, 
+            "success": True,
             "message": "Trade closed successfully",
+            # Surfaced so a suspect price is visible in the UI, not just the log.
+            "price_warning": price_warning,
             "trade": {
                 "id": trade_id,
                 "symbol": symbol,
@@ -775,6 +1278,27 @@ def research_all():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/watchlist/refresh-prices", methods=["POST"])
+def refresh_watchlist_prices():
+    """Force-refresh prices for all watchlist stocks via yfinance (works after hours)."""
+    try:
+        import threading
+        def _run():
+            try:
+                from scheduler import _task_update_watchlist_prices
+                # Temporarily pretend it's after-hours so it runs the full backfill
+                import os
+                os.environ["_FORCE_BACKFILL"] = "1"
+                _task_update_watchlist_prices()
+                os.environ.pop("_FORCE_BACKFILL", None)
+            except Exception as e:
+                logger.warning("Manual watchlist refresh failed: %s", e)
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({"success": True, "message": "Watchlist price refresh started in background"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/raw-materials")
 def raw_materials():
     """Get commodity/mineral prices, trends, and news sentiment for all tracked raw materials."""
@@ -811,29 +1335,16 @@ def raw_materials():
                 "x_posts": [],
                 "sentiment": "NEUTRAL",
             }
-            # Fetch price data via yfinance
+            # Fetch price data via canonical fetcher
             try:
-                import yfinance as yf
-                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-                with ThreadPoolExecutor(max_workers=1) as _yf_exec:
-                    _yf_future = _yf_exec.submit(yf.download, ticker, period="3mo", interval="1wk", progress=False)
-                    data = _yf_future.result(timeout=15)
-                if not data.empty and len(data) >= 4:
-                    close_col = data["Close"]
-                    if hasattr(close_col, "columns"):
-                        close_col = close_col.iloc[:, 0]
-                    current = float(close_col.iloc[-1])
-                    price_1m = float(close_col.iloc[-4]) if len(close_col) >= 4 else current
-                    price_3m = float(close_col.iloc[0])
-                    chg_1m = ((current - price_1m) / price_1m * 100) if price_1m > 0 else 0
-                    chg_3m = ((current - price_3m) / price_3m * 100) if price_3m > 0 else 0
-                    weighted = chg_1m * 0.6 + chg_3m * 0.4
-                    entry["current_price"] = round(current, 2)
-                    entry["price_change_1m"] = round(chg_1m, 1)
-                    entry["price_change_3m"] = round(chg_3m, 1)
-                    entry["trend"] = "RISING" if weighted > 5 else "FALLING" if weighted < -5 else "STABLE"
+                price_data = ct.fetch_commodity_price(ticker)
+                if price_data:
+                    entry["current_price"] = price_data["current_price"]
+                    entry["price_change_1m"] = price_data["price_change_1m"]
+                    entry["price_change_3m"] = price_data["price_change_3m"]
+                    entry["trend"] = price_data["trend"]
             except Exception as ex:
-                logger.warning("yfinance failed for %s: %s", ticker, ex)
+                logger.warning("commodity price fetch failed for %s: %s", ticker, ex)
 
             # Fetch news + X posts for this commodity
             try:
@@ -841,7 +1352,11 @@ def raw_materials():
                 query = f'"{commodity_name}" price market'
                 from news_sentiment import _fetch_google_news
                 articles = _fetch_google_news(query, limit=6)
-                entry["news"] = [{"title": a.title, "source": a.source, "url": a.url, "sentiment": a.sentiment, "score": round(a.sentiment_score, 3), "published": a.published or ""} for a in articles[:5]]
+                # Sort by published date (newest first)
+                sorted_articles = sorted(articles[:5],
+                                       key=lambda a: a.published_at if hasattr(a, 'published_at') and a.published_at else datetime.min,
+                                       reverse=True)
+                entry["news"] = [{"title": a.title, "source": a.source, "url": a.url, "sentiment": a.sentiment, "score": round(a.sentiment_score, 3), "published": a.published or ""} for a in sorted_articles]
             except Exception as ex:
                 logger.warning("News fetch failed for commodity %s: %s", meta["commodity"], ex)
 
@@ -885,7 +1400,8 @@ def raw_materials_supply_chain():
         # Overlay live data from DB
         snapshots = {s.commodity: s for s in session.query(CommoditySnapshot).all()}
         disruptions_db = {}
-        for d in session.query(DisruptionEvent).all():
+        # Get disruptions sorted by newest first (updated_at DESC)
+        for d in session.query(DisruptionEvent).order_by(DisruptionEvent.updated_at.desc()).all():
             disruptions_db.setdefault(d.commodity, []).append(d)
         session.close()
 
@@ -918,7 +1434,10 @@ def raw_materials_supply_chain():
                 entry["price_updated_at"] = None
 
             # Overlay live disruptions (replace static ones with live-scored)
-            live_disruptions = disruptions_db.get(commodity, [])
+            # Sort by updated_at descending (newest first)
+            live_disruptions = sorted(disruptions_db.get(commodity, []),
+                                     key=lambda x: x.updated_at or datetime.min,
+                                     reverse=True)
             if live_disruptions:
                 entry["disruptions"] = []
                 for ld in live_disruptions:
@@ -962,6 +1481,281 @@ def supply_chain_refresh():
         return jsonify({"success": True, "message": "Supply chain refresh started in background"})
     except Exception as e:
         logger.exception("Supply chain refresh error")
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Company supply-chain intelligence (Tijori) ───────────────────────────────
+
+# ── System Configuration (Settings tab) ──────────────────────────────────────
+
+# Internal per-symbol state markers — hidden from the settings UI
+_CONFIG_HIDDEN_PREFIXES = ("tijori.last_collected.", "earnings.last_qrev.")
+# State values the app manages itself — shown but not editable
+_CONFIG_READONLY_KEYS = {"tijori.backfill_status", "fno.used_capital", "portfolio_reviewed"}
+# Values masked in the UI until revealed
+_CONFIG_SENSITIVE_KEYS = {"telegram_bot_token"}
+
+
+@app.route("/api/config")
+def list_config():
+    """All editable config settings, grouped for the Settings tab."""
+    try:
+        from db_manager import get_db
+        from sqlalchemy import text as _text
+        db = get_db()
+        with db.Session() as session:
+            rows = session.execute(_text(
+                "SELECT key, value, description, updated_at FROM config_settings ORDER BY key"
+            )).fetchall()
+        items = []
+        for key, value, desc, updated in rows:
+            if any(key.startswith(p) for p in _CONFIG_HIDDEN_PREFIXES):
+                continue
+            items.append({
+                "key": key,
+                "value": value,
+                "description": desc or "",
+                "updated_at": updated.isoformat() if updated else None,
+                "readonly": key in _CONFIG_READONLY_KEYS,
+                "sensitive": key in _CONFIG_SENSITIVE_KEYS,
+            })
+        return jsonify({"settings": items, "count": len(items)})
+    except Exception as e:
+        logger.exception("Config list error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/config", methods=["POST"])
+def update_config():
+    """Update one config setting. Only existing keys can be changed."""
+    try:
+        data = request.json or {}
+        key = (data.get("key") or "").strip()
+        value = data.get("value")
+        if not key or value is None:
+            return jsonify({"error": "key and value required"}), 400
+        if any(key.startswith(p) for p in _CONFIG_HIDDEN_PREFIXES) or key in _CONFIG_READONLY_KEYS:
+            return jsonify({"error": f"'{key}' is managed by the system and cannot be edited"}), 403
+
+        from db_manager import get_db, ConfigSetting, get_config, set_config
+        old_value = get_config(key)
+        if old_value is None:
+            db = get_db()
+            with db.Session() as session:
+                exists = session.query(ConfigSetting).filter_by(key=key).first()
+            if not exists:
+                return jsonify({"error": f"unknown setting '{key}'"}), 404
+
+        normalized, err = _normalize_config_value(key, value, old_value)
+        if err:
+            return jsonify({"error": err}), 400
+
+        set_config(key, normalized)
+        logger.info("⚙️ Config updated via dashboard: %s = %s (was %s)", key, normalized, old_value)
+        return jsonify({"success": True, "key": key, "old_value": old_value, "new_value": normalized})
+    except Exception as e:
+        logger.exception("Config update error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/data-health")
+def data_health():
+    """Coverage and completeness across every dataset the dashboard depends on.
+
+    Exists so silent data gaps surface on their own instead of being noticed by
+    chance. Each check reports value/total/pct plus a status, and the worst
+    status wins overall. All counts are batched — this endpoint must stay cheap
+    enough to poll.
+    """
+    from datetime import datetime, timedelta
+    checks = []
+
+    def add(cid, label, value, total, warn_below, crit_below, detail="", hint=""):
+        pct = round(value / total * 100, 1) if total else 0.0
+        status = "ok" if pct >= warn_below else ("warn" if pct >= crit_below else "critical")
+        if not total:
+            status, pct = "unknown", 0.0
+        checks.append({"id": cid, "label": label, "value": value, "total": total,
+                       "pct": pct, "status": status, "detail": detail, "hint": hint})
+
+    try:
+        from db_manager import get_db, CompanyConnection, CompanyExternalData, ExternalSlugMap
+        from sqlalchemy import func, distinct, text as _text
+        db = get_db()
+        with db.Session() as s:
+            # Only real data blocks count as "collected". Bookkeeping rows such
+            # as collection_attempt markers must never inflate coverage — an
+            # inflated number would hide exactly the gaps this endpoint exists
+            # to surface.
+            REAL_TYPES = ["company_info", "ratios", "returns", "forensics",
+                          "peers", "market_share", "corporate_actions"]
+
+            # 1. Company data collected across the dashboard universe.
+            # Must be restricted to the universe: partner companies also have
+            # rows here, and counting them made this check clamp to 100% and
+            # become structurally incapable of ever reporting a gap.
+            universe_syms = {r[0] for r in s.execute(
+                _text("SELECT DISTINCT symbol FROM stock_prices")).fetchall()}
+            universe = len(universe_syms)
+            collected = 0
+            if universe_syms:
+                collected = s.query(func.count(distinct(CompanyExternalData.symbol))).filter(
+                    CompanyExternalData.data_type.in_(REAL_TYPES),
+                    CompanyExternalData.symbol.in_(list(universe_syms))).scalar() or 0
+            add("company_coverage", "Companies with supply-chain data",
+                collected, universe, 95, 70,
+                f"{max(0, universe - collected)} tracked stocks have no collected data",
+                "Scheduler task 'tijori_refresh' collects these every 6h")
+
+            # 2. Partner names matched to an NSE symbol
+            conn_total = s.query(func.count(CompanyConnection.id)).filter_by(is_active=True).scalar() or 0
+            conn_res = s.query(func.count(CompanyConnection.id)).filter(
+                CompanyConnection.is_active == True,
+                CompanyConnection.related_symbol.isnot(None)).scalar() or 0
+            add("partner_symbols", "Suppliers/customers matched to a symbol",
+                conn_res, conn_total, 85, 60,
+                f"{conn_total - conn_res} partner links have no NSE symbol",
+                "Unmatched are often genuinely unlisted (foreign or private) companies")
+
+            # 3. Matched partners that actually have performance data
+            partner_syms = {r[0] for r in s.query(distinct(CompanyConnection.related_symbol)).filter(
+                CompanyConnection.is_active == True,
+                CompanyConnection.related_symbol.isnot(None)).all() if r[0]}
+            with_snap = set()
+            if partner_syms:
+                with_snap = {r[0] for r in s.query(distinct(CompanyExternalData.symbol)).filter(
+                    CompanyExternalData.symbol.in_(list(partner_syms)),
+                    CompanyExternalData.data_type == "returns").all()}
+            waiting = len(partner_syms) - len(with_snap)
+            add("partner_snapshots", "Matched partners with performance data",
+                len(with_snap), len(partner_syms), 80, 40,
+                f"{waiting} matched partners are still awaiting their page fetch",
+                "Scheduler task 'tijori_refresh' fetches a batch every 6h "
+                "(tijori.max_partner_snapshots_per_run). Companies whose page is "
+                "gated get marked and retried after tijori.partner_retry_days.")
+
+            # 4. Resolver success rate — how often a lookup attempt works
+            res_ok = s.query(func.count(ExternalSlugMap.id)).filter_by(resolution_status="resolved").scalar() or 0
+            res_bad = s.query(func.count(ExternalSlugMap.id)).filter_by(resolution_status="failed").scalar() or 0
+            add("resolver_success", "Name-lookup success rate",
+                res_ok, res_ok + res_bad, 70, 40,
+                f"{res_bad} names failed lookup",
+                "Persistent failures are usually paywalled or unlisted companies")
+
+            # 5. Price data freshness
+            latest = s.execute(_text("SELECT MAX(date) FROM stock_prices")).scalar()
+            fresh_days = (datetime.utcnow().date() - latest).days if latest else 999
+            checks.append({
+                "id": "price_freshness", "label": "Daily price data freshness",
+                "value": fresh_days, "total": None, "pct": None,
+                "status": "ok" if fresh_days <= 4 else ("warn" if fresh_days <= 10 else "critical"),
+                "detail": f"Newest daily candle is {fresh_days} day(s) old"
+                          + (f" ({latest})" if latest else ""),
+                "hint": "Weekends and market holidays add 2-3 days legitimately",
+            })
+
+        rank = {"ok": 0, "unknown": 1, "warn": 2, "critical": 3}
+        worst = max((c["status"] for c in checks), key=lambda s_: rank.get(s_, 0), default="ok")
+        return jsonify({
+            "generated_at": datetime.utcnow().isoformat(),
+            "overall_status": worst,
+            "issues": sum(1 for c in checks if c["status"] in ("warn", "critical")),
+            "checks": checks,
+        })
+    except Exception as e:
+        logger.exception("Data health check failed")
+        return jsonify({"overall_status": "unknown", "error": str(e), "checks": checks}), 200
+
+
+@app.route("/api/tijori/backfill-status")
+def tijori_backfill_status():
+    """
+    Report Tijori data collection progress so the dashboard can show a
+    loading state while the initial backfill runs.
+    """
+    try:
+        from db_manager import get_db
+        from sqlalchemy import text as _text
+        db = get_db()
+        with db.Session() as session:
+            total = session.execute(
+                _text("SELECT COUNT(DISTINCT symbol) FROM stock_prices")
+            ).scalar() or 0
+            rows = session.execute(_text(
+                "SELECT key, value FROM config_settings WHERE key LIKE 'tijori.last_collected.%'"
+            )).fetchall()
+        collected = len(rows)
+
+        # Determine "running". Routine scheduler refreshes must NOT count —
+        # only a genuine initial backfill should block analysis sections.
+        from datetime import datetime, timedelta
+        recent_activity = False
+        latest = max((r[1] for r in rows), default=None) if rows else None
+        if latest:
+            try:
+                recent_activity = (datetime.utcnow() - datetime.fromisoformat(latest)) < timedelta(minutes=15)
+            except Exception:
+                pass
+
+        flag = None
+        threshold = 95.0
+        try:
+            from db_manager import get_config
+            flag = get_config("tijori.backfill_status")
+            threshold = float(get_config("tijori.block_below_coverage_pct") or 95)
+        except Exception:
+            pass
+
+        coverage_pct = (collected / total * 100) if total else 100.0
+
+        if flag == "running":
+            # Explicit flag from backfill script; require recent activity so a
+            # crashed run doesn't leave the dashboard locked forever
+            running = recent_activity
+        else:
+            # Lock analysis sections whenever coverage is below the threshold
+            # AND the collector is actively working (e.g. many new stocks were
+            # just added). The activity requirement means a permanently
+            # uncollectable symbol can never lock the dashboard forever.
+            running = recent_activity and coverage_pct < threshold
+
+        return jsonify({
+            "running": running,
+            "collected": collected,
+            "total": total,
+            "pct": round(coverage_pct, 1),
+            "threshold": threshold,
+        })
+    except Exception as e:
+        logger.debug("Backfill status error: %s", e)
+        return jsonify({"running": False, "collected": 0, "total": 0, "pct": 0})
+
+@app.route("/api/supply-chain-intel/<symbol>")
+def supply_chain_intel(symbol):
+    """Suppliers, customers, ratios, forensics + what changed — from stored Tijori data."""
+    try:
+        import tijori_collector
+        return jsonify(tijori_collector.get_supply_chain_intel(symbol.upper()))
+    except Exception as e:
+        logger.exception("Supply chain intel error for %s", symbol)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/supply-chain-intel/<symbol>/refresh", methods=["POST"])
+def supply_chain_intel_refresh(symbol):
+    """Force a fresh Tijori collection for one symbol (runs in background)."""
+    try:
+        import threading
+        import tijori_collector
+        # Full onboarding, not just the company page — a manual refresh should
+        # also (re)match partners and fetch any whose data is missing.
+        t = threading.Thread(target=tijori_collector.onboard_symbol,
+                             args=(symbol.upper(),), daemon=True)
+        t.start()
+        return jsonify({"success": True,
+                        "message": f"Tijori refresh for {symbol.upper()} started in background"})
+    except Exception as e:
+        logger.exception("Supply chain intel refresh error for %s", symbol)
         return jsonify({"error": str(e)}), 500
 
 
@@ -1016,6 +1810,7 @@ def stock_news_detail(symbol):
 
 
 @app.route("/api/auto-trade", methods=["POST"])
+@idempotent("auto_trade")
 def auto_trade():
     try:
         result = bot.auto_trade()
@@ -1037,6 +1832,7 @@ def monitor_trailing_stops():
 
 
 @app.route("/api/buy", methods=["POST"])
+@idempotent("buy")
 def buy():
     data = request.get_json(force=True)
     symbol = data.get("symbol", "").upper()
@@ -1052,6 +1848,7 @@ def buy():
 
 
 @app.route("/api/sell", methods=["POST"])
+@idempotent("sell")
 def sell():
     data = request.get_json(force=True)
     symbol = data.get("symbol", "").upper()
@@ -1241,14 +2038,19 @@ def fno_best_opportunity():
 
 
 @app.route("/api/fno/buy", methods=["POST"])
+@idempotent("fno_buy")
 def fno_buy():
     """Place an F&O BUY order (option buying only)."""
-    data = request.get_json(force=True)
-    trading_symbol = data.get("trading_symbol", "")
-    instrument_key = data.get("instrument", "").upper()
-    premium = data.get("premium", 0)
-    if not trading_symbol or not instrument_key or premium <= 0:
+    data = request.get_json(silent=True) or {}
+    trading_symbol = (data.get("trading_symbol") or "").strip()
+    instrument_key = (data.get("instrument") or "").strip().upper()
+    if not trading_symbol or not instrument_key:
         return jsonify({"error": "trading_symbol, instrument, and premium are required"}), 400
+    # Coerce before comparing: `premium <= 0` raises TypeError on the string a
+    # form field produces, and silently passes for NaN.
+    premium, err = require_finite_positive(data.get("premium"), "premium")
+    if err:
+        return jsonify({"error": err}), 400
     try:
         result = fno_trader.place_fno_buy(trading_symbol, instrument_key, premium)
         if "error" in result:
@@ -1260,6 +2062,7 @@ def fno_buy():
 
 
 @app.route("/api/fno/sell", methods=["POST"])
+@idempotent("fno_sell")
 def fno_sell():
     """Sell/close an existing F&O position."""
     data = request.get_json(force=True)
@@ -1372,6 +2175,7 @@ def fno_global_indices():
 
 
 @app.route("/api/fno/auto-trade/run", methods=["POST"])
+@idempotent("fno_auto_trade_run")
 def fno_auto_trade_run():
     """Manually trigger one auto-trade cycle."""
     try:
@@ -1406,6 +2210,7 @@ def fno_auto_trade_config():
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/intraday/enter-paper", methods=["POST"])
+@idempotent("intraday_enter_paper")
 def intraday_enter_paper():
     """Record a paper intraday trade (MIS) - simulated, not executed on Groww."""
     from db_manager import get_db, TradeJournalEntry
@@ -1479,6 +2284,7 @@ def intraday_enter_paper():
 
 
 @app.route("/api/intraday/close-paper", methods=["POST"])
+@idempotent("intraday_close_paper")
 def intraday_close_paper():
     """Close a paper intraday trade at market price."""
     from db_manager import get_db, TradeJournalEntry
@@ -1551,6 +2357,7 @@ def intraday_close_paper():
 
 
 @app.route("/api/intraday/auto-trade-run-paper", methods=["POST"])
+@idempotent("intraday_auto_trade_run_paper")
 def intraday_auto_trade_run_paper():
     """Run auto-trade in paper mode - creates paper trades without executing on Groww."""
     from db_manager import get_db, TradeJournalEntry
@@ -1590,14 +2397,18 @@ def intraday_auto_trade_run_paper():
         # Create paper trade
         trade_id = f"PAPER-AUTO-{opp['symbol']}-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
         quantity = int(opp.get('quantity', 1) or 1)
-        paper_amount_limit = bot.get_paper_trade_amount_limit()
         limit_applied = False
 
-        if paper_amount_limit > 0 and current_price > 0:
-            capped_qty = max(1, int(paper_amount_limit / current_price))
-            if quantity > capped_qty:
-                quantity = capped_qty
-                limit_applied = True
+        # Capital cap gate: check if adding this trade would exceed the deployed capital limit
+        new_trade_value = current_price * quantity
+        if not bot._check_capital_cap_allows_trade(new_trade_value):
+            deployed = bot.get_current_deployed_capital()
+            cap = bot.get_paper_trade_amount_limit()
+            return jsonify({
+                "success": False,
+                "error": f"Capital cap exceeded: deployed ₹{deployed:,.0f} + ₹{new_trade_value:,.0f} > cap ₹{cap:,.0f}",
+                "message": "Cannot place trade — max capital deployed limit reached"
+            }), 400
         
         db = get_db()
         with db.Session() as session:
@@ -1842,31 +2653,31 @@ def get_watchlist():
         from psycopg2.extras import RealDictCursor
         from dotenv import load_dotenv
         load_dotenv()
-        
+
         db_url = os.getenv("DB_URL")
         if not db_url:
             return jsonify({"error": "Database not configured"}), 500
-        
+
         conn = psycopg2.connect(db_url, connect_timeout=3)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         # Get watchlist stocks with their price data summary AND latest price
         cursor.execute("""
-            SELECT DISTINCT symbol, 
+            SELECT DISTINCT symbol,
                    COUNT(*) as price_candles,
                    MIN(date) as earliest_date,
                    MAX(date) as latest_date,
                    (SELECT close FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price,
                    (SELECT date FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price_date
             FROM stock_prices sp
-            GROUP BY symbol 
+            GROUP BY symbol
             ORDER BY symbol
         """)
-        
+
         stocks = cursor.fetchall()
         cursor.close()
         conn.close()
-        
+
         # Convert to dicts with proper formatting if needed
         stocks_list = []
         for stock in stocks:
@@ -1875,7 +2686,7 @@ def get_watchlist():
             if stock_dict.get('latest_price'):
                 stock_dict['latest_price'] = round(float(stock_dict['latest_price']), 2)
             stocks_list.append(stock_dict)
-        
+
         return jsonify({
             "success": True,
             "count": len(stocks_list),
@@ -1908,7 +2719,7 @@ def add_to_watchlist():
                 if candles:
                     stored = store_prices_in_db(symbol, candles)
                     logger.info(f"✓ Added {symbol} to watchlist with {stored} price records")
-                    
+
                     # Immediately collect peer comparison and other intelligence
                     try:
                         import market_intelligence as mi
@@ -1916,6 +2727,23 @@ def add_to_watchlist():
                         logger.info(f"Intelligence collected for {symbol}: {results}")
                     except Exception as e:
                         logger.warning(f"Could not collect intelligence for {symbol}: {e}")
+
+                    # Collect Tijori supply-chain + fundamentals data (suppliers,
+                    # customers, ratios, forensics) — same auto-flow as prices
+                    try:
+                        import tijori_collector
+                        # Full onboarding for this one stock: its own page,
+                        # then match its suppliers/customers to NSE symbols,
+                        # then fetch those partners so their data exists too.
+                        tj = tijori_collector.onboard_symbol(symbol)
+                        logger.info(
+                            "Tijori onboarding for %s: company=%s, partners resolved=%s, partner data=%s",
+                            symbol,
+                            (tj.get("company") or {}).get("sections_ok"),
+                            (tj.get("resolve") or {}).get("resolved"),
+                            (tj.get("partner_data") or {}).get("collected"))
+                    except Exception as e:
+                        logger.warning(f"Could not collect Tijori data for {symbol}: {e}")
                 else:
                     logger.warning(f"No price data fetched for {symbol}")
             except Exception as e:
@@ -2284,11 +3112,48 @@ def _do_watchlist_analysis(symbol):
             logger.warning("AI prediction failed for watchlist %s: %s", symbol, e)
         
         # ── Fundamental analysis ──
+        # ── Fan out the independent providers ─────────────────────────────
+        # None of these six consumes another's output (the scoring block below
+        # reads them all only afterwards), so run them concurrently instead of
+        # paying the sum of their network latencies.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        def _p_fundamentals():
+            import fundamental_analysis as fa
+            return fa.get_fundamental_analysis(bot._get_groww(), symbol)
+
+        def _p_annual():
+            import fundamental_analysis as fa
+            return fa.scrape_annual_financials(symbol)
+
+        def _p_inst():
+            from fii_tracker import get_shareholding_breakdown
+            return get_shareholding_breakdown(symbol)
+
+        def _p_commodity():
+            from commodity_tracker import get_commodity_impact
+            return get_commodity_impact(symbol)
+
+        def _p_geo():
+            from news_sentiment import get_geopolitical_news
+            return get_geopolitical_news(symbol)
+
+        def _p_news():
+            from news_sentiment import get_news_sentiment
+            return get_news_sentiment(symbol)
+
+        _pool = _TPE(max_workers=6)
+        _f_fund = _pool.submit(_p_fundamentals)
+        _f_annual = _pool.submit(_p_annual)
+        _f_inst = _pool.submit(_p_inst)
+        _f_comm = _pool.submit(_p_commodity)
+        _f_geo = _pool.submit(_p_geo)
+        _f_news = _pool.submit(_p_news)
+        _pool.shutdown(wait=False)
+
         fund_data = {}
         try:
-            import fundamental_analysis as fa
-            groww = bot._get_groww()
-            fundamentals = fa.get_fundamental_analysis(groww, symbol)
+            fundamentals = _f_fund.result(timeout=45)
             if fundamentals:
                 fund_data["rating"] = fundamentals.get("fundamental_rating", "N/A")
                 fund_data["score_pct"] = round(fundamentals.get("fundamental_pct", 0), 0)
@@ -2308,16 +3173,14 @@ def _do_watchlist_analysis(symbol):
         # ── Annual financial statements (P&L growth) ──
         financials_data = {}
         try:
-            import fundamental_analysis as fa
-            financials_data = fa.scrape_annual_financials(symbol)
+            financials_data = _f_annual.result(timeout=40) or {}
         except Exception as e:
             logger.warning("Annual financials failed for watchlist %s: %s", symbol, e)
         
         # ── FII / MF holdings ──
         inst_data = {}
         try:
-            from fii_tracker import get_shareholding_breakdown
-            sh = get_shareholding_breakdown(symbol)
+            sh = _f_inst.result(timeout=30)
             if sh:
                 inst_data = sh
         except Exception as e:
@@ -2326,24 +3189,21 @@ def _do_watchlist_analysis(symbol):
         # ── Commodity impact ──
         commodity_data = None
         try:
-            from commodity_tracker import get_commodity_impact
-            commodity_data = get_commodity_impact(symbol)
+            commodity_data = _f_comm.result(timeout=30)
         except Exception as e:
             logger.warning("Commodity data failed for watchlist %s: %s", symbol, e)
         
         # ── Geopolitical risk context ──
         geopolitical_data = None
         try:
-            from news_sentiment import get_geopolitical_news
-            geopolitical_data = get_geopolitical_news(symbol)
+            geopolitical_data = _f_geo.result(timeout=30)
         except Exception as e:
             logger.warning("Geopolitical data failed for watchlist %s: %s", symbol, e)
         
         # ── Recent news headlines ──
         news_headlines = []
         try:
-            from news_sentiment import get_news_sentiment
-            ns = get_news_sentiment(symbol)
+            ns = _f_news.result(timeout=45)
             if ns and ns.articles:
                 for a in ns.articles[:6]:
                     news_headlines.append({
@@ -2366,17 +3226,36 @@ def _do_watchlist_analysis(symbol):
             periods = {
                 "1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365
             }
-            for label, days in periods.items():
-                cur2.execute("""
-                    SELECT close FROM stock_prices 
-                    WHERE symbol = %s AND date <= (CURRENT_DATE - INTERVAL '%s days')
-                    ORDER BY date DESC LIMIT 1
-                """, (symbol, days))
-                row = cur2.fetchone()
+            # One round-trip for all five look-back closes instead of five
+            cur2.execute("""
+                SELECT label, close FROM (
+                    (SELECT %s AS label, close, 1 AS ord FROM stock_prices
+                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '7 days'
+                        ORDER BY date DESC LIMIT 1)
+                  UNION ALL
+                    (SELECT %s, close, 2 FROM stock_prices
+                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '30 days'
+                        ORDER BY date DESC LIMIT 1)
+                  UNION ALL
+                    (SELECT %s, close, 3 FROM stock_prices
+                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '90 days'
+                        ORDER BY date DESC LIMIT 1)
+                  UNION ALL
+                    (SELECT %s, close, 4 FROM stock_prices
+                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '180 days'
+                        ORDER BY date DESC LIMIT 1)
+                  UNION ALL
+                    (SELECT %s, close, 5 FROM stock_prices
+                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '365 days'
+                        ORDER BY date DESC LIMIT 1)
+                ) t ORDER BY ord
+            """, ("1W", symbol, "1M", symbol, "3M", symbol,
+                  "6M", symbol, "1Y", symbol))
+            for row in cur2.fetchall():
                 if row and row["close"]:
                     old = float(row["close"])
                     chg = round(((current_price - old) / old) * 100, 1)
-                    price_action[label] = {"price": round(old, 2), "change_pct": chg}
+                    price_action[row["label"]] = {"price": round(old, 2), "change_pct": chg}
             # Also get recent high/low (last 30 days)
             cur2.execute("""
                 SELECT MIN(low) as recent_low, MAX(high) as recent_high, AVG(volume) as avg_vol
@@ -2570,7 +3449,17 @@ def _do_watchlist_analysis(symbol):
         reward = upside_to_t1 if upside_to_t1 > 0 else upside_to_avg
         risk = downside_to_support if downside_to_support > 0 else 5
         risk_reward = round(reward / risk, 2) if risk > 0 else 0
-        
+
+        # Supply-chain intelligence (Tijori snapshots — DB-only read, cheap)
+        supply_chain = None
+        try:
+            from tijori_collector import get_supply_chain_intel
+            _sc = get_supply_chain_intel(symbol)
+            if _sc.get("available") or _sc.get("suppliers") or _sc.get("customers"):
+                supply_chain = _sc
+        except Exception as _sce:
+            logger.debug("Supply-chain intel failed for %s: %s", symbol, _sce)
+
         return jsonify({
             "success": True,
             "symbol": symbol,
@@ -2615,6 +3504,8 @@ def _do_watchlist_analysis(symbol):
             "note": _get_watchlist_note(symbol),
             # Buy zone
             "buy_zone": buy_zone,
+            # Supply-chain intelligence (Tijori)
+            "supply_chain": supply_chain,
         })
     except Exception as e:
         logger.exception(f"Watchlist analysis error for {symbol}")
@@ -2728,12 +3619,18 @@ def _derive_post_trade_metrics(entry):
     return post
 
 
-def _load_journal_entries_from_db():
+def _load_journal_entries_from_db(limit=_JOURNAL_MAX_ROWS):
+    """Load journal entries, newest first, bounded so the whole table is never
+    streamed. to_dict() deserializes two JSON blobs per row, so an unbounded
+    read gets expensive as the journal grows."""
     from db_manager import get_db, TradeJournalEntry
 
     db = get_db()
     with db.Session() as session:
-        return [trade.to_dict() for trade in session.query(TradeJournalEntry).all()]
+        q = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at.desc())
+        if limit:
+            q = q.limit(limit)
+        return [trade.to_dict() for trade in q.all()]
 
 
 def _get_canonical_journal_views():
@@ -2903,6 +3800,7 @@ def journal_entry(trade_id):
 
 
 @app.route("/api/journal/<trade_id>/close", methods=["POST"])
+@idempotent("journal_close")
 def journal_close(trade_id):
     """Manually close a trade in the database."""
     from db_manager import get_db, TradeJournalEntry
@@ -3321,13 +4219,39 @@ def get_stock_prices(symbol):
         conn = psycopg2.connect(db_url, connect_timeout=3)
         cursor = conn.cursor()
         
-        # Get all candles for full 5Y chart
-        cursor.execute("""
-            SELECT date, open, high, low, close, volume 
-            FROM stock_prices 
-            WHERE symbol = %s
-            ORDER BY date ASC
-        """, (symbol.upper(),))
+        # Full 5Y chart by default; ?days=N or ?limit=N trims the payload.
+        # Newest N rows are selected, then re-sorted oldest-first for charting.
+        try:
+            days = int(request.args.get("days", 0))
+        except (TypeError, ValueError):
+            days = 0
+        try:
+            limit = min(int(request.args.get("limit", 0)), 5000)
+        except (TypeError, ValueError):
+            limit = 0
+
+        if days > 0:
+            cursor.execute("""
+                SELECT date, open, high, low, close, volume
+                FROM stock_prices
+                WHERE symbol = %s AND date >= CURRENT_DATE - make_interval(days => %s)
+                ORDER BY date ASC
+            """, (symbol.upper(), days))
+        elif limit > 0:
+            cursor.execute("""
+                SELECT date, open, high, low, close, volume FROM (
+                    SELECT date, open, high, low, close, volume
+                    FROM stock_prices WHERE symbol = %s
+                    ORDER BY date DESC LIMIT %s
+                ) t ORDER BY date ASC
+            """, (symbol.upper(), limit))
+        else:
+            cursor.execute("""
+                SELECT date, open, high, low, close, volume
+                FROM stock_prices
+                WHERE symbol = %s
+                ORDER BY date ASC
+            """, (symbol.upper(),))
         
         rows = cursor.fetchall()
         cursor.close()
@@ -4255,6 +5179,7 @@ def build_daily_snapshots_with_candles():
 
 
 @app.route("/api/auto-close/check", methods=["POST"])
+@idempotent("auto_close_check")
 def check_trailing_stop_exits():
     """
     UNIVERSAL AUTOMATED TRADE MANAGEMENT
@@ -4360,7 +5285,7 @@ def get_paper_trading_settings():
             "settings": {
                 "amount_limit": amount_limit,
                 "amount_limit_enabled": amount_limit > 0,
-                "amount_limit_note": "Maximum rupee value per auto paper trade. Set 0 to keep the current sizing logic.",
+                "amount_limit_note": "Maximum total capital the paper trader can deploy across all open positions. Set 0 for unlimited.",
             },
         })
     except Exception as e:
@@ -4388,7 +5313,7 @@ def update_paper_trading_settings():
         set_config(
             "paper_trade_amount_limit",
             f"{amount_limit:.2f}",
-            "Maximum rupee value per auto paper trade (0 = existing sizing logic)",
+            "Maximum total capital deployed across all open paper positions (0 = unlimited)",
         )
 
         return jsonify({
@@ -4627,7 +5552,7 @@ def trade_snapshots_list():
     """List all trade snapshots (most recent first)."""
     try:
         from db_manager import get_db, TradeSnapshot
-        limit = request.args.get("limit", 50, type=int)
+        limit = clamp_arg("limit", 50, 500)
         symbol = request.args.get("symbol", "").upper()
         db = get_db()
         session = db.Session()
@@ -4658,7 +5583,7 @@ def trade_snapshots_list():
         logger.warning("Trade snapshot DB unavailable, using JSON fallback: %s", e)
         import json
         trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
-        limit = request.args.get("limit", 50, type=int)
+        limit = clamp_arg("limit", 50, 500)
         symbol = request.args.get("symbol", "").upper()
         snapshots = []
         try:
@@ -4774,8 +5699,8 @@ def pnl_history():
         from datetime import datetime, timedelta
         
         # Get query parameters
-        minutes = request.args.get("minutes", 60, type=int)  # Last 60 minutes by default
-        limit = request.args.get("limit", 1000, type=int)    # Max 1000 points
+        minutes = clamp_arg("minutes", 60, 1440)   # up to 24h
+        limit = clamp_arg("limit", 1000, 5000)     # cap now enforced, not just documented
         
         db = get_db()
         if not db:
@@ -5844,6 +6769,7 @@ def get_scheduler_settings():
             "news_prefetch": ("600", "Prefetch news articles (seconds)"),
             "global_indices": ("900", "Update global indices (seconds)"),
             "deep_analysis": ("1800", "Deep analysis (seconds)"),
+            "prune_idempotency": ("3600", "Prune expired idempotency keys (seconds)"),
         }
         
         settings = {}
@@ -5922,6 +6848,20 @@ def get_scheduler_status():
             "scheduler_running": False,
             "error": str(e)
         }), 500
+
+
+@app.route("/api/telegram/test", methods=["POST"])
+def test_telegram():
+    """Test Telegram connection and send a test message."""
+    try:
+        import telegram_alerts
+        result = telegram_alerts.test_connection()
+        if result.get("ok"):
+            return jsonify({"ok": True, "message": f"✅ Connected to @{result['bot_name']}"})
+        else:
+            return jsonify({"ok": False, "error": result.get("error", "Unknown error")}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
