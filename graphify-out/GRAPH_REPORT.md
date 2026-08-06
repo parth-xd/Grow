@@ -1,501 +1,248 @@
-# Graph Report - /Users/parthsharma/Desktop/Grow  (2026-04-30)
+# Graph Report - /tmp/gfocus  (2026-08-01)
 
 ## Corpus Check
-- 82 files · ~192,752 words
-- Verdict: corpus is large enough that graph structure adds value.
+- Corpus is ~12,710 words - fits in a single context window. You may not need a graph.
 
 ## Summary
-- 1858 nodes · 7096 edges · 71 communities detected
-- Extraction: 34% EXTRACTED · 66% INFERRED · 0% AMBIGUOUS · INFERRED: 4664 edges (avg confidence: 0.54)
+- 235 nodes · 564 edges · 33 communities detected
+- Extraction: 57% EXTRACTED · 43% INFERRED · 0% AMBIGUOUS · INFERRED: 242 edges (avg confidence: 0.54)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
-- [[_COMMUNITY_Community 0|Community 0]]
-- [[_COMMUNITY_Community 1|Community 1]]
-- [[_COMMUNITY_Community 2|Community 2]]
-- [[_COMMUNITY_Community 3|Community 3]]
-- [[_COMMUNITY_Community 4|Community 4]]
-- [[_COMMUNITY_Community 5|Community 5]]
-- [[_COMMUNITY_Community 6|Community 6]]
-- [[_COMMUNITY_Community 7|Community 7]]
-- [[_COMMUNITY_Community 8|Community 8]]
-- [[_COMMUNITY_Community 9|Community 9]]
-- [[_COMMUNITY_Community 10|Community 10]]
-- [[_COMMUNITY_Community 11|Community 11]]
-- [[_COMMUNITY_Community 12|Community 12]]
-- [[_COMMUNITY_Community 13|Community 13]]
-- [[_COMMUNITY_Community 14|Community 14]]
-- [[_COMMUNITY_Community 15|Community 15]]
-- [[_COMMUNITY_Community 16|Community 16]]
-- [[_COMMUNITY_Community 17|Community 17]]
-- [[_COMMUNITY_Community 18|Community 18]]
-- [[_COMMUNITY_Community 19|Community 19]]
-- [[_COMMUNITY_Community 20|Community 20]]
-- [[_COMMUNITY_Community 21|Community 21]]
-- [[_COMMUNITY_Community 22|Community 22]]
-- [[_COMMUNITY_Community 23|Community 23]]
-- [[_COMMUNITY_Community 24|Community 24]]
-- [[_COMMUNITY_Community 25|Community 25]]
-- [[_COMMUNITY_Community 26|Community 26]]
-- [[_COMMUNITY_Community 27|Community 27]]
-- [[_COMMUNITY_Community 28|Community 28]]
-- [[_COMMUNITY_Community 29|Community 29]]
-- [[_COMMUNITY_Community 30|Community 30]]
-- [[_COMMUNITY_Community 31|Community 31]]
-- [[_COMMUNITY_Community 32|Community 32]]
-- [[_COMMUNITY_Community 33|Community 33]]
-- [[_COMMUNITY_Community 34|Community 34]]
-- [[_COMMUNITY_Community 35|Community 35]]
-- [[_COMMUNITY_Community 36|Community 36]]
-- [[_COMMUNITY_Community 37|Community 37]]
-- [[_COMMUNITY_Community 38|Community 38]]
-- [[_COMMUNITY_Community 39|Community 39]]
-- [[_COMMUNITY_Community 40|Community 40]]
-- [[_COMMUNITY_Community 41|Community 41]]
-- [[_COMMUNITY_Community 42|Community 42]]
-- [[_COMMUNITY_Community 43|Community 43]]
-- [[_COMMUNITY_Community 44|Community 44]]
-- [[_COMMUNITY_Community 45|Community 45]]
-- [[_COMMUNITY_Community 46|Community 46]]
-- [[_COMMUNITY_Community 47|Community 47]]
-- [[_COMMUNITY_Community 48|Community 48]]
-- [[_COMMUNITY_Community 49|Community 49]]
-- [[_COMMUNITY_Community 50|Community 50]]
-- [[_COMMUNITY_Community 51|Community 51]]
-- [[_COMMUNITY_Community 52|Community 52]]
-- [[_COMMUNITY_Community 53|Community 53]]
-- [[_COMMUNITY_Community 54|Community 54]]
-- [[_COMMUNITY_Community 55|Community 55]]
-- [[_COMMUNITY_Community 56|Community 56]]
-- [[_COMMUNITY_Community 57|Community 57]]
-- [[_COMMUNITY_Community 58|Community 58]]
-- [[_COMMUNITY_Community 59|Community 59]]
-- [[_COMMUNITY_Community 60|Community 60]]
-- [[_COMMUNITY_Community 61|Community 61]]
-- [[_COMMUNITY_Community 62|Community 62]]
-- [[_COMMUNITY_Community 63|Community 63]]
-- [[_COMMUNITY_Community 64|Community 64]]
-- [[_COMMUNITY_Community 65|Community 65]]
-- [[_COMMUNITY_Community 66|Community 66]]
-- [[_COMMUNITY_Community 67|Community 67]]
-- [[_COMMUNITY_Community 68|Community 68]]
-- [[_COMMUNITY_Community 69|Community 69]]
-- [[_COMMUNITY_Community 70|Community 70]]
+- [[_COMMUNITY_Supply Chain & External Data|Supply Chain & External Data]]
+- [[_COMMUNITY_DB Core & Config|DB Core & Config]]
+- [[_COMMUNITY_Analysis Cache & Lookups|Analysis Cache & Lookups]]
+- [[_COMMUNITY_News & Commodity Models|News & Commodity Models]]
+- [[_COMMUNITY_Scheduler Core|Scheduler Core]]
+- [[_COMMUNITY_Scheduler Trading Tasks|Scheduler Trading Tasks]]
+- [[_COMMUNITY_P&L & ML Retrain Tasks|P&L & ML Retrain Tasks]]
+- [[_COMMUNITY_Candle Storage & Intelligence|Candle Storage & Intelligence]]
+- [[_COMMUNITY_Candle Queries|Candle Queries]]
+- [[_COMMUNITY_Paper Trading & Token Refresh|Paper Trading & Token Refresh]]
+- [[_COMMUNITY_Stock Metadata Maps|Stock Metadata Maps]]
+- [[_COMMUNITY_Stock Master Table|Stock Master Table]]
+- [[_COMMUNITY_Training Event Logs|Training Event Logs]]
+- [[_COMMUNITY_Support Group 13|Support Group 13]]
+- [[_COMMUNITY_Support Group 14|Support Group 14]]
+- [[_COMMUNITY_Support Group 15|Support Group 15]]
+- [[_COMMUNITY_Earnings-Aware Refresh|Earnings-Aware Refresh]]
+- [[_COMMUNITY_Support Group 17|Support Group 17]]
+- [[_COMMUNITY_Support Group 18|Support Group 18]]
+- [[_COMMUNITY_Support Group 19|Support Group 19]]
+- [[_COMMUNITY_Support Group 20|Support Group 20]]
+- [[_COMMUNITY_Support Group 21|Support Group 21]]
+- [[_COMMUNITY_Support Group 22|Support Group 22]]
+- [[_COMMUNITY_Support Group 23|Support Group 23]]
+- [[_COMMUNITY_Support Group 24|Support Group 24]]
+- [[_COMMUNITY_Support Group 25|Support Group 25]]
+- [[_COMMUNITY_Support Group 26|Support Group 26]]
+- [[_COMMUNITY_Support Group 27|Support Group 27]]
+- [[_COMMUNITY_Support Group 28|Support Group 28]]
+- [[_COMMUNITY_Support Group 29|Support Group 29]]
+- [[_COMMUNITY_Support Group 30|Support Group 30]]
+- [[_COMMUNITY_Support Group 31|Support Group 31]]
+- [[_COMMUNITY_Support Group 32|Support Group 32]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `PaperTradeTracker` - 388 edges
-2. `IntradayCandle` - 372 edges
-3. `Stock` - 355 edges
-4. `TradeSnapshot` - 345 edges
-5. `CommoditySnapshot` - 339 edges
-6. `PnLSnapshot` - 339 edges
-7. `TradeJournalEntry` - 334 edges
-8. `DisruptionEvent` - 315 edges
-9. `User` - 313 edges
-10. `ThesisAnalyzer` - 308 edges
+1. `CandleDatabase` - 47 edges
+2. `Candle` - 40 edges
+3. `PnLSnapshot` - 40 edges
+4. `PaperTrade` - 38 edges
+5. `CompanyConnection` - 28 edges
+6. `CompanyExternalData` - 28 edges
+7. `ExternalSlugMap` - 27 edges
+8. `get_db()` - 27 edges
+9. `collect_for_symbol()` - 13 edges
+10. `resolve_slug()` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Candle` --uses--> `Display database statistics.`  [INFERRED]
-  /Users/parthsharma/Desktop/Grow/db_manager.py → /Users/parthsharma/Desktop/Grow/db_cli.py
-- `Candle` --uses--> `Sync a specific symbol from API.`  [INFERRED]
-  /Users/parthsharma/Desktop/Grow/db_manager.py → /Users/parthsharma/Desktop/Grow/db_cli.py
-- `Candle` --uses--> `Sync all watchlist symbols.`  [INFERRED]
-  /Users/parthsharma/Desktop/Grow/db_manager.py → /Users/parthsharma/Desktop/Grow/db_cli.py
-- `Candle` --uses--> `Delete old candles for a symbol.`  [INFERRED]
-  /Users/parthsharma/Desktop/Grow/db_manager.py → /Users/parthsharma/Desktop/Grow/db_cli.py
-- `Candle` --uses--> `Delete ALL candles for a symbol (dangerous!).`  [INFERRED]
-  /Users/parthsharma/Desktop/Grow/db_manager.py → /Users/parthsharma/Desktop/Grow/db_cli.py
+- `resolve_slug()` --calls--> `ExternalSlugMap`  [INFERRED]
+  /tmp/gfocus/tijori_collector.py → /tmp/gfocus/db_manager.py
+- `_store_snapshots()` --calls--> `CompanyExternalData`  [INFERRED]
+  /tmp/gfocus/tijori_collector.py → /tmp/gfocus/db_manager.py
+- `collect_stale_symbols()` --calls--> `get_all_stocks()`  [INFERRED]
+  /tmp/gfocus/tijori_collector.py → /tmp/gfocus/db_manager.py
+- `_task_tijori_refresh()` --calls--> `collect_stale_symbols()`  [INFERRED]
+  /tmp/gfocus/scheduler.py → /tmp/gfocus/tijori_collector.py
+- `get_supply_chain_intel()` --calls--> `get_db()`  [INFERRED]
+  /tmp/gfocus/tijori_collector.py → /tmp/gfocus/db_manager.py
 
 ## Communities
 
-### Community 0 - "Community 0"
-Cohesion: 0.05
-Nodes (377): Flask API server — serves the dashboard and exposes REST endpoints for the AI tr, Monitor and update trailing stops on open trades., Monitor and update trailing stops on open trades., Manually trigger a Groww token refresh., Serve the main trading dashboard., Get cost breakdown for a round-trip trade on a symbol., Manually trigger a Groww token refresh., Serve the main trading dashboard. (+369 more)
+### Community 0 - "Supply Chain & External Data"
+Cohesion: 0.1
+Nodes (42): CompanyConnection, CompanyExternalData, ExternalSlugMap, Supplier/customer relationships between companies, scraped from external     sou, Snapshots of externally-sourced company data (ratios, peers, forensics,     retu, Verified mapping of company name/symbol → external source page slug.     Avoids, _compute_health(), _diff_forensics() (+34 more)
 
-### Community 1 - "Community 1"
-Cohesion: 0.01
-Nodes (219): add_to_watchlist(), api_close_trade(), api_demo(), api_google_oauth(), api_login(), api_profile(), api_refresh_token(), api_set_api_key() (+211 more)
+### Community 1 - "DB Core & Config"
+Cohesion: 0.19
+Nodes (22): get_config(), get_db(), get_stock(), Get a config value from DB (memoized for _CONFIG_CACHE_TTL seconds)., Set a config value in DB., Create tables if they don't exist., Get or create global database instance., Get a single stock by symbol. (+14 more)
 
-### Community 2 - "Community 2"
-Cohesion: 0.02
-Nodes (178): api_daily_summary(), api_send_daily_summary(), index(), collect_index_candles(), Collect historical hourly candle data for indices (NIFTY, BANKNIFTY, FINNIFTY) a, Fetch index candles from Groww and store in database., format_telegram_summary(), generate_daily_summary() (+170 more)
+### Community 2 - "Analysis Cache & Lookups"
+Cohesion: 0.11
+Nodes (18): AnalysisCache, get_cached(), get_competitors(), get_configs(), get_configs_prefix(), get_stock_name(), get_watchlist_note(), invalidate_config_cache() (+10 more)
 
-### Community 3 - "Community 3"
-Cohesion: 0.03
-Nodes (124): cost_estimate(), margin(), monitor_trailing_stops(), portfolio_review_status(), predict(), telegram_test(), trade_log(), train() (+116 more)
+### Community 3 - "News & Commodity Models"
+Cohesion: 0.18
+Nodes (11): Base, CommoditySnapshot, ConfigSetting, DisruptionEvent, GlobalNews, NewsArticle, Live disruption events scored from news sentiment., Persisted news article — never re-fetched once stored. (+3 more)
 
-### Community 4 - "Community 4"
-Cohesion: 0.03
-Nodes (120): fno_auto_trade_config(), fno_auto_trade_log(), fno_capital(), fno_global_indices(), fno_margin(), search_stocks(), search_stocks_api(), auto_analyze_watchlist() (+112 more)
+### Community 4 - "Scheduler Core"
+Cohesion: 0.2
+Nodes (10): Master Scheduler — thread-pool daemon coordinating all background tasks.  Tasks, Send comprehensive daily summary via Telegram (once at ~15:30 IST)., Register a periodic task.  initial_delay = seconds after scheduler     start bef, Pre-fetch news sentiment for watchlist stocks to warm cache., Collect world/macro/sector news from RSS feeds and Google News., _register(), start_scheduler(), _task_news_prefetch() (+2 more)
 
-### Community 5 - "Community 5"
-Cohesion: 0.04
-Nodes (122): auto_trade(), get_auto_analysis(), portfolio_review(), research_leaderboard(), toggle_cash_auto_trade(), toggle_paper_trading(), get_latest_analysis(), Get the most recent auto-analysis results. (+114 more)
+### Community 5 - "Scheduler Trading Tasks"
+Cohesion: 0.18
+Nodes (10): Candle, ORM model for OHLCV candle data., Main scheduler loop — dispatches due tasks to thread pool., Run F&O automated trading cycle — entry/exit signals + order execution., Pre-generate deep contextual analysis for watchlist stocks (cached)., Run supply chain commodity data collector., _scheduler_loop(), _task_deep_analysis() (+2 more)
 
-### Community 6 - "Community 6"
-Cohesion: 0.04
-Nodes (119): _do_watchlist_analysis(), quote(), raw_materials(), research_stock(), research_stock_refresh(), stock_news_detail(), collect_geopolitical_news(), _fallback_result() (+111 more)
+### Community 6 - "P&L & ML Retrain Tasks"
+Cohesion: 0.2
+Nodes (10): PnLSnapshot, Record unrealised P&L at regular intervals (every 5 seconds during market)., Retrain ML models for all watchlist stocks., Auto-refresh stock metadata: company names, sectors, peers, commodities from Scr, Automatically close trades when they hit target price or stop loss., Record unrealised P&L snapshot every 5 seconds during market hours., _task_auto_close_trades(), _task_auto_metadata() (+2 more)
 
-### Community 7 - "Community 7"
-Cohesion: 0.04
-Nodes (66): fundamentals(), market_intelligence(), Get fundamental analysis for a stock (financials, competitors, etc.), _analyze_financials(), _fetch_competitor_prices(), _get_competitors(), get_fundamental_analysis(), _get_groww_quote_fundamentals() (+58 more)
+### Community 7 - "Candle Storage & Intelligence"
+Cohesion: 0.22
+Nodes (9): CandleDatabase, Database manager for candle storage and retrieval., Insert candles into database.                  Args:             symbol: Stock s, Collect latest 5-minute candles for all trading instruments from Groww API., Collect institutional holdings, peer comparisons for all watchlist stocks., Run the unified research algorithm on all tracked stocks., _task_collect_5min_candles(), _task_market_intelligence() (+1 more)
 
-### Community 8 - "Community 8"
-Cohesion: 0.04
-Nodes (58): metadata_status(), discover_peers(), get_fno_cost_rate(), infer_commodity_links(), _invalidate_caches(), auto_metadata.py — Automated stock metadata discovery and refresh.  Replaces ALL, Auto-discover peers from Screener.in industry pages.     Multi-level fallback: I, Scrape a Screener.in /market/... page for company links. (+50 more)
+### Community 8 - "Candle Queries"
+Cohesion: 0.11
+Nodes (5): Retrieve candles from database using raw SQL for speed.                  Args:, Get the most recent candle timestamp for a symbol.                  Returns:, Identify missing candle dates to determine what needs to be synced from API., Delete candles older than keep_days for a symbol (optional cleanup)., Get database statistics.
 
-### Community 9 - "Community 9"
-Cohesion: 0.07
-Nodes (47): options_build_strategy(), options_greeks(), options_iv(), options_strategy_list(), analyze_option_chain(), bs_call_price(), bs_put_price(), _build_bear_put() (+39 more)
+### Community 9 - "Paper Trading & Token Refresh"
+Cohesion: 0.25
+Nodes (9): PaperTrade, Simulated trades for paper trading mode., Register all tasks and start the scheduler daemon thread.     Call this once fro, Check if Groww token is still valid, refresh if expired., Send end-of-day paper trading summary via Telegram., Generate and send paper trade EOD summary with reasoning., _send_paper_eod_summary(), _task_paper_eod_summary() (+1 more)
 
-### Community 10 - "Community 10"
-Cohesion: 0.06
-Nodes (44): check_updates(), deep_analysis_portfolio(), deep_analysis_stock(), deep_analysis_watchlist(), _pa_refresh_background(), portfolio_analysis(), _build_commodity_narrative(), _build_fundamental_narrative() (+36 more)
+### Community 10 - "Stock Metadata Maps"
+Cohesion: 0.25
+Nodes (8): get_all_stocks(), get_commodity_map(), get_sector_map(), get_symbol_names(), Get all active stocks from DB., Build SECTOR_MAP dict from DB: {symbol: sector}., Build COMMODITY_MAP dict from DB for stocks with commodity dependency., Build SYMBOL_NAMES dict from DB: {symbol: company_name}.
 
-### Community 11 - "Community 11"
-Cohesion: 0.08
-Nodes (38): backtest_strategies(), compare_strategies_endpoint(), fno_backtest_multi(), run_backtest_endpoint(), _benchmark(), _bollinger(), _cache_result(), compare_strategies() (+30 more)
+### Community 11 - "Stock Master Table"
+Cohesion: 0.29
+Nodes (4): Populate Stock table with known stocks if empty. Safe to call repeatedly., Master stock table. Replaces all hardcoded dicts:     STOCK_DIRECTORY, SYMBOL_NA, seed_stocks(), Stock
 
-### Community 12 - "Community 12"
-Cohesion: 0.14
-Nodes (31): world_news(), GlobalNews, World & macro news — RBI, Fed, global events, sector moves, etc., _task_world_news(), _auto_tag(), _classify(), collect_world_news(), _fetch_all_rss() (+23 more)
+### Community 12 - "Training Event Logs"
+Cohesion: 0.29
+Nodes (6): CandleTrainingMetadata, log_candle_collection_event(), log_xgb_training_event(), Log completion of hourly candle collection task., Log completion of daily XGBoost retraining., Track data collection and XGBoost model training events.
 
-### Community 13 - "Community 13"
-Cohesion: 0.08
-Nodes (29): check_trailing_stop_exits(), enable_real_trading(), list_manual_holdings(), calculate_available_capital_for_auto_trading(), can_system_close_trade(), get_manual_holdings(), get_protected_symbols(), get_trade_origin() (+21 more)
-
-### Community 14 - "Community 14"
-Cohesion: 0.13
-Nodes (22): build_features(), compute_atr(), compute_bollinger(), compute_fibonacci_levels(), compute_macd(), compute_rsi(), compute_stochastic(), compute_support_resistance() (+14 more)
-
-### Community 15 - "Community 15"
-Cohesion: 0.14
-Nodes (18): _task_supply_chain(), _auto_queries(), _build_disruption_watch(), collect_once(), _collector_loop(), _fetch_commodity_price(), _get_disruption_watch(), Supply Chain Data Collector — background job that: 1. Fetches live commodity pri (+10 more)
-
-### Community 16 - "Community 16"
-Cohesion: 0.17
-Nodes (15): nlp_info(), nlp_score(), batch_score(), _enhanced_keyword_score(), finbert_score(), get_model_info(), Enhanced NLP Sentiment — FinBERT transformer model with keyword fallback.  Tries, Enhanced keyword-based sentiment scoring.      Improvements over basic keyword m (+7 more)
-
-### Community 17 - "Community 17"
-Cohesion: 0.35
-Nodes (14): _as_float(), _as_int(), build_canonical_trade_views(), _build_tracker_post_trade(), _is_potential_tracker_match(), load_tracker_trades(), _merge_non_null(), _normalize_status() (+6 more)
-
-### Community 18 - "Community 18"
-Cohesion: 0.24
-Nodes (11): fetch_chunked(), _get_db_symbols(), _get_existing_timestamps(), _get_groww(), _insert_candles(), main(), Fetch comprehensive historical candle data from Groww V1 API.  Fetches DAILY can, Fetch candles in chunks respecting API limits. (+3 more)
-
-### Community 19 - "Community 19"
-Cohesion: 0.23
-Nodes (11): fetch_and_store_all_stocks(), fetch_historical_prices(), get_groww_client(), get_segment(), Price data fetcher — Download 5 years of historical OHLCV data from Groww API an, Fetch and store prices for multiple stocks.          Args:         symbols: List, Get authenticated Groww API client., Get the CASH segment constant from GrowwAPI. (+3 more)
-
-### Community 20 - "Community 20"
-Cohesion: 0.39
-Nodes (7): extract_imports(), get_all_py_files(), get_local_module_imports(), main(), Get all Python files in workspace., Extract all imports from a Python file., Get imports of local modules (other Python files in this workspace).
-
-### Community 21 - "Community 21"
-Cohesion: 0.47
-Nodes (5): categorize_file(), extract_flask_endpoints(), main(), Extract all Flask endpoints from app.py., Categorize a file by its purpose.
-
-### Community 22 - "Community 22"
-Cohesion: 0.4
-Nodes (4): fetch_google_prices(), Fetch historical prices from Google Finance via yfinance.          Args:, Store prices in PostgreSQL., store_prices_in_db()
-
-### Community 23 - "Community 23"
+### Community 13 - "Support Group 13"
 Cohesion: 0.5
-Nodes (3): migrate(), Database migration: Create users table for multi-tenant authentication. Run this, Create users table if it doesn't exist.
+Nodes (4): Persistent watchlist notes — why a stock is being tracked., Save/update watchlist note., save_watchlist_note(), WatchlistNote
 
-### Community 24 - "Community 24"
+### Community 14 - "Support Group 14"
 Cohesion: 0.5
-Nodes (0): 
+Nodes (3): Unified trade journal — all trades (actual + paper) with full pre/post analysis., Convert ORM object to dictionary matching JSON format., TradeJournalEntry
 
-### Community 25 - "Community 25"
+### Community 15 - "Support Group 15"
+Cohesion: 0.5
+Nodes (4): Sync ALL historical candles end-of-day (after 3:30 PM IST).     - Skips during m, Aggregate ALL 5-minute candles into daily OHLCV prices for watchlist display., _task_aggregate_candles_to_daily(), _task_sync_historical_candles()
+
+### Community 16 - "Earnings-Aware Refresh"
+Cohesion: 0.5
+Nodes (4): _detect_new_quarter(), Earnings-aware refresh: when the latest quarterly revenue changes vs     what we, Refresh fundamentals cache for ALL dashboard stocks (hourly).      Each symbol o, _task_cache_refresh()
+
+### Community 17 - "Support Group 17"
 Cohesion: 0.67
-Nodes (1): Load existing trades from file
+Nodes (2): Persistent trade log — every order placed., TradeLogEntry
 
-### Community 26 - "Community 26"
+### Community 18 - "Support Group 18"
 Cohesion: 0.67
-Nodes (0): 
+Nodes (2): Complete trade context — candles, indicators, news — for chart replay., TradeSnapshot
 
-### Community 27 - "Community 27"
+### Community 19 - "Support Group 19"
 Cohesion: 0.67
-Nodes (0): 
+Nodes (2): IntradayCandle, Intraday 1-minute or 5-minute candles for daily chart replay.     Used for visua
 
-### Community 28 - "Community 28"
-Cohesion: 1.0
-Nodes (1): Get all theses with their current performance.
+### Community 20 - "Support Group 20"
+Cohesion: 0.67
+Nodes (2): Unified thesis table — personal outlook + investment projection., StockThesis
 
-### Community 29 - "Community 29"
+### Community 21 - "Support Group 21"
 Cohesion: 1.0
-Nodes (1): Thesis analyzer — Link personal theses with historical price data to show perfor
+Nodes (1): Initialize database connection.
 
-### Community 30 - "Community 30"
+### Community 22 - "Support Group 22"
 Cohesion: 1.0
-Nodes (1): Update current price for a symbol from latest data.
+Nodes (2): Run cash equity auto-trade (paper or real based on DB config)., _task_cash_auto_trade()
 
-### Community 31 - "Community 31"
+### Community 23 - "Support Group 23"
 Cohesion: 1.0
-Nodes (1): Convert ORM object to dictionary matching JSON format.
+Nodes (2): Collect and store geopolitical news for commodities., _task_geopolitical_collect()
 
-### Community 32 - "Community 32"
+### Community 24 - "Support Group 24"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Sync F&O capital from actual Groww account balance., _task_fno_capital_sync()
 
-### Community 33 - "Community 33"
+### Community 25 - "Support Group 25"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Check and update trading cost rates from live sources., _task_cost_rate_update()
 
-### Community 34 - "Community 34"
+### Community 26 - "Support Group 26"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Build comprehensive end-of-day trading snapshots with REAL market data (1-min ca, _task_build_daily_snapshots()
 
-### Community 35 - "Community 35"
+### Community 27 - "Support Group 27"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Run watchlist auto-analysis (predictions for all watchlist stocks)., _task_auto_analysis()
 
-### Community 36 - "Community 36"
+### Community 28 - "Support Group 28"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Retrain XGBoost F&O models with all available candle data (runs daily post-marke, _task_retrain_xgb_daily()
 
-### Community 37 - "Community 37"
+### Community 29 - "Support Group 29"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Run a single task with its own lock (prevents self-overlap)., _run_task_safe()
 
-### Community 38 - "Community 38"
+### Community 30 - "Support Group 30"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Fetch and store latest close prices for all watchlist stocks in database.      R, _task_update_watchlist_prices()
 
-### Community 39 - "Community 39"
+### Community 31 - "Support Group 31"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Fetch global indices data for F&O decision-making., _task_global_indices()
 
-### Community 40 - "Community 40"
+### Community 32 - "Support Group 32"
 Cohesion: 1.0
-Nodes (0): 
-
-### Community 41 - "Community 41"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 42 - "Community 42"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 43 - "Community 43"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 44 - "Community 44"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 45 - "Community 45"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 46 - "Community 46"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 47 - "Community 47"
-Cohesion: 1.0
-Nodes (1): Total cost as a % of buy value.
-
-### Community 48 - "Community 48"
-Cohesion: 1.0
-Nodes (1): Minimum price move % needed to break even after all costs.
-
-### Community 49 - "Community 49"
-Cohesion: 1.0
-Nodes (1): How much premium must rise to break even.
-
-### Community 50 - "Community 50"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 51 - "Community 51"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 52 - "Community 52"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 53 - "Community 53"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 54 - "Community 54"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 55 - "Community 55"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 56 - "Community 56"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 57 - "Community 57"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 58 - "Community 58"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 59 - "Community 59"
-Cohesion: 1.0
-Nodes (1): Get all open trades, optionally filtered by symbol
-
-### Community 60 - "Community 60"
-Cohesion: 1.0
-Nodes (1): Get the current live price for a symbol from Groww API
-
-### Community 61 - "Community 61"
-Cohesion: 1.0
-Nodes (1): AUTOMATED LOSS POSITION MANAGEMENT          Handles loss positions intelligently
-
-### Community 62 - "Community 62"
-Cohesion: 1.0
-Nodes (1): Check if paper trading is enabled in the database config
-
-### Community 63 - "Community 63"
-Cohesion: 1.0
-Nodes (1): Track paper trades with entry, exit targets, and actual results
-
-### Community 64 - "Community 64"
-Cohesion: 1.0
-Nodes (1): Load existing trades from file
-
-### Community 65 - "Community 65"
-Cohesion: 1.0
-Nodes (1): Record a new trade entry with trailing stop setup.                  Args:
-
-### Community 66 - "Community 66"
-Cohesion: 1.0
-Nodes (1): Close a trade with actual exit price.                  Args:             trade_i
-
-### Community 67 - "Community 67"
-Cohesion: 1.0
-Nodes (1): Update trailing stop for an open trade based on current price.         Simple lo
-
-### Community 68 - "Community 68"
-Cohesion: 1.0
-Nodes (1): Get all open trades, optionally filtered by symbol
-
-### Community 69 - "Community 69"
-Cohesion: 1.0
-Nodes (1): Get the current live price for a symbol from Groww API
-
-### Community 70 - "Community 70"
-Cohesion: 1.0
-Nodes (1): Get fundamental analysis for a stock (financials, competitors, etc.)
+Nodes (2): Refresh Tijori supply-chain & fundamentals data for stale symbols., _task_tijori_refresh()
 
 ## Knowledge Gaps
-- **302 isolated node(s):** `AI Price Prediction Engine Uses technical indicators + ML to predict price movem`, `Stochastic Oscillator (%K and %D) — SMM Part 4: Oscillators.`, `Detect candlestick patterns from SMM Part 1:     Hammer, Inverted Hammer, Bullis`, `Fibonacci Retracement levels — SMM Part 2.     Returns distance from current pri`, `Dynamic Support & Resistance — SMM Part 2.     Uses rolling pivot-based levels.` (+297 more)
+- **50 isolated node(s):** `PostgreSQL database manager — unified ORM for all persistent data. Models: Candl`, `ORM model for OHLCV candle data.`, `Intraday 1-minute or 5-minute candles for daily chart replay.     Used for visua`, `Live commodity price + trend snapshot, updated by background collector.`, `Live disruption events scored from news sentiment.` (+45 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 28`** (2 nodes): `Get all theses with their current performance.`, `.get_all_theses_with_performance()`
+- **Thin community `Support Group 21`** (2 nodes): `.__init__()`, `Initialize database connection.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 29`** (2 nodes): `Thesis analyzer — Link personal theses with historical price data to show perfor`, `thesis_analyzer.py`
+- **Thin community `Support Group 22`** (2 nodes): `Run cash equity auto-trade (paper or real based on DB config).`, `_task_cash_auto_trade()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 30`** (2 nodes): `Update current price for a symbol from latest data.`, `.update_current_price()`
+- **Thin community `Support Group 23`** (2 nodes): `Collect and store geopolitical news for commodities.`, `_task_geopolitical_collect()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 31`** (2 nodes): `Convert ORM object to dictionary matching JSON format.`, `.to_dict()`
+- **Thin community `Support Group 24`** (2 nodes): `Sync F&O capital from actual Groww account balance.`, `_task_fno_capital_sync()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 32`** (2 nodes): `RootLayout()`, `layout.tsx`
+- **Thin community `Support Group 25`** (2 nodes): `Check and update trading cost rates from live sources.`, `_task_cost_rate_update()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 33`** (2 nodes): `Providers()`, `providers.tsx`
+- **Thin community `Support Group 26`** (2 nodes): `Build comprehensive end-of-day trading snapshots with REAL market data (1-min ca`, `_task_build_daily_snapshots()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 34`** (2 nodes): `SmoothScroll()`, `smooth-scroll.tsx`
+- **Thin community `Support Group 27`** (2 nodes): `Run watchlist auto-analysis (predictions for all watchlist stocks).`, `_task_auto_analysis()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 35`** (2 nodes): `LoginPage()`, `page.tsx`
+- **Thin community `Support Group 28`** (2 nodes): `Retrain XGBoost F&O models with all available candle data (runs daily post-marke`, `_task_retrain_xgb_daily()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 36`** (2 nodes): `InstagramLink()`, `instagram-link.tsx`
+- **Thin community `Support Group 29`** (2 nodes): `Run a single task with its own lock (prevents self-overlap).`, `_run_task_safe()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 37`** (2 nodes): `utils.ts`, `cn()`
+- **Thin community `Support Group 30`** (2 nodes): `Fetch and store latest close prices for all watchlist stocks in database.      R`, `_task_update_watchlist_prices()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 38`** (1 nodes): `analyze_losses.py`
+- **Thin community `Support Group 31`** (2 nodes): `Fetch global indices data for F&O decision-making.`, `_task_global_indices()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 39`** (1 nodes): `verify_api.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 40`** (1 nodes): `simulate_profit.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (1 nodes): `config.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 42`** (1 nodes): `threshold_analysis.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 43`** (1 nodes): `run_collector.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 44`** (1 nodes): `live_trade_executor.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 45`** (1 nodes): `close_trades.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 46`** (1 nodes): `confidence_analysis.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 47`** (1 nodes): `Total cost as a % of buy value.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 48`** (1 nodes): `Minimum price move % needed to break even after all costs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 49`** (1 nodes): `How much premium must rise to break even.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 50`** (1 nodes): `get_real_prices.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 51`** (1 nodes): `list_active_symbols.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 52`** (1 nodes): `next.config.js`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 53`** (1 nodes): `next-env.d.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 54`** (1 nodes): `tailwind.config.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 55`** (1 nodes): `postcss.config.js`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 56`** (1 nodes): `route.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 57`** (1 nodes): `button.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 58`** (1 nodes): `auth.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 59`** (1 nodes): `Get all open trades, optionally filtered by symbol`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 60`** (1 nodes): `Get the current live price for a symbol from Groww API`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 61`** (1 nodes): `AUTOMATED LOSS POSITION MANAGEMENT          Handles loss positions intelligently`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 62`** (1 nodes): `Check if paper trading is enabled in the database config`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 63`** (1 nodes): `Track paper trades with entry, exit targets, and actual results`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 64`** (1 nodes): `Load existing trades from file`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 65`** (1 nodes): `Record a new trade entry with trailing stop setup.                  Args:`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 66`** (1 nodes): `Close a trade with actual exit price.                  Args:             trade_i`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 67`** (1 nodes): `Update trailing stop for an open trade based on current price.         Simple lo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 68`** (1 nodes): `Get all open trades, optionally filtered by symbol`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 69`** (1 nodes): `Get the current live price for a symbol from Groww API`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 70`** (1 nodes): `Get fundamental analysis for a stock (financials, competitors, etc.)`
+- **Thin community `Support Group 32`** (2 nodes): `Refresh Tijori supply-chain & fundamentals data for stale symbols.`, `_task_tijori_refresh()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `PaperTradeTracker` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 5`, `Community 25`?**
-  _High betweenness centrality (0.089) - this node is a cross-community bridge._
-- **Why does `IntradayCandle` connect `Community 0` to `Community 8`, `Community 1`, `Community 2`?**
-  _High betweenness centrality (0.079) - this node is a cross-community bridge._
-- **Why does `Stock` connect `Community 0` to `Community 4`, `Community 5`, `Community 6`, `Community 8`, `Community 10`?**
-  _High betweenness centrality (0.076) - this node is a cross-community bridge._
-- **Are the 378 inferred relationships involving `PaperTradeTracker` (e.g. with `Telegram Commander — interactive bot that listens for commands via polling.  Giv` and `Check if scheduler is paused via Telegram command.`) actually correct?**
-  _`PaperTradeTracker` has 378 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 368 inferred relationships involving `IntradayCandle` (e.g. with `Swing Backtester v4 — Multi-Day Position Holding (up to 7 days) ================` and `Build instrument dictionary from database stocks + static definitions.`) actually correct?**
-  _`IntradayCandle` has 368 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 348 inferred relationships involving `Stock` (e.g. with `Unified Research Engine — One algorithm, every stock.  A single, consistent, mul` and `Load OHLCV from DB candles table.  Returns DataFrame or empty.`) actually correct?**
-  _`Stock` has 348 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 341 inferred relationships involving `TradeSnapshot` (e.g. with `Trading Bot — Connects AI predictions to Groww API order execution. Fetches hist` and `Try to load a persisted ML model from disk.`) actually correct?**
-  _`TradeSnapshot` has 341 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `CandleDatabase` connect `Candle Storage & Intelligence` to `DB Core & Config`, `Analysis Cache & Lookups`, `Scheduler Core`, `Scheduler Trading Tasks`, `P&L & ML Retrain Tasks`, `Candle Queries`, `Paper Trading & Token Refresh`, `Support Group 15`, `Earnings-Aware Refresh`, `Support Group 21`, `Support Group 22`, `Support Group 23`, `Support Group 24`, `Support Group 25`, `Support Group 26`, `Support Group 27`, `Support Group 28`, `Support Group 29`, `Support Group 30`, `Support Group 31`, `Support Group 32`?**
+  _High betweenness centrality (0.216) - this node is a cross-community bridge._
+- **Why does `get_db()` connect `DB Core & Config` to `Supply Chain & External Data`, `Analysis Cache & Lookups`, `P&L & ML Retrain Tasks`, `Candle Storage & Intelligence`, `Paper Trading & Token Refresh`, `Stock Metadata Maps`, `Stock Master Table`, `Training Event Logs`, `Support Group 13`, `Support Group 15`, `Earnings-Aware Refresh`?**
+  _High betweenness centrality (0.165) - this node is a cross-community bridge._
+- **Why does `Candle` connect `Scheduler Trading Tasks` to `Analysis Cache & Lookups`, `News & Commodity Models`, `Scheduler Core`, `P&L & ML Retrain Tasks`, `Candle Storage & Intelligence`, `Paper Trading & Token Refresh`, `Support Group 15`, `Earnings-Aware Refresh`, `Support Group 22`, `Support Group 23`, `Support Group 24`, `Support Group 25`, `Support Group 26`, `Support Group 27`, `Support Group 28`, `Support Group 29`, `Support Group 30`, `Support Group 31`, `Support Group 32`?**
+  _High betweenness centrality (0.095) - this node is a cross-community bridge._
+- **Are the 36 inferred relationships involving `CandleDatabase` (e.g. with `Master Scheduler — thread-pool daemon coordinating all background tasks.  Tasks` and `Register a periodic task.  initial_delay = seconds after scheduler     start bef`) actually correct?**
+  _`CandleDatabase` has 36 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 35 inferred relationships involving `Candle` (e.g. with `Master Scheduler — thread-pool daemon coordinating all background tasks.  Tasks` and `Register a periodic task.  initial_delay = seconds after scheduler     start bef`) actually correct?**
+  _`Candle` has 35 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 36 inferred relationships involving `PnLSnapshot` (e.g. with `Master Scheduler — thread-pool daemon coordinating all background tasks.  Tasks` and `Register a periodic task.  initial_delay = seconds after scheduler     start bef`) actually correct?**
+  _`PnLSnapshot` has 36 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 35 inferred relationships involving `PaperTrade` (e.g. with `Master Scheduler — thread-pool daemon coordinating all background tasks.  Tasks` and `Register a periodic task.  initial_delay = seconds after scheduler     start bef`) actually correct?**
+  _`PaperTrade` has 35 INFERRED edges - model-reasoned connections that need verification._
