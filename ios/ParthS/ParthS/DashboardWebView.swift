@@ -101,6 +101,14 @@ private struct WKWebViewRepresentable: UIViewRepresentable {
         let webView = WKWebView(frame: .zero)
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
+        // Without a uiDelegate, WKWebView silently drops every JavaScript
+        // dialog and confirm() returns false immediately. The dashboard has
+        // 14 confirm() calls guarding Buy, Sell, "Close ALL open trades",
+        // F&O real-money orders and Logout — so in the app every one of
+        // those actions did nothing at all, with no dialog and no
+        // explanation. (They failed closed, never executing unconfirmed, so
+        // nothing was ever traded by accident — but nothing worked either.)
+        webView.uiDelegate = context.coordinator
         model.webView = webView
         webView.load(URLRequest(url: DashboardTarget.url))
         return webView
@@ -111,9 +119,65 @@ private struct WKWebViewRepresentable: UIViewRepresentable {
         // sessionStorage, tab navigation) exactly as it does in a browser.
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let model: WebViewModel
         init(model: WebViewModel) { self.model = model }
+
+        // MARK: - JavaScript dialogs
+        //
+        // WKWebView has no built-in UI for alert/confirm/prompt; without
+        // these three methods the calls are dropped and confirm() resolves
+        // to false. Every completion handler here must be invoked exactly
+        // once — WKWebView raises an exception if one is dropped or called
+        // twice — so each path below either presents an alert whose every
+        // button calls it, or calls it immediately on the bail-out.
+
+        /// The topmost presented controller, so an alert still appears when
+        /// something else (a sheet, another alert) is already up.
+        private func presenter(for webView: WKWebView) -> UIViewController? {
+            var vc = webView.window?.rootViewController
+            while let presented = vc?.presentedViewController { vc = presented }
+            return vc
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping () -> Void) {
+            guard let host = presenter(for: webView) else { completionHandler(); return }
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+            host.present(alert, animated: true)
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (Bool) -> Void) {
+            // false is the safe default everywhere it matters here: these
+            // confirms guard orders and trade closures, so "couldn't ask"
+            // must mean "don't do it".
+            guard let host = presenter(for: webView) else { completionHandler(false); return }
+            let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+            host.present(alert, animated: true)
+        }
+
+        func webView(_ webView: WKWebView,
+                     runJavaScriptTextInputPanelWithPrompt prompt: String,
+                     defaultText: String?,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (String?) -> Void) {
+            guard let host = presenter(for: webView) else { completionHandler(nil); return }
+            let alert = UIAlertController(title: nil, message: prompt, preferredStyle: .alert)
+            alert.addTextField { $0.text = defaultText }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(nil) })
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
+                completionHandler(alert?.textFields?.first?.text)
+            })
+            host.present(alert, animated: true)
+        }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             model.loadState = .loading
