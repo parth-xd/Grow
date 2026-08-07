@@ -39,6 +39,18 @@
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
+
+  /* Kill iOS's double-tap-to-zoom on anything tappable.
+     Safari waits ~300ms after a tap to see if a second one is coming, and
+     treats two fast taps as "zoom in" — so entering a PIN at any real speed
+     zoomed the page instead of registering digits. `manipulation` opts these
+     elements out of double-tap zoom while leaving pinch-to-zoom on the page
+     intact, so nothing is lost for accessibility. Applied to every control,
+     not just the keypad: the same stutter hits tabs and buttons anywhere you
+     tap twice quickly. */
+  button, .btn, .pin-key, .tab, [role="button"], select, summary {
+    touch-action: manipulation;
+  }
   body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-weight: 400; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; line-height: 1.47059; letter-spacing: -.022em; font-size: 14px; }
   body.locked { overflow: hidden; }
 
