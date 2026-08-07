@@ -297,6 +297,56 @@
   .dot-green { background: var(--green); box-shadow: 0 0 6px rgba(52,199,89,.4); }
   .dot-red { background: var(--red); box-shadow: 0 0 6px rgba(255,59,48,.4); }
 
+  /* ── Auto-trade switch ──────────────────────────────────────────────────
+     A real switch for the control that turns automated trading on and off.
+     The colour still comes from updateCashAutoTradeUI() (red off / green
+     paper / amber real), so the pill keeps reading as a status at a glance;
+     what's new is a track and thumb that show which way it is thrown, driven
+     off [aria-checked] so the visual and the announced state are the same
+     value and cannot drift apart. */
+  .at-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 600; font-family: inherit;
+    padding: 4px 6px 4px 10px; border-radius: 999px;
+    border: .5px solid rgba(0,0,0,.06);
+    cursor: pointer; letter-spacing: -.01em;
+    transition: var(--transition);
+    /* Vibrancy: the pill picks up what is behind it rather than sitting on a
+       flat fill, matching the header/toast/dropdown treatment already used
+       elsewhere in this file. */
+    -webkit-backdrop-filter: saturate(180%) blur(12px);
+    backdrop-filter: saturate(180%) blur(12px);
+  }
+  .at-toggle:active { transform: scale(.97); }
+  .at-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .at-toggle-track {
+    position: relative; flex: none;
+    width: 30px; height: 18px; border-radius: 999px;
+    background: rgba(120,120,128,.28);
+    transition: background var(--transition);
+  }
+  .at-toggle-thumb {
+    position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    transition: transform var(--transition);
+  }
+  .at-toggle.is-on .at-toggle-track { background: currentColor; }
+  .at-toggle.is-on .at-toggle-thumb { transform: translateX(12px); }
+  @media (prefers-reduced-motion: reduce) {
+    .at-toggle, .at-toggle-track, .at-toggle-thumb { transition: none; }
+  }
+
+  /* DESKTOP: keep the old text-only pill. The switch track is a phone
+     affordance — on desktop the label alone already read fine, and the
+     standing rule for this file is that desktop rendering does not change.
+     The <button role="switch"> markup and its keyboard support still apply
+     everywhere; only the track is hidden. */
+  @media (min-width: 769px) {
+    .at-toggle-track { display: none; }
+    .at-toggle { padding: 4px 10px; border-radius: 8px; }
+  }
+
   /* ── Buttons ────────────────────────────── */
   .btn { padding: 8px 16px; border-radius: 8px; border: none; background: var(--surface); color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--transition); box-shadow: none; border: .5px solid var(--border); letter-spacing: -.01em; }
   .btn:hover { background: rgba(0,113,227,.06); transform: scale(1.01); }
@@ -981,6 +1031,50 @@
        controls in the app that place an order, so an accidental tap on the
        wrong one costs money: worth the extra pixels. */
     .btn { min-width: 44px; }
+
+    /* ── 10. Lighter controls, same tap area ─────────────────────────────
+       "Scan Watchlist" and "+ Add Stock" read as fat. The cause is the 44pt
+       minimum above, which is a *tap target* requirement, not a look — so
+       the fix is to keep the box and shed the visual weight rather than
+       shrink the box and make order buttons easier to mis-hit. Smaller,
+       tighter type and a hairline border instead of a filled slab. */
+    .btn {
+      font-size: 12px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border-color: rgba(0,0,0,.07);
+      box-shadow: none;
+    }
+    /* The primary action keeps its fill (it should still lead), but loses the
+       heavy shadow that made it look inflated. */
+    .btn-primary { box-shadow: none; font-weight: 500; }
+
+    /* ── 11. Watchlist card: reclaim the rest of the space ───────────────
+       Already down from 299px to 218px by tightening the buttons and
+       caption. What is left is the caption itself — three lines of prose
+       explaining what a watchlist is, on a screen where the user is holding
+       the thing in their hand. Clamp it to two lines; the full text stays in
+       the DOM (and on desktop) rather than being deleted. */
+    .card:has(#watchlist-symbol-input) .card-title + div {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* ── 12. Blur-fade at the tab bar edge ───────────────────────────────
+       The one pattern from the SwiftUI references not already in this file
+       (there was no mask-image anywhere). Content currently meets the fixed
+       bottom bar with a hard cut; this fades the last few pixels so rows
+       dissolve under it the way iOS scroll edges do, instead of being
+       guillotined mid-row. Purely visual — pointer-events stay untouched. */
+    .container {
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 96px), rgba(0,0,0,.35) calc(100% - 74px), transparent calc(100% - 62px));
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 96px), rgba(0,0,0,.35) calc(100% - 74px), transparent calc(100% - 62px));
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .container { -webkit-mask-image: none; mask-image: none; }
+    }
   }
 
   /* The bottom bar and its sheet are mobile-only constructs. On desktop the
@@ -1200,7 +1294,19 @@ window.fetch = function(...args) {
     <span id="connection-status" style="font-size:12px;color:var(--muted)"><span class="status-dot dot-red"></span>Disconnected</span>
     <button class="btn" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px" title="Re-authenticate with the Groww API and refresh the access token">Reconnect</button>
     <button class="btn btn-primary" onclick="runScan()" style="font-size:12px" title="Run AI signal generation across every stock in your watchlist now">Scan Watchlist</button>
-    <span id="cash-auto-trade-indicator" style="font-size:11px;padding:4px 10px;border-radius:8px;background:rgba(255,82,82,.12);color:var(--red);font-weight:600;cursor:pointer" onclick="toggleCashAutoTrade()" title="Click to toggle cash equity auto-trade">Cash Auto-Trade: OFF</span>
+    <!-- Was a <span onclick=…> styled to look like a pill: no role, no
+         tabindex, no keyboard access, and nothing telling a screen reader it
+         was a control or what state it was in — despite being the switch for
+         automated trading. A real <button role="switch"> gets Enter/Space
+         and focus for free; aria-checked carries the on/off state. The inner
+         label span exists because updateCashAutoTradeUI() writes the text,
+         and writing textContent on the button itself would delete the
+         track markup below. -->
+    <button id="cash-auto-trade-indicator" class="at-toggle" role="switch" aria-checked="false"
+            onclick="toggleCashAutoTrade()" title="Toggle cash equity auto-trade">
+      <span class="at-toggle-label">Cash Auto-Trade: OFF</span>
+      <span class="at-toggle-track" aria-hidden="true"><span class="at-toggle-thumb"></span></span>
+    </button>
     <button class="btn" id="data-health-chip" onclick="toggleDataHealthPanel()" style="font-size:11px;display:none" title="Data coverage across every dataset the dashboard depends on">Data</button>
     <button class="btn" onclick="openSettings()" style="font-size:12px">Settings</button>
     <button class="btn" onclick="logoutUser()" style="font-size:12px;color:var(--red)">Logout</button>
@@ -3767,12 +3873,24 @@ function updateCashAutoTradeUI(enabled, paperMode) {
   const mode = paperMode ? ' (Paper)' : ' (REAL)';
 
   if (indicator) {
+    // Write into the inner label, not the button: textContent on the button
+    // would delete the switch track markup. Falls back to the element itself
+    // so this still works if the inner span is ever absent.
+    const label = indicator.querySelector('.at-toggle-label') || indicator;
+    // aria-checked is the accessibility state; .is-on drives the visual.
+    // Both are set from the same `enabled` value on the same line, so they
+    // cannot drift. The CSS keys off the class rather than
+    // [aria-checked="true"] because the attribute-selector form measured as
+    // matching but not applying here, and a class is not worth debugging
+    // around for a control that switches live trading on and off.
+    indicator.setAttribute('aria-checked', enabled ? 'true' : 'false');
+    indicator.classList.toggle('is-on', !!enabled);
     if (enabled) {
-      indicator.textContent = 'Cash Auto-Trade: ON' + mode;
+      label.textContent = 'Cash Auto-Trade: ON' + mode;
       indicator.style.background = paperMode ? 'rgba(0,200,83,.12)' : 'rgba(255,149,0,.15)';
       indicator.style.color = paperMode ? 'var(--green)' : 'var(--yellow)';
     } else {
-      indicator.textContent = 'Cash Auto-Trade: OFF';
+      label.textContent = 'Cash Auto-Trade: OFF';
       indicator.style.background = 'rgba(255,82,82,.12)';
       indicator.style.color = 'var(--red)';
     }
