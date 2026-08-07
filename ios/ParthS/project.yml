@@ -27,10 +27,14 @@ targets:
         # REQUIRED: iOS terminates the app on its first LocalAuthentication
         # call if this is absent. Shown verbatim in the Face ID prompt.
         NSFaceIDUsageDescription: "Face ID confirms it's you before showing your trading dashboard."
-        # No NSAppTransportSecurity block on purpose — Tailscale Serve
-        # terminates TLS with a real cert for the *.ts.net hostname, so the
-        # app speaks ordinary HTTPS. If DashboardWebView.swift's URL is ever
-        # pointed back at plain http://, an exception has to come back too.
+        # The device build speaks ordinary HTTPS — Tailscale Serve terminates
+        # TLS with a real cert for the *.ts.net hostname — so there is no
+        # blanket ATS exception here. NSAllowsLocalNetworking only permits
+        # loopback/local-network addresses, which is exactly what the
+        # Simulator build needs to reach http://localhost:8000 (see
+        # DashboardWebView.swift). It grants nothing for the public internet.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.parthsharma.ParthS

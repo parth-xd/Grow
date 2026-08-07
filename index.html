@@ -40,17 +40,20 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
 
-  /* Kill iOS's double-tap-to-zoom on anything tappable.
-     Safari waits ~300ms after a tap to see if a second one is coming, and
-     treats two fast taps as "zoom in" — so entering a PIN at any real speed
-     zoomed the page instead of registering digits. `manipulation` opts these
-     elements out of double-tap zoom while leaving pinch-to-zoom on the page
-     intact, so nothing is lost for accessibility. Applied to every control,
-     not just the keypad: the same stutter hits tabs and buttons anywhere you
-     tap twice quickly. */
-  button, .btn, .pin-key, .tab, [role="button"], select, summary {
-    touch-action: manipulation;
-  }
+  /* Kill iOS's double-tap-to-zoom.
+     Safari waits ~300ms after a tap to see if a second one is coming and
+     treats two quick taps as "zoom in", so entering a PIN at any real speed
+     zoomed the page instead of registering digits. `manipulation` opts out of
+     double-tap zoom while leaving pinch-to-zoom intact, so nothing is lost
+     for accessibility.
+
+     This is set on `body` (inherited by everything) rather than on the
+     controls alone. Listing just the controls was not enough on a real
+     iPhone: consecutive PIN digits are different keys, and any tap landing
+     in the gaps between them — on .pin-pad, .pin-box or the backdrop — hit
+     an element with no touch-action and still triggered the zoom. Covering
+     the whole subtree is the only version that actually holds. */
+  body { touch-action: manipulation; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-weight: 400; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; line-height: 1.47059; letter-spacing: -.022em; font-size: 14px; }
   body.locked { overflow: hidden; }
 
@@ -768,16 +771,23 @@
       line-height: 1.2;
       white-space: nowrap;
     }
+    /* Wrap onto a second line instead of scrolling sideways.
+       This was `flex-wrap: nowrap; overflow-x: auto` with the scrollbar
+       hidden — which meant anything past the right edge was simply gone as
+       far as the user was concerned. Narrowing the contents helped on a
+       375px test viewport but still hid controls on a real iPhone, which is
+       the case that counts. A hidden scroller cannot guarantee visibility at
+       any width, so stop trying: wrapping costs one line of height and makes
+       every control reachable on every device, which is what the "missing
+       data must be visible" standard actually requires. */
     .header-actions {
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      scrollbar-width: none;
+      flex-wrap: wrap;
+      overflow-x: visible;
       justify-content: flex-start;
       align-items: center;
       gap: 6px;
+      row-gap: 6px;
     }
-    .header-actions::-webkit-scrollbar { display: none; }
     .header-actions > * { flex-shrink: 0; }
     .header-actions .btn { font-size: 11px; padding: 0 10px; }
 
@@ -817,18 +827,9 @@
        indicator and the data-gap chip lead the row and land on-screen. */
     #cash-auto-trade-indicator { padding: 4px 8px !important; }
 
-    /* Tell the user the row scrolls, since the scrollbar is hidden. Anchored
-       to header (not the scroller) so it doesn't scroll away with content. */
-    header::after {
-      content: "";
-      position: absolute;
-      pointer-events: none;
-      right: 0;
-      bottom: 8px;
-      width: 24px;
-      height: 40px;
-      background: linear-gradient(to right, rgba(242,242,247,0), rgba(242,242,247,.95));
-    }
+    /* (A right-edge scroll fade lived here while this row scrolled sideways.
+       The row now wraps instead, so every control is on screen and there is
+       nothing to hint at — the fade would only have covered content.) */
 
     /* ── 5d. Search-plus-buttons rows ────────────────────────────────────
        "Search by name or symbol…" sits in a nowrap flex row beside + Add

@@ -19,7 +19,17 @@ import WebKit
 /// Works identically on Simulator and a real device, on Wi-Fi or cellular,
 /// as long as both the Mac and the phone are signed into the tailnet.
 enum DashboardTarget {
+    #if targetEnvironment(simulator)
+    // The Simulator does NOT inherit the Mac's Tailscale DNS — MagicDNS names
+    // fail to resolve there ("A server with the specified hostname could not
+    // be found"), even while the same name works fine in the Mac's browser.
+    // It does share the Mac's network stack, so loopback reaches Flask
+    // directly and needs no tunnel. Simulator-only, so the shipped build on a
+    // real device is unaffected.
+    static let url = URL(string: "http://localhost:8000")!
+    #else
     static let url = URL(string: "https://parths-macbook-air.tailfba767.ts.net")!
+    #endif
 }
 
 private enum LoadState: Equatable {
