@@ -781,6 +781,55 @@
     .header-actions > * { flex-shrink: 0; }
     .header-actions .btn { font-size: 11px; padding: 0 10px; }
 
+    /* ── 5c-2. Make the status indicators actually visible ───────────────────
+       Measured on a 375px screen: this row held 634px of controls inside a
+       343px scroll box, with the scrollbar deliberately hidden above. Four of
+       the seven were entirely off-screen with nothing hinting they existed —
+       and two of those four were "Cash Auto-Trade: ON" and the data-gap
+       warning. Whether the bot is trading is not something to discover by
+       swiping a row that gives no sign it scrolls.
+
+       Split by kind rather than shrinking everything: STATUS (is the bot on?
+       is data missing?) must be visible without interaction; ACTIONS
+       (Reconnect, Scan) may scroll. */
+
+    /* Connection status moves up beside the "Parth S." wordmark — the brand
+       row was a whole line holding one short word. header is position:sticky,
+       so it's a containing block and this escapes .header-actions' overflow
+       clip. Also returns 87px to the scroller. */
+    #connection-status {
+      position: absolute;
+      top: calc(10px + env(safe-area-inset-top));
+      right: max(16px, env(safe-area-inset-right));
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* Settings duplicates the Settings TAB, which is still reachable via the
+       More sheet — so hiding the header copy costs nothing and returns 63px
+       to the row. Targeted by onclick because these two buttons carry no id
+       or distinguishing class; same attribute-selector approach already used
+       for the monochrome overrides further up this file. */
+    .header-actions .btn[onclick*="openSettings"] { display: none; }
+
+    /* With the status chip and Settings out of the flow, the auto-trade
+       indicator and the data-gap chip lead the row and land on-screen. */
+    #cash-auto-trade-indicator { padding: 4px 8px !important; }
+
+    /* Tell the user the row scrolls, since the scrollbar is hidden. Anchored
+       to header (not the scroller) so it doesn't scroll away with content. */
+    header::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+      right: 0;
+      bottom: 8px;
+      width: 24px;
+      height: 40px;
+      background: linear-gradient(to right, rgba(242,242,247,0), rgba(242,242,247,.95));
+    }
+
     /* ── 5d. Search-plus-buttons rows ────────────────────────────────────
        "Search by name or symbol…" sits in a nowrap flex row beside + Add
        Stock, Sync from Groww and Refresh. Those three need ~260px of natural
@@ -795,6 +844,30 @@
        what it is today. */
     .card div:has(> .ac-wrap) { flex-wrap: wrap; }
     .ac-wrap { flex: 1 1 100% !important; }
+
+    /* ── 5d-2. Watchlist Management: stop it eating a third of the screen ────
+       Measured at 299px tall on an 812px screen — 37% of the viewport for a
+       search field, three buttons and a caption. Two specific causes, both
+       fixed here without touching the rule above (which exists to stop the
+       input being squeezed to 43px, and must keep working).
+
+       1. The three buttons needed 328px of a 315px row, so "Refresh" was
+          permanently stranded alone on a third line. .btn carries 16px side
+          padding from line 298; 10px here saves 12px per button — 36px total,
+          comfortably more than the 13px shortfall — and they fit on one row.
+       2. The caption ships inline font-size:13px/margin-bottom:12px, hence
+          !important; nothing else can reach an inline style.
+
+       Scoped by :has() to the card holding this specific input. The obvious
+       shorter selector, `.card div:has(> .ac-wrap) > .btn`, was measured
+       matching 5 buttons — it also catches the research and news search rows,
+       which are not the problem being fixed here. */
+    .card:has(#watchlist-symbol-input) .btn { padding: 0 10px; }
+    .card:has(#watchlist-symbol-input) .card-title + div {
+      font-size: 12px !important;
+      margin-bottom: 8px !important;
+      line-height: 1.35;
+    }
 
     /* ── 6. Tap feedback: remove the grey flash, keep a real active state ── */
     * { -webkit-tap-highlight-color: transparent; }
