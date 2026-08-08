@@ -1775,6 +1775,28 @@ def tijori_backfill_status():
             # Explicit flag from backfill script; require recent activity so a
             # crashed run doesn't leave the dashboard locked forever
             running = recent_activity
+        elif flag == "complete":
+            # The initial backfill has finished. From here on the scheduler
+            # only does routine per-symbol refreshes, and those must never
+            # lock analysis — which is what the comment below always intended
+            # but the coverage test could not deliver.
+            #
+            # Why it failed in practice: 4 of the 67 tracked symbols
+            # (BERGEPAINT, ONGC, SUNPHARMA, TATAMOTORS) have no
+            # tijori.last_collected.* row and do not acquire one, so coverage
+            # sits permanently at 63/67 = 94.0% against a 95% threshold. That
+            # made `coverage_pct < threshold` permanently true, leaving
+            # `recent_activity` as the only real condition — so every routine
+            # refresh (max_symbols_per_run=10, running regularly) re-locked
+            # Portfolio Analysis and Deep Analysis for 15 minutes behind an
+            # overlay reading "Collecting company data — 63 of 67 … about
+            # 1 min left". Nothing was collecting, and it was never going to
+            # reach 95%.
+            #
+            # The uncollected symbols are a real data gap and still deserve
+            # attention, but the place to surface that is /api/data-health,
+            # not a modal that blocks unrelated screens.
+            running = False
         else:
             # Lock analysis sections whenever coverage is below the threshold
             # AND the collector is actively working (e.g. many new stocks were
