@@ -406,6 +406,9 @@
   /* ── Layout ─────────────────────────────── */
   .container { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
   .grid { display: grid; gap: 16px; }
+  /* .grid sets display:grid, which outranks the UA stylesheet's
+     [hidden] { display: none }, so the attribute alone would do nothing here. */
+  .grid[hidden] { display: none; }
   .grid-2 { grid-template-columns: 1fr 1fr; }
   @media (max-width: 1024px) { .container { padding: 24px 16px; } }
   @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } .container { padding: 20px 14px; } }
@@ -1118,6 +1121,33 @@
     @media (prefers-reduced-motion: reduce) {
       .container { -webkit-mask-image: none; mask-image: none; }
     }
+
+    /* ── 13. Data Coverage panel ─────────────────────────────────────────
+       The panel ships eleven inline styles (line ~1198), among them a
+       hardcoded `width: 420px` with `position: fixed; right: 18px`. On a
+       375px screen that puts its left edge at 375 − 18 − 420 = −63px, so a
+       chunk of it sat permanently off the left of the viewport with no way
+       to reach it — its own `overflow:auto` scrolls the contents, not the
+       box. `top: 58px` was also measured against the old single-row header
+       and no longer clears the wrapped mobile one.
+
+       Every declaration here needs !important purely because the originals
+       are inline; this is not specificity for its own sake. Desktop keeps
+       the 420px panel untouched. */
+    #data-health-panel {
+      left: 12px !important;
+      right: 12px !important;
+      width: auto !important;
+      top: calc(8px + env(safe-area-inset-top)) !important;
+      max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      -webkit-overflow-scrolling: touch;
+    }
+    /* The one nowrap in the panel sits on the percentage in each row's flex
+       header; harmless at desktop width, but it stops that span shrinking
+       once the row is narrow. */
+    #data-health-body { overflow-wrap: anywhere; }
   }
 
   /* The bottom bar and its sheet are mobile-only constructs. On desktop the
@@ -1358,8 +1388,13 @@ window.fetch = function(...args) {
 
 <div class="container">
 
-  <!-- Stats Row -->
-  <div class="grid grid-4" style="margin-bottom:18px">
+  <!-- Stats Row — one shared block, a sibling of .tabs that precedes every
+       .tab-panel, which is why it used to appear on all 13 tabs. The id is
+       here so activateTab() can hide it on tabs where account-level trading
+       figures are not the subject (Watchlist, Research). Because it is a
+       preceding sibling rather than something inside a panel, hiding it
+       reflows the content below on its own — no gap left behind. -->
+  <div class="grid grid-4" id="global-stats-row" style="margin-bottom:18px">
     <div class="card"><div class="card-title">Available Margin</div><div class="card-value" id="stat-margin">--</div></div>
     <div class="card"><div class="card-title">Open Positions</div><div class="card-value" id="stat-positions">--</div></div>
     <div class="card"><div class="card-title">Today's P&L</div><div class="card-value" id="stat-pnl">--</div></div>
@@ -2580,7 +2615,25 @@ function activateTab(tabName) {
     node.classList.toggle('active', node.id === tabName);
   });
 
+  applyGlobalStatsVisibility(tabName);
   handleTabActivation(tabName);
+}
+
+// Available Margin / Open Positions / Today's P&L / Market Sentiment are one
+// shared row above the tabs, so every section inherited them — including ones
+// where they describe nothing on screen. Watchlist is a tracking list and
+// Research is a ranked screen; neither is about the state of the account, and
+// on a phone the row cost four cards of vertical space before the actual
+// content started. Hidden rather than deleted: the row still serves Portfolio
+// Analysis, Intraday, Paper Trading and the rest, and loadMargin() /
+// loadDashboardStats() / loadMarketSentiment() keep populating it regardless
+// of which tab is showing, so it is correct the moment it returns.
+const TABS_WITHOUT_GLOBAL_STATS = ['predictions', 'research'];
+
+function applyGlobalStatsVisibility(tabName) {
+  const row = document.getElementById('global-stats-row');
+  if (!row) return;
+  row.hidden = TABS_WITHOUT_GLOBAL_STATS.includes(tabName);
 }
 
 function goBackFromBackfill() {
@@ -8180,6 +8233,12 @@ function dismissBootOverlay() {
 })();
 
 (async function init() {
+  // The default panel is marked .active in the markup rather than by calling
+  // activateTab(), so nothing has evaluated the stats row for the landing tab
+  // yet. Without this the row would show on Watchlist on first paint and only
+  // disappear after the first manual tab change.
+  applyGlobalStatsVisibility((document.querySelector('.tab-panel.active') || {}).id || 'predictions');
+
   // Tier 1: Critical dashboard data (fire immediately)
   loadMargin();
   loadDashboardStats();   // Open Positions + Today's P&L
