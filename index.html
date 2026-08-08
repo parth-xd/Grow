@@ -1148,6 +1148,39 @@
        header; harmless at desktop width, but it stops that span shrinking
        once the row is narrow. */
     #data-health-body { overflow-wrap: anywhere; }
+
+    /* ── 14. View Analysis overflow ──────────────────────────────────────
+       Measured: opening View Analysis pushed 143 elements past the right
+       edge, the widest reaching 432px on a 375px screen, and .container's
+       scrollWidth to 444. None of it was visible — html/body carry
+       overflow-x:hidden (section 1), so the excess was silently clipped
+       rather than scrollable, which is why it read as content "spilling
+       across the screen".
+
+       One cause, not 143. The stock row .card is a grid item, and grid
+       items default to min-width:auto — meaning they refuse to shrink
+       below their content's min-content width. The analysis block's
+       min-content is ~430px, so the card inflated to 430px inside a 347px
+       track and every descendant inherited that width. min-width:0 lets it
+       shrink to its track again; the rest then reflows on its own.
+
+       The three-column metric rows (CURRENT / 5Y HIGH / 5Y LOW) are the
+       one thing that genuinely cannot fit at this width, so they drop to
+       two columns rather than being squeezed into unreadable slivers.
+       Type size is untouched. */
+    #watchlist-stocks .card { min-width: 0; }
+    #watchlist-stocks [id^="analysis-"],
+    #watchlist-stocks [id^="analysis-"] div { min-width: 0; }
+    #watchlist-stocks [id^="analysis-"] { overflow-wrap: anywhere; }
+    #watchlist-stocks [id^="analysis-"] [style*="1fr 1fr 1fr"] {
+      grid-template-columns: 1fr 1fr !important;
+    }
+
+    /* The watchlist canvas was the only chart missing width:100% — the
+       portfolio-analysis canvas already had it. Without it the canvas sizes
+       from Chart.js's responsive pass against a parent that was itself
+       overflowing. */
+    #watchlist-stocks canvas[id^="chart-"] { width: 100% !important; }
   }
 
   /* The bottom bar and its sheet are mobile-only constructs. On desktop the
