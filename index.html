@@ -396,6 +396,10 @@
   .deep-label-short { display: none; }
   .at-short { display: none; }
   .dh-short { display: none; }
+  /* The scan table only scrolls sideways on mobile, so the hint and the
+     edge-fade that advertise it are mobile-only too. */
+  #predictions-hint { display: none !important; }
+  #predictions-wrap::after { content: none; }
 
   /* Chart period selector — compact segmented control above each chart. */
   .chart-periods {
@@ -1255,11 +1259,25 @@
        default to min-width:auto and refuse to shrink below their content.
        Measured effect of this block alone: alerts 3 -> 0 and settings
        27 -> 0 overflowing elements. */
+    /* Buttons are excluded from the min-width:0 reset. Applying it to every
+       descendant also stripped the 44px minimum from section 9, and the
+       watchlist Remove button collapsed to 30px — clipping its label to
+       "Remov" and, worse, shrinking a destructive control (it deletes the
+       stock and all its price data) below the tap-target minimum. The reset
+       exists to let TEXT and layout boxes shrink, not controls. */
     .tab-panel .card,
-    .tab-panel .card * { min-width: 0; }
+    .tab-panel .card *:not(.btn):not(button) { min-width: 0; }
     .tab-panel .grid > *,
     .tab-panel [style*="display:grid"] > *,
     .tab-panel [style*="display:flex"] > * { min-width: 0; }
+    /* ...and re-assert it, since the flex/grid child rules below still match
+       buttons. min-width alone is the right lever: flex shrinking already
+       stops at min-width, so the button cannot go below 44px. Pairing it
+       with flex-shrink:0 was too strong — buttons then refused to shrink at
+       all and pushed the watchlist action row to 413px on a 375px screen,
+       trading a clipped label for real page overflow. Measured: 217
+       elements past the edge, body scrollWidth 414. */
+    .tab-panel .btn, .tab-panel button { min-width: 44px; }
 
     /* Trade Journal was the worst (112 elements, reaching 529px). Its
        .journal-header is a flex row wanting 510px inside a 346px box, and
@@ -1269,6 +1287,33 @@
        simply invisible. */
     .journal-header { flex-wrap: wrap; row-gap: 6px; }
     .journal-header > * { min-width: 0; }
+
+    /* ── 17. Scan results: separate them from the stock list ─────────────
+       The auto-analysis summary (Total Scanned / Buy / Sell / Hold) began at
+       exactly the pixel the stock list ended — measured gap: 0px, margin-top
+       0 — so the four cards read as sitting on top of the last stock rather
+       than starting a new section. Everything else on this screen uses a
+       26px section rhythm; these were the exception. */
+    #predictions > .card:has(#aa-holds),
+    #predictions .grid:has(#aa-holds) { margin-top: 26px; }
+
+    /* The results table has ten columns (Symbol, Signal, Confidence, Price,
+       Breakeven, Charges, RSI, Trend, Reason, Action). Section 1 already
+       makes it a horizontal scroller, which is the right call — squeezing
+       ten columns into 375px would make all of them unreadable. But a
+       scroller whose scrollbar is hidden gives no sign the other seven
+       columns exist, so it looks truncated rather than scrollable. A fade on
+       the right edge signals there is more, and the caption says so outright
+       for anyone who does not read the fade. */
+    #predictions-table { position: relative; }
+    #predictions-wrap { position: relative; }
+    #predictions-wrap::after {
+      content: "";
+      position: absolute; top: 0; right: 0; bottom: 0; width: 26px;
+      pointer-events: none;
+      background: linear-gradient(to right, rgba(242,242,247,0), rgba(242,242,247,.92));
+    }
+    #predictions-hint { display: block !important; }
 
     /* ── 15. Deep Analysis reads as secondary ────────────────────────────
        It measured 301px — 80% of a 375px screen — in solid accent blue at
@@ -1670,6 +1715,14 @@ window.fetch = function(...args) {
       <button class="btn btn-secondary" onclick="runAutoAnalysis()">Run Auto Analysis</button>
     </div>
     <div id="predictions-loading" style="text-align:center;padding:20px;color:var(--muted)"></div>
+    <!-- Scan results. The wrapper exists so the mobile edge-fade has
+         something positioned to attach to (the table itself becomes the
+         scroll container via .table on mobile). The hint is mobile-only —
+         see the rule for #predictions-hint. -->
+    <div id="predictions-hint" style="display:none;font-size:11px;color:var(--muted);margin-bottom:6px">
+      Swipe the table sideways for price, breakeven, charges, RSI, trend and reason.
+    </div>
+    <div id="predictions-wrap">
     <table id="predictions-table" class="table" style="display:none;width:100%">
       <thead>
         <tr>
@@ -1678,6 +1731,7 @@ window.fetch = function(...args) {
       </thead>
       <tbody id="predictions-body"></tbody>
     </table>
+    </div>
   </div>
 
   <!-- ── Research Engine ────────────────── -->
