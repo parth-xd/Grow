@@ -391,6 +391,13 @@
     .at-toggle { padding: 4px 10px; border-radius: 8px; }
   }
 
+  /* Exit affordance for the injected Deep Analysis block — see
+     addDeepAnalysisExit(). One above the results and one below, so there is
+     always a way back regardless of scroll position. */
+  .deep-exit-bar { display: flex; }
+  .deep-exit-top { margin: 10px 0 4px; }
+  .deep-exit-bottom { margin: 14px 0 4px; }
+
   /* ── Buttons ────────────────────────────── */
   .btn { padding: 8px 16px; border-radius: 8px; border: none; background: var(--surface); color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--transition); box-shadow: none; border: .5px solid var(--border); letter-spacing: -.01em; }
   .btn:hover { background: rgba(0,113,227,.06); transform: scale(1.01); }
@@ -7421,11 +7428,43 @@ async function loadWatchlistDeepAnalysis() {
   try {
     const data = await api('/api/deep-analysis/watchlist');
     renderPortfolioDeepAnalysis(container, data);
+    addDeepAnalysisExit(container);
   } catch(e) {
     container.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px">Deep analysis failed: ${e.message}</div>`;
   }
   if (btn) btn.disabled = false;
   if (loading) loading.style.display = 'none';
+}
+
+// Deep Analysis injects its results into #wl-deep-results, which sits above
+// the still-mounted stock list — nothing is hidden or navigated away from, so
+// strictly the list is only a scroll away. In practice the injected block runs
+// long enough on a phone that the list is pushed well off-screen and this
+// reads as a dead end with no way back.
+//
+// The control is placed at both ends rather than made sticky: the page header
+// is already position:sticky with its own stacking context and a height that
+// changes when the mobile header wraps, so a sticky bar here would need to
+// track that height to avoid hiding underneath it. Two plain anchors cost
+// nothing and are reachable wherever the user has scrolled to.
+function addDeepAnalysisExit(container) {
+  if (!container || !container.innerHTML.trim()) return;
+  const bar = side => `
+    <div class="deep-exit-bar deep-exit-${side}">
+      <button class="btn" onclick="closeWatchlistDeepAnalysis()"
+              aria-label="Close deep analysis and return to the watchlist">← Back to Watchlist</button>
+    </div>`;
+  container.insertAdjacentHTML('afterbegin', bar('top'));
+  container.insertAdjacentHTML('beforeend', bar('bottom'));
+}
+
+function closeWatchlistDeepAnalysis() {
+  const container = document.getElementById('wl-deep-results');
+  if (container) container.innerHTML = '';
+  // Put the list back under the user's thumb rather than leaving them at
+  // whatever scroll offset the cleared block used to occupy.
+  const list = document.getElementById('watchlist-stocks');
+  if (list) list.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderPortfolioDeepAnalysis(container, data) {
