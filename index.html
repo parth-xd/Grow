@@ -395,6 +395,7 @@
      rule in the max-width:768px block). */
   .deep-label-short { display: none; }
   .at-short { display: none; }
+  .dh-short { display: none; }
 
   /* Chart period selector — compact segmented control above each chart. */
   .chart-periods {
@@ -1235,6 +1236,8 @@
     .deep-label-short { display: inline; }
     .at-full  { display: none; }
     .at-short { display: inline; }
+    .dh-full  { display: none; }
+    .dh-short { display: inline; }
     #wl-deep-btn {
       background: var(--surface) !important;
       color: var(--accent) !important;
@@ -5561,8 +5564,25 @@ async function loadDataHealth() {
   const st = _dataHealth.overall_status || 'unknown';
   const n = _dataHealth.issues || 0;
   chip.style.display = 'inline-block';
-  chip.style.color = _HEALTH_COLORS[st] || 'var(--muted)';
-  chip.textContent = n === 0 ? 'Data: all complete' : `Data: ${n} gap${n === 1 ? '' : 's'}`;
+  // The status colour rides on a dot, not on the text.
+  //
+  // Setting chip.style.color here looked right but never reached the screen:
+  // the monochrome-text rules force every inline text colour back to
+  // var(--text), so a "2 gaps" warning rendered in exactly the same near-black
+  // as ordinary copy — measured var(--yellow) requested, rgb(29,29,31)
+  // painted. Those rules override `color` only, so a background-coloured dot
+  // survives them and the warning is visible again. Same .status-dot the
+  // connection indicator already uses, so the two read as one vocabulary.
+  const dotColor = _HEALTH_COLORS[st] || 'var(--muted)';
+  const full  = n === 0 ? 'Data: all complete' : `Data: ${n} gap${n === 1 ? '' : 's'}`;
+  // The dot costs 13px (7px + margin), which was enough to push the header
+  // back to three rows and undo the 149->95px fix. The "Data:" prefix is
+  // redundant on mobile — the dot and the panel it opens already say what
+  // this is — so the short form drops it and pays for the dot.
+  const short = n === 0 ? 'All complete' : `${n} gap${n === 1 ? '' : 's'}`;
+  chip.innerHTML =
+    `<span class="status-dot" style="background:${dotColor}"></span>` +
+    `<span class="dh-full">${full}</span><span class="dh-short">${short}</span>`;
   chip.title = n === 0
     ? 'Every tracked dataset is within its expected coverage range'
     : `${n} dataset(s) below expected coverage — click for details`;
