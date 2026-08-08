@@ -1168,16 +1168,20 @@
        bottom bar with a hard cut; this fades the last few pixels so rows
        dissolve under it the way iOS scroll edges do, instead of being
        guillotined mid-row. Purely visual — pointer-events stay untouched. */
-    /* Offsets shifted 13px up with the bar (74px -> 61px). These are the
-       other two of the three constants tied to the bar's height; the third
-       is .container's padding-bottom above. */
-    .container {
-      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 83px), rgba(0,0,0,.35) calc(100% - 61px), transparent calc(100% - 49px));
-      mask-image: linear-gradient(to bottom, #000 calc(100% - 83px), rgba(0,0,0,.35) calc(100% - 61px), transparent calc(100% - 49px));
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .container { -webkit-mask-image: none; mask-image: none; }
-    }
+    /* REMOVED: a mask-image blur-fade on .container.
+       The bottom nav (.tabs) is a child of .container. In WebKit a mask on an
+       ancestor makes that ancestor the containing block for position:fixed
+       descendants — so the fixed nav stops being fixed to the viewport and
+       pins to the bottom of the (very tall) container instead, i.e. it
+       disappears everywhere except the very end of the page. That matches the
+       reported "on Research the footer vanishes and I'm stuck" exactly.
+       Chromium does not do this, which is why the in-app browser showed the
+       bar correctly at every scroll position while the phone did not —
+       measured here: bar bottom 812 (viewport) vs container bottom 8499.
+       The fade was decorative and, being element-relative rather than
+       viewport-relative, only ever softened the very end of the page. Working
+       navigation is not a fair trade for that, so it is gone rather than
+       reworked. */
 
     /* ── 13. Data Coverage panel ─────────────────────────────────────────
        The panel ships eleven inline styles (line ~1198), among them a
