@@ -391,6 +391,11 @@
     .at-toggle { padding: 4px 10px; border-radius: 8px; }
   }
 
+  /* Deep Analysis label swap — short form is mobile-only (see the paired
+     rule in the max-width:768px block). */
+  .deep-label-short { display: none; }
+  .at-short { display: none; }
+
   /* Chart period selector — compact segmented control above each chart. */
   .chart-periods {
     display: flex; gap: 4px; margin: 0 0 8px;
@@ -1218,6 +1223,26 @@
        from Chart.js's responsive pass against a parent that was itself
        overflowing. */
     #watchlist-stocks canvas[id^="chart-"] { width: 100% !important; }
+
+    /* ── 15. Deep Analysis reads as secondary ────────────────────────────
+       It measured 301px — 80% of a 375px screen — in solid accent blue at
+       weight 600, which made it the loudest thing on the Watchlist despite
+       the watchlist itself being the point of the screen. Now the short
+       label, and the ordinary .btn treatment instead of the filled
+       btn-primary, so it sits below the stock list in the visual hierarchy
+       rather than above it. Height is untouched: still a 44px target. */
+    .deep-label-full { display: none; }
+    .deep-label-short { display: inline; }
+    .at-full  { display: none; }
+    .at-short { display: inline; }
+    #wl-deep-btn {
+      background: var(--surface) !important;
+      color: var(--accent) !important;
+      border: .5px solid rgba(0,0,0,.08) !important;
+      box-shadow: none !important;
+      font-weight: 500 !important;
+      width: auto;
+    }
   }
 
   /* The bottom bar and its sheet are mobile-only constructs. On desktop the
@@ -1554,7 +1579,16 @@ window.fetch = function(...args) {
     </div>
     
     <div style="margin-bottom:14px">
-      <button class="btn btn-primary" onclick="loadWatchlistDeepAnalysis()" id="wl-deep-btn" style="font-weight:600;letter-spacing:-.01em">Deep Analysis — Why Are These Stocks Moving?</button>
+      <!-- Two labels, same swap the tab bar already uses (.tab-label-full /
+           .tab-label-short): the full question earns its place on desktop
+           where it aids discovery, but at 80% of a phone's width it made a
+           secondary action look like the page's primary one. -->
+      <button class="btn btn-primary" onclick="loadWatchlistDeepAnalysis()" id="wl-deep-btn"
+              style="font-weight:600;letter-spacing:-.01em"
+              title="Deep Analysis — why are these stocks moving?">
+        <span class="deep-label-full">Deep Analysis — Why Are These Stocks Moving?</span>
+        <span class="deep-label-short">Deep Analysis</span>
+      </button>
       <span id="wl-deep-loading" style="margin-left:10px;display:none"><span class="loader"></span> Connecting global events to watchlist stocks...</span>
       <div id="wl-deep-results"></div>
     </div>
@@ -4048,8 +4082,13 @@ function updateCashAutoTradeUI(enabled, paperMode) {
     // and the pill colour already distinguishes paper from real, so the
     // prefix and the ": ON" are redundant there. The Paper/REAL word stays:
     // that is the difference between simulated and actual orders and must
-    // never be inferred from colour alone. Desktop keeps the full wording.
-    const terse = window.matchMedia('(max-width: 768px)').matches;
+    // never be inferred from colour alone.
+    //
+    // Both wordings are emitted and CSS picks one, rather than branching on
+    // matchMedia here. A JS branch is evaluated once, at whatever width the
+    // status happened to refresh — which showed the short label on desktop
+    // when the page loaded narrow, and would never correct itself on resize
+    // or rotation. Same full/short swap the tab bar and Deep Analysis use.
     // aria-checked is the accessibility state; .is-on drives the visual.
     // Both are set from the same `enabled` value on the same line, so they
     // cannot drift. The CSS keys off the class rather than
@@ -4058,14 +4097,17 @@ function updateCashAutoTradeUI(enabled, paperMode) {
     // around for a control that switches live trading on and off.
     indicator.setAttribute('aria-checked', enabled ? 'true' : 'false');
     indicator.classList.toggle('is-on', !!enabled);
+    const swap = (full, short) =>
+      `<span class="at-full">${full}</span><span class="at-short">${short}</span>`;
     if (enabled) {
-      label.textContent = terse
-        ? `Auto-Trade · ${paperMode ? 'Paper' : 'REAL'}`
-        : 'Cash Auto-Trade: ON' + mode;
+      label.innerHTML = swap(
+        'Cash Auto-Trade: ON' + mode,
+        `Auto-Trade · ${paperMode ? 'Paper' : 'REAL'}`
+      );
       indicator.style.background = paperMode ? 'rgba(0,200,83,.12)' : 'rgba(255,149,0,.15)';
       indicator.style.color = paperMode ? 'var(--green)' : 'var(--yellow)';
     } else {
-      label.textContent = terse ? 'Auto-Trade' : 'Cash Auto-Trade: OFF';
+      label.innerHTML = swap('Cash Auto-Trade: OFF', 'Auto-Trade');
       indicator.style.background = 'rgba(255,82,82,.12)';
       indicator.style.color = 'var(--red)';
     }
