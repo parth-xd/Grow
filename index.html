@@ -867,8 +867,12 @@
        Title stays on one line; the action row scrolls sideways instead of
        stacking, which is the usual iOS pattern for a variable set of controls. */
     header {
-      padding-top: calc(10px + env(safe-area-inset-top));
-      padding-bottom: 10px;
+      /* Tightened from 10px: the header measured 149px = 18% of an 812px
+         screen, which is a lot of permanent furniture above a data-dense
+         dashboard. Combined with the shorter auto-trade label, this brings
+         the controls back toward two rows instead of three. */
+      padding-top: calc(8px + env(safe-area-inset-top));
+      padding-bottom: 8px;
       /* The title and the action row are siblings in one flex row, so making
          the actions scroll horizontally left them starting immediately after
          the wordmark — "Parth S. Trading" with a blue button pressed against
@@ -907,7 +911,14 @@
       row-gap: 6px;
     }
     .header-actions > * { flex-shrink: 0; }
-    .header-actions .btn { font-size: 11px; padding: 0 10px; }
+    /* 6px, not 10px: with the shortened auto-trade label the four controls
+       needed 369px of a 343px row — 26px over, which pushed Logout onto a
+       third line and kept the header at 145px. Four buttons x 8px reclaimed
+       is 32px, just enough to land them all on one row and drop the header
+       to two. The 44px minimum tap height from section 3 is untouched;
+       only horizontal padding changes. */
+    .header-actions .btn { font-size: 11px; padding: 0 6px; }
+    .header-actions .at-toggle { padding: 4px 4px 4px 8px; }
 
     /* ── 5c-2. Make the status indicators actually visible ───────────────────
        Measured on a 375px screen: this row held 634px of controls inside a
@@ -943,7 +954,11 @@
 
     /* With the status chip and Settings out of the flow, the auto-trade
        indicator and the data-gap chip lead the row and land on-screen. */
-    #cash-auto-trade-indicator { padding: 4px 8px !important; }
+    /* The !important here outranked the .header-actions .at-toggle rule
+       below, which is why the toggle stayed 115px and left the row 2px over
+       343px — enough to strand Logout on its own line. Tightened here rather
+       than adding a second competing rule. */
+    #cash-auto-trade-indicator { padding: 4px 3px 4px 7px !important; }
 
     /* (A right-edge scroll fade lived here while this row scrolled sideways.
        The row now wraps instead, so every control is on screen and there is
@@ -4028,6 +4043,13 @@ function updateCashAutoTradeUI(enabled, paperMode) {
     // would delete the switch track markup. Falls back to the element itself
     // so this still works if the inner span is ever absent.
     const label = indicator.querySelector('.at-toggle-label') || indicator;
+    // "Cash Auto-Trade: ON (Paper)" is 177px of a 343px mobile row — it alone
+    // forced the controls onto a second line. The switch already shows on/off
+    // and the pill colour already distinguishes paper from real, so the
+    // prefix and the ": ON" are redundant there. The Paper/REAL word stays:
+    // that is the difference between simulated and actual orders and must
+    // never be inferred from colour alone. Desktop keeps the full wording.
+    const terse = window.matchMedia('(max-width: 768px)').matches;
     // aria-checked is the accessibility state; .is-on drives the visual.
     // Both are set from the same `enabled` value on the same line, so they
     // cannot drift. The CSS keys off the class rather than
@@ -4037,11 +4059,13 @@ function updateCashAutoTradeUI(enabled, paperMode) {
     indicator.setAttribute('aria-checked', enabled ? 'true' : 'false');
     indicator.classList.toggle('is-on', !!enabled);
     if (enabled) {
-      label.textContent = 'Cash Auto-Trade: ON' + mode;
+      label.textContent = terse
+        ? `Auto-Trade · ${paperMode ? 'Paper' : 'REAL'}`
+        : 'Cash Auto-Trade: ON' + mode;
       indicator.style.background = paperMode ? 'rgba(0,200,83,.12)' : 'rgba(255,149,0,.15)';
       indicator.style.color = paperMode ? 'var(--green)' : 'var(--yellow)';
     } else {
-      label.textContent = 'Cash Auto-Trade: OFF';
+      label.textContent = terse ? 'Auto-Trade' : 'Cash Auto-Trade: OFF';
       indicator.style.background = 'rgba(255,82,82,.12)';
       indicator.style.color = 'var(--red)';
     }
