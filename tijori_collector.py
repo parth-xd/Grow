@@ -189,6 +189,30 @@ def resolve_slug(company_name, expected_symbol=None, db=None):
             if row and row.resolution_status == "resolved" and row.slug:
                 return {"slug": row.slug, "symbol": row.symbol,
                         "external_id": row.external_id, "status": "resolved"}
+
+            # Before honouring a cached failure, look the symbol up as well.
+            # The cache is keyed on company_name, but the same company reaches
+            # this table under different names depending on the path that
+            # discovered it: stocks.company_name for the principal collection,
+            # and Tijori's own spelling when it turns up in another company's
+            # partner list. ONGC is exactly that case — row 90 caches a
+            # failure for "Oil & Natural Gas Corpn Ltd" (our DB's name) while
+            # row 335 holds a *resolved* slug for the same symbol under "Oil &
+            # Natural Gas Corporation Ltd." (Tijori's name). Keyed only on
+            # name, the principal path can never see the slug it already has,
+            # so ONGC stayed "uncollected" while holding all 7 snapshot types.
+            if expected_symbol:
+                by_symbol = session.query(ExternalSlugMap).filter_by(
+                    source=SOURCE, symbol=expected_symbol, resolution_status="resolved"
+                ).first()
+                if by_symbol and by_symbol.slug:
+                    logger.info(
+                        "tijori: resolved %s via symbol cache (name %r had no match; "
+                        "cached under %r)", expected_symbol, name_key, by_symbol.company_name
+                    )
+                    return {"slug": by_symbol.slug, "symbol": by_symbol.symbol,
+                            "external_id": by_symbol.external_id, "status": "resolved"}
+
             if row and row.resolution_status == "failed":
                 # don't retry failures more than once a month
                 if row.updated_at and (datetime.utcnow() - row.updated_at) < timedelta(days=30):
@@ -457,6 +481,19 @@ def collect_for_symbol(symbol, db=None, html=None):
                 res = resolve_slug(symbol, expected_symbol=symbol, db=db)
             if res.get("status") != "resolved":
                 summary["error"] = f"could not resolve Tijori page for {company_name}"
+                # This return was silent. The symbol then simply never appears
+                # in the coverage count, with no record of why — across all
+                # 6.5M lines of server.log there is not one occurrence of
+                # "could not resolve", so four symbols failed here every pass
+                # for nine days and the only visible trace was the aggregate
+                # "4 symbols processed (0 ok)". Logging the name we tried is
+                # what makes the next mismatch diagnosable in seconds instead
+                # of an afternoon.
+                logger.warning(
+                    "tijori: could not resolve page for %s (company_name=%r) — "
+                    "no slug candidate matched and no resolved cache entry by symbol",
+                    symbol, company_name
+                )
                 return summary
             summary["slug"] = res["slug"]
             html = res.pop("_html", None)
