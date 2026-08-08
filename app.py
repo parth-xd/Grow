@@ -6,6 +6,36 @@ for the AI trading bot.
 import sys
 sys.setrecursionlimit(10000)  # Prevent recursion errors from scheduler/threaded calls
 
+# ── colorama: stop it wrapping stdout once per GrowwAPI client ───────────────
+# growwapi's GrowwAPI.__init__ calls _display_changelog(), which calls
+# colorama.init(autoreset=True) — see growwapi/groww/client.py:130 and :138.
+# init() replaces sys.stdout/sys.stderr with an AnsiToWin32 wrapper, so every
+# client this app constructs (and it reconstructs them often — on reconnect,
+# on token refresh, on bot's cache reset) stacks another wrapper on top of the
+# previous one. The chain eventually references itself and any subsequent
+# write recurses until it dies with:
+#
+#   ansitowin32.py:47  write            -> self.__convertor.write(text)
+#   ansitowin32.py:177 write            -> self.write_and_convert(text)
+#   ansitowin32.py:205 write_and_convert-> self.write_plain_text(...)
+#   ansitowin32.py:210 write_plain_text -> self.wrapped.write(...)  # loops
+#   RecursionError: maximum recursion depth exceeded
+#
+# That surfaced in the UI as "Error: maximum recursion depth exceeded" when
+# clicking Reconnect. The setrecursionlimit(10000) above only bought more
+# layers before the same failure; it never addressed the cause.
+#
+# colorama exists to translate ANSI codes for legacy Windows consoles. This
+# runs on macOS and its output goes to a log file, so the wrapper buys nothing
+# and the escape codes are noise. Neutralise init() before growwapi imports it
+# — client.py does `from colorama import Fore, init`, binding the name at
+# import time, so this must happen before `import bot` pulls growwapi in.
+try:
+    import colorama
+    colorama.init = lambda *args, **kwargs: None
+except ImportError:
+    pass
+
 import hashlib
 import logging
 import math
