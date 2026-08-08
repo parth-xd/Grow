@@ -286,10 +286,54 @@
     #pin-lock { padding: clamp(32px, 4vw, 72px) clamp(24px, 5vw, 96px); }
     .pin-subtitle, .pin-dots, .pin-pad { max-width: 340px; }
     .pin-key { height: 52px; }
+
+    /* Was an unqualified global rule that mobile then had to fight with
+       `1fr 1fr !important` (line ~708) — moved here so the two breakpoints
+       no longer share a value neither of them actually wants shared. */
+    .grid-4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
+    /* color stayed on the unscoped .card-value rule above — mobile's own
+       override (line ~765) never touches it, so it's genuinely shared.
+       Every sizing property here mobile fully replaces with its own values;
+       kept together as they were, just moved to where they're actually used. */
+    .card-value { font-size: 32px; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; }
+
+    /* text-transform/color/font-weight stayed on the unscoped .card-title
+       rule above — mobile's own block restates the same two values with
+       !important (redundant, but not a conflict, so left as-is rather than
+       "cleaned up" as part of this change) and never touches text-transform
+       at all. letter-spacing genuinely differs (.04em here vs mobile's
+       .5px), so it moves with the other two real overrides. */
+    .card-title { font-size: 12px; letter-spacing: .04em; margin-bottom: 16px; }
+
+    /* background/transition stayed on the unscoped .card rule above — mobile
+       never touches either. border/border-radius/padding/box-shadow are all
+       fully replaced by mobile's own block (line ~752), which drops the
+       border and shadow entirely in favour of the page-background contrast
+       described in the comment there — so nothing here was ever shared. */
+    .card { border: .5px solid var(--border); border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow-sm); }
+
+    /* Only display/position/top/z-index stayed on the unscoped header rule
+       above — those four are the same at both sizes. Everything else moves
+       here, because mobile's own block (line ~826) replaces all of it: it
+       re-declares background, backdrop-filter and border-bottom with its own
+       values, switches flex-direction to column with align-items:stretch,
+       and sets its own safe-area-aware padding. justify-content:space-between
+       is meaningless once mobile stretches its children, so it belongs here
+       too. */
+    header {
+      background: rgba(251,251,253,.72);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: .5px solid rgba(0,0,0,.1);
+      padding: 14px 32px;
+      align-items: center;
+      justify-content: space-between;
+    }
   }
 
   /* ── Header (frosted glass) ──────────────── */
-  header { background: rgba(251,251,253,.72); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border-bottom: .5px solid rgba(0,0,0,.1); padding: 14px 32px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+  header { display: flex; position: sticky; top: 0; z-index: 100; }
   header h1 { font-size: 21px; font-weight: 600; letter-spacing: -.02em; }
   header h1 span { color: var(--text); }
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -362,16 +406,15 @@
   /* ── Layout ─────────────────────────────── */
   .container { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
   .grid { display: grid; gap: 16px; }
-  .grid-4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   .grid-2 { grid-template-columns: 1fr 1fr; }
   @media (max-width: 1024px) { .container { padding: 24px 16px; } }
   @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } .container { padding: 20px 14px; } }
 
   /* ── Cards ──────────────────────────────── */
-  .card { background: var(--surface); border: .5px solid var(--border); border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow-sm); transition: var(--transition); }
+  .card { background: var(--surface); transition: var(--transition); }
   .card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-  .card-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 16px; font-weight: 600; }
-  .card-value { font-size: 32px; font-weight: 700; color: var(--text); letter-spacing: -.03em; line-height: 1.1; }
+  .card-title { text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .card-value { color: var(--text); }
 
   /* ── Tabs ───────────────────────────────── */
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 24px; overflow-x: auto; scrollbar-width: none; padding: 0; background: transparent; border-radius: 0; flex-wrap: wrap; }
