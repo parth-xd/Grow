@@ -1028,11 +1028,17 @@
       align-items: stretch;
       gap: 0;
       margin: 0;
-      padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+      /* Apple's own tab bar is ~49pt of content plus the safe-area inset.
+         This measured 70px, noticeably heavier than the platform it sits on.
+         Trimmed toward the native figure: 4px padding instead of 6, and a
+         hairline rule instead of a 1px one. Deliberately NOT reduced to
+         home-indicator thickness (~5px) — it has to carry five labelled,
+         thumb-reachable destinations, and a bar that thin cannot. */
+      padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
       background: rgba(255,255,255,.92);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
-      border-top: 1px solid rgba(0,0,0,.09);
+      border-top: .5px solid rgba(0,0,0,.07);
       border-bottom: none;
       overflow: visible;
     }
@@ -1065,7 +1071,7 @@
          ragged. Reserving two lines for every label keeps them on one
          baseline whether the name needs the second line or not. */
       justify-content: flex-start;
-      padding-top: 6px;
+      padding-top: 4px;
     }
     /* Only the short label reserves the two lines. Targeting every > span here
        also matched .tab-label-full, whose `display:none` this rule then beat on
@@ -1076,10 +1082,15 @@
     }
 
     .tabs .tab[data-mobile-primary].active { color: var(--accent); }
-    .tabs .tab svg, #mobile-more-btn svg { width: 22px; height: 22px; flex-shrink: 0; }
+    /* 20px matches Apple's tab-bar glyph size; 22px read heavy next to
+       9.5px labels. */
+    .tabs .tab svg, #mobile-more-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
 
-    /* Content must clear the fixed bar */
-    .container { padding-bottom: calc(74px + env(safe-area-inset-bottom)) !important; }
+    /* Content must clear the fixed bar. 65px = the bar's measured 61px plus
+       4px of breathing room. This and the two mask-image offsets below are
+       derived from the bar's real height and must be changed together —
+       under-reserving here hides the last row of content behind the bar. */
+    .container { padding-bottom: calc(65px + env(safe-area-inset-bottom)) !important; }
 
     /* ── 8. "More" sheet — the other 9 destinations ─────────────────────── */
     #mobile-more-sheet {
@@ -1157,9 +1168,12 @@
        bottom bar with a hard cut; this fades the last few pixels so rows
        dissolve under it the way iOS scroll edges do, instead of being
        guillotined mid-row. Purely visual — pointer-events stay untouched. */
+    /* Offsets shifted 13px up with the bar (74px -> 61px). These are the
+       other two of the three constants tied to the bar's height; the third
+       is .container's padding-bottom above. */
     .container {
-      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 96px), rgba(0,0,0,.35) calc(100% - 74px), transparent calc(100% - 62px));
-      mask-image: linear-gradient(to bottom, #000 calc(100% - 96px), rgba(0,0,0,.35) calc(100% - 74px), transparent calc(100% - 62px));
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 83px), rgba(0,0,0,.35) calc(100% - 61px), transparent calc(100% - 49px));
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 83px), rgba(0,0,0,.35) calc(100% - 61px), transparent calc(100% - 49px));
     }
     @media (prefers-reduced-motion: reduce) {
       .container { -webkit-mask-image: none; mask-image: none; }
