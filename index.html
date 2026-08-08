@@ -1239,6 +1239,33 @@
        overflowing. */
     #watchlist-stocks canvas[id^="chart-"] { width: 100% !important; }
 
+    /* ── 16. Overflow found by the 375px audit ───────────────────────────
+       A proper audit across all 13 tabs (the earlier one silently reported
+       zero because it called switchTab(), which does not exist in this file
+       — the real function is activateTab) found 5 tabs pushing content past
+       the right edge. As with View Analysis, html/body carry
+       overflow-x:hidden, so none of it was scrollable — just invisibly
+       clipped.
+
+       Same underlying cause as the watchlist fix above: grid and flex items
+       default to min-width:auto and refuse to shrink below their content.
+       Measured effect of this block alone: alerts 3 -> 0 and settings
+       27 -> 0 overflowing elements. */
+    .tab-panel .card,
+    .tab-panel .card * { min-width: 0; }
+    .tab-panel .grid > *,
+    .tab-panel [style*="display:grid"] > *,
+    .tab-panel [style*="display:flex"] > * { min-width: 0; }
+
+    /* Trade Journal was the worst (112 elements, reaching 529px). Its
+       .journal-header is a flex row wanting 510px inside a 346px box, and
+       the rule above misses it because it is styled by class, not by an
+       inline style. Its two halves stack instead of being clipped —
+       .journal-entry has overflow-x:hidden, so the right-hand half was
+       simply invisible. */
+    .journal-header { flex-wrap: wrap; row-gap: 6px; }
+    .journal-header > * { min-width: 0; }
+
     /* ── 15. Deep Analysis reads as secondary ────────────────────────────
        It measured 301px — 80% of a 375px screen — in solid accent blue at
        weight 600, which made it the loudest thing on the Watchlist despite
