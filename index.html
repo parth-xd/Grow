@@ -391,6 +391,21 @@
     .at-toggle { padding: 4px 10px; border-radius: 8px; }
   }
 
+  /* Chart period selector — compact segmented control above each chart. */
+  .chart-periods {
+    display: flex; gap: 4px; margin: 0 0 8px;
+    background: rgba(120,120,128,.08); border-radius: 9px; padding: 3px;
+    width: fit-content;
+  }
+  .chart-period {
+    appearance: none; border: none; background: transparent;
+    font-family: inherit; font-size: 11px; font-weight: 600;
+    color: var(--muted); cursor: pointer;
+    padding: 5px 10px; border-radius: 7px; letter-spacing: -.01em;
+    transition: var(--transition);
+  }
+  .chart-period.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+
   /* Exit affordance for the injected Deep Analysis block — see
      addDeepAnalysisExit(). One above the results and one below, so there is
      always a way back regardless of scroll position. */
@@ -4985,6 +5000,63 @@ function buildStockAnalysisHTML(analysis, ns = 'wl') {
 }
 
 
+// ── Chart period selector ───────────────────────────────────────────────────
+// Only periods the stored data can actually honour are offered. stock_prices
+// blends ~weekly candles for the older 5 years (price_fetcher requests
+// interval_in_minutes=10080 because 1440 only reaches ~3 years) with daily
+// rows for the recent stretch, and holds no sub-daily data at all — intraday
+// lives in separate tables behind single-day endpoints. So 1D is not
+// available here, and 1W would plot about five points; neither is offered
+// rather than shipping a control that looks broken.
+const CHART_PERIODS = [
+  { key: '1M',  days: 30 },
+  { key: '3M',  days: 91 },
+  { key: '6M',  days: 182 },
+  { key: '1Y',  days: 365 },
+  { key: 'All', days: 0 },     // 0 = no trimming
+];
+const DEFAULT_CHART_PERIOD = 0;   // 'All' — preserves the previous behaviour
+const _stockChartState = {};
+
+function slicePricesByPeriod(prices, days) {
+  if (!days) return prices;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const out = prices.filter(p => new Date(p.date) >= cutoff);
+  // A symbol whose history is shorter than the requested window would
+  // otherwise render an empty chart; fall back to whatever exists.
+  return out.length ? out : prices;
+}
+
+function renderChartPeriodSelector(symbol, canvas) {
+  const existing = document.getElementById(`chart-periods-${symbol}`);
+  if (existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = `chart-periods-${symbol}`;
+  bar.className = 'chart-periods';
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', `Chart time period for ${symbol}`);
+  bar.innerHTML = CHART_PERIODS.map(p =>
+    `<button type="button" class="chart-period${p.days === DEFAULT_CHART_PERIOD ? ' active' : ''}"
+             data-days="${p.days}"
+             onclick="setChartPeriod('${symbol}', ${p.days}, this)"
+             aria-pressed="${p.days === DEFAULT_CHART_PERIOD}">${p.key}</button>`
+  ).join('');
+  canvas.parentNode.insertBefore(bar, canvas);
+}
+
+function setChartPeriod(symbol, days, btn) {
+  const state = _stockChartState[symbol];
+  if (!state) return;
+  state.build(slicePricesByPeriod(state.all, days));
+  const bar = btn.parentNode;
+  bar.querySelectorAll('.chart-period').forEach(b => {
+    const on = b === btn;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
 async function analyzeWatchlistStock(symbol) {
   if (await guardBackfill()) return;
   const analysisDiv = document.getElementById(`analysis-${symbol}`);
@@ -5025,22 +5097,30 @@ async function analyzeWatchlistStock(symbol) {
       chartCanvas.style.display = 'block';
       
       // Ensure chronological order (oldest first) — prevents reversed charts
-      const prices = ensureChronological(priceData.prices);
-      const labels = prices.map(p => {
-        const d = new Date(p.date);
-        return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
-      });
-      const closeData = prices.map(p => p.close);
-      
-      // Destroy existing chart if present
-      const existingChart = Chart.getChart(chartCanvas);
-      if (existingChart) existingChart.destroy();
-      
+      const allPrices = ensureChronological(priceData.prices);
+
       const trendColor = analysis.return_pct >= 0 ? 'rgb(52, 199, 89)' : 'rgb(255, 59, 48)';
       const trendBg = analysis.return_pct >= 0 ? 'rgba(52, 199, 89, 0.08)' : 'rgba(255, 59, 48, 0.08)';
-      
-      // Create new chart
-      new Chart(chartCanvas, {
+
+      // Wrapped in a closure so a period change can redraw from the data
+      // already in memory. /api/prices/<symbol> does accept ?days=, but the
+      // full series is fetched here anyway and is oldest-first, so slicing
+      // locally switches periods instantly with no second request.
+      // The parameter is named `prices` because the tooltip callbacks below
+      // already index into a variable of that name — they work unchanged on
+      // whatever slice is passed in.
+      const buildChart = (prices) => {
+        const labels = prices.map(p => {
+          const d = new Date(p.date);
+          return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
+        });
+        const closeData = prices.map(p => p.close);
+
+        // Destroy existing chart if present
+        const existingChart = Chart.getChart(chartCanvas);
+        if (existingChart) existingChart.destroy();
+
+        new Chart(chartCanvas, {
         type: 'line',
         data: {
           labels: labels,
@@ -5083,11 +5163,19 @@ async function analyzeWatchlistStock(symbol) {
                 label: function(ctx) {
                   const i = ctx.dataIndex;
                   const p = prices[i];
+                  // open/high/low are genuinely null on a chunk of these rows:
+                  // the scheduler upserts a close-only row from the live LTP
+                  // and from yfinance 1d backfill, leaving OHLC empty. Measured
+                  // on ABB: 55 of 1643 rows, and they are the most recent ones —
+                  // precisely what the shorter periods below select. Calling
+                  // .toFixed() on those threw inside the tooltip callback.
+                  // volume was already guarded here; these three were not.
+                  const rupees = v => (v === null || v === undefined) ? '—' : `₹${v.toFixed(2)}`;
                   return [
-                    `Close:  ₹${p.close.toFixed(2)}`,
-                    `Open:   ₹${p.open.toFixed(2)}`,
-                    `High:   ₹${p.high.toFixed(2)}`,
-                    `Low:    ₹${p.low.toFixed(2)}`,
+                    `Close:  ${rupees(p.close)}`,
+                    `Open:   ${rupees(p.open)}`,
+                    `High:   ${rupees(p.high)}`,
+                    `Low:    ${rupees(p.low)}`,
                     `Vol:    ${p.volume ? p.volume.toLocaleString('en-IN') : '—'}`,
                   ];
                 },
@@ -5108,14 +5196,28 @@ async function analyzeWatchlistStock(symbol) {
               grid: { color: 'rgba(255,255,255,.04)' }
             },
             x: {
-              ticks: { font: { size: 9 }, color: '#86868b', maxTicksLimit: 12, maxRotation: 0 },
+              // 12 ticks of "11 Aug 25" need ~700px; on a 315px phone canvas
+              // they overlapped into an unreadable smear. Fewer ticks rather
+              // than smaller type — the labels stay legible.
+              ticks: {
+                font: { size: 9 }, color: '#86868b',
+                maxTicksLimit: window.innerWidth <= 768 ? 5 : 12,
+                maxRotation: 0, autoSkip: true
+              },
               grid: { display: false }
             }
           }
         }
-      });
+        });
+      };
+
+      // Keep the full series and the redraw closure addressable by symbol so
+      // the period buttons can reslice without refetching.
+      _stockChartState[symbol] = { all: allPrices, build: buildChart };
+      buildChart(slicePricesByPeriod(allPrices, DEFAULT_CHART_PERIOD));
+      renderChartPeriodSelector(symbol, chartCanvas);
     }
-    
+
     analysisDiv.innerHTML = buildStockAnalysisHTML(analysis, 'wl');
   } catch (e) {
     toast(`Analysis failed: ${e.message}`);
