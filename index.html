@@ -4352,7 +4352,7 @@ async function loadWatchlist() {
             </div>
           </div>
           <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" aria-label="View full analysis for ${stock.symbol}" title="Fundamentals, supply chain, news and targets for ${stock.symbol}" onclick="analyzeWatchlistStock('${stock.symbol}')">View Analysis</button>
+            <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" aria-label="View full analysis for ${stock.symbol}" title="Fundamentals, supply chain, news and targets for ${stock.symbol}" onclick="toggleStockAnalysis('${stock.symbol}', this)">View Analysis</button>
             <button class="btn btn-red" style="padding:4px 8px;font-size:11px" aria-label="Remove ${stock.symbol} from watchlist" title="Remove ${stock.symbol} and delete its stored price history" onclick="removeFromWatchlist('${stock.symbol}')">Remove</button>
           </div>
         </div>
@@ -5267,6 +5267,44 @@ function setChartPeriod(symbol, days, btn) {
   });
 }
 
+// "View Analysis" had no way back — tapping it always called
+// analyzeWatchlistStock() directly, which only ever expands; there was no
+// path that collapses it again. Same toggle-button pattern already proven
+// by expandDeepStock() ("Show Full Analysis" / "Hide Full Analysis"),
+// applied here instead of inventing a new interaction.
+//
+// Deliberately does NOT cache the fetched analysis to skip re-fetching on
+// re-expand — analyzeWatchlistStock() has multiple early-return paths
+// (market-hours block, no-data, network error) with no shared signal for
+// "did this actually succeed", so caching "loaded" on the wrong path would
+// make a second tap silently replay a stale error instead of retrying.
+// Simpler and correct: every expand re-fetches, exactly like every tap did
+// before this existed; the only new behaviour is that collapse now exists
+// at all.
+function toggleStockAnalysis(symbol, btn) {
+  const analysisDiv = document.getElementById(`analysis-${symbol}`);
+  if (!analysisDiv) return;
+  if (analysisDiv.dataset.expanded === '1') {
+    collapseStockAnalysis(symbol, btn);
+  } else {
+    analysisDiv.dataset.expanded = '1';
+    if (btn) btn.textContent = 'Hide Analysis';
+    analyzeWatchlistStock(symbol);
+  }
+}
+
+function collapseStockAnalysis(symbol, btn) {
+  const analysisDiv = document.getElementById(`analysis-${symbol}`);
+  const summaryDiv = document.getElementById(`analysis-summary-${symbol}`);
+  const canvas = document.getElementById(`chart-${symbol}`);
+  const periodBar = document.getElementById(`chart-periods-${symbol}`);
+  if (analysisDiv) { analysisDiv.innerHTML = ''; analysisDiv.dataset.expanded = '0'; }
+  if (summaryDiv) { summaryDiv.innerHTML = ''; summaryDiv.style.display = 'none'; }
+  if (canvas) canvas.style.display = 'none';
+  if (periodBar) periodBar.remove();   // renderChartPeriodSelector() rebuilds this fresh on next expand
+  if (btn) btn.textContent = 'View Analysis';
+}
+
 async function analyzeWatchlistStock(symbol) {
   if (await guardBackfill()) return;
   const analysisDiv = document.getElementById(`analysis-${symbol}`);
@@ -5929,6 +5967,17 @@ function scMoveTip(ev) {
   let x = ev.clientX + pad, y = ev.clientY + pad;
   if (x + w > window.innerWidth - 8) x = ev.clientX - w - pad;
   if (y + h > window.innerHeight - 8) y = Math.max(8, ev.clientY - h - pad);
+  // The two branches above only ever handle right/bottom overflow by
+  // flipping to the other side of the cursor — neither re-checks that the
+  // FLIPPED position still fits. max-width is 320px, and on a ~375px phone
+  // screen there is no cursor position where the tooltip fits on both the
+  // right of it AND the left of it; a tap anywhere near mid-screen flips
+  // left and then overshoots the left edge instead. Measured: a tap at
+  // x=190 (center of a 375px screen) landed the tooltip 144px off the left
+  // edge. Clamping after both flips is what section 1's overflow guard
+  // does everywhere else in this file — same fix, applied here.
+  x = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+  y = Math.max(8, Math.min(y, window.innerHeight - h - 8));
   el.style.left = x + 'px';
   el.style.top = y + 'px';
 }
@@ -5937,6 +5986,22 @@ function scHidePartnerTip() {
   const el = document.getElementById('sc-tooltip');
   if (el) { el.classList.remove('show'); delete el.dataset.key; }
 }
+
+// A tap has no mouseleave equivalent — mobile Safari synthesizes
+// mouseenter/mousemove on first touch (which is how this tooltip opens
+// there at all, despite being wired to mouse events only), but nothing
+// fires when the finger lifts. Confirmed: after simulating a tap-and-lift,
+// the tooltip stayed open indefinitely with no way to dismiss it, since the
+// only existing close path was a real mouseleave. touchstart anywhere
+// outside the tooltip and outside a partner row closes it — the standard
+// "tap elsewhere to dismiss an overlay" pattern already used by the More
+// sheet elsewhere in this file, applied here for the same reason.
+document.addEventListener('touchstart', (ev) => {
+  const el = document.getElementById('sc-tooltip');
+  if (!el || !el.classList.contains('show')) return;
+  if (ev.target.closest('#sc-tooltip, .sc-partner-row')) return;
+  scHidePartnerTip();
+}, { passive: true });
 
 // ── Supply-chain block (suppliers + customers from Tijori) ────────────────
 // Works with both the deep-analysis `supply_chain` payload and the
