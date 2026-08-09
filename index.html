@@ -4356,6 +4356,14 @@ async function loadWatchlist() {
             <button class="btn btn-red" style="padding:4px 8px;font-size:11px" aria-label="Remove ${stock.symbol} from watchlist" title="Remove ${stock.symbol} and delete its stored price history" onclick="removeFromWatchlist('${stock.symbol}')">Remove</button>
           </div>
         </div>
+        <!-- Populated by analyzeWatchlistStock() before the chart renders —
+             see buildAnalysisSummaryHTML(). Item 9: Company -> key info ->
+             chart -> insights, in that visual order. This div's position
+             before the canvas is what makes that ordering possible; the
+             canvas element itself can't move (Chart.js is bound to it),
+             so the "key info" step has to be a distinct element placed
+             ahead of it rather than reordered HTML inside one div. -->
+        <div id="analysis-summary-${stock.symbol}" style="display:none"></div>
         <canvas id="chart-${stock.symbol}" style="max-height:250px;display:none"></canvas>
         <div id="analysis-${stock.symbol}" style="font-size:12px;color:var(--muted)"></div>
       </div>`;
@@ -4691,12 +4699,46 @@ refreshBackfillStatus();
 // payload. Shared by the Watchlist tab and the Portfolio holding detail so both
 // surfaces show identical analysis. `ns` namespaces generated DOM ids ('wl'|'pa')
 // so the two can be mounted at the same time without colliding.
+// Shared with buildAnalysisSummaryHTML() below, so the compact key-info
+// strip above the chart and the full recommendation banner inside the
+// analysis body always agree on what each recommendation's colour means —
+// two independent copies of this map could drift apart silently.
+const RECOMMENDATION_COLORS = {'STRONG BUY':'#00c853','BUY':'#00c853','BUY ON DIP':'#66bb6a','WAIT':'#fdd835','AVOID':'#ff5252','STRONG AVOID':'#ff1744'};
+
+// A compact "key info" strip: recommendation, score, current price,
+// risk/reward. Meant to render ABOVE the chart, before the user has
+// scrolled past it — everything else buildStockAnalysisHTML() returns
+// (the full recommendation banner, buy zone, fundamentals, financial
+// growth table, news, etc.) stays below the chart as the deeper-detail
+// section it already was. Deliberately reads only the handful of fields it
+// needs rather than importing buildStockAnalysisHTML's local logic, since
+// that function computes far more than a glance-strip requires.
+function buildAnalysisSummaryHTML(analysis) {
+  const rec = analysis.recommendation || 'WAIT';
+  const recCol = RECOMMENDATION_COLORS[rec] || '#fdd835';
+  const scoreText = analysis.investment_score != null ? `${analysis.investment_score}/10` : '—/10';
+  const currentPrice = analysis.current_price != null ? `₹${Number(analysis.current_price).toFixed(2)}` : '—';
+  const rrText = analysis.risk_reward != null ? `${Number(analysis.risk_reward).toFixed(1)}x` : '—';
+  const rrColor = analysis.risk_reward != null ? (analysis.risk_reward >= 2 ? 'var(--green)' : analysis.risk_reward >= 1 ? '#fdd835' : 'var(--red)') : 'var(--muted)';
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:10px;background:rgba(255,255,255,.05);border-radius:8px;border-left:3px solid ${recCol}">
+      <div style="display:flex;align-items:baseline;gap:8px;min-width:0">
+        <span style="font-size:15px;font-weight:800;color:${recCol};white-space:nowrap">${rec}</span>
+        <span style="font-size:11px;color:var(--muted);white-space:nowrap">${scoreText}</span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:10px;font-size:11px;white-space:nowrap;flex-shrink:0">
+        <span><span style="color:var(--muted)">Price</span> <b>${currentPrice}</b></span>
+        <span><span style="color:var(--muted)">R/R</span> <b style="color:${rrColor}">${rrText}</b></span>
+      </div>
+    </div>`;
+}
+
 function buildStockAnalysisHTML(analysis, ns = 'wl') {
   const symbol = analysis.symbol;
   const returnColor = analysis.return_pct >= 0 ? 'var(--pnl-up)' : 'var(--pnl-down)';
     // Render analysis metrics + recommendation
     const rec = analysis.recommendation || 'WAIT';
-    const recColors = {'STRONG BUY':'#00c853','BUY':'#00c853','BUY ON DIP':'#66bb6a','WAIT':'#fdd835','AVOID':'#ff5252','STRONG AVOID':'#ff1744'};
+    const recColors = RECOMMENDATION_COLORS;
     const recCol = recColors[rec] || '#fdd835';
     const ai = analysis.ai || {};
     const fund = analysis.fundamentals || {};
@@ -5229,16 +5271,21 @@ async function analyzeWatchlistStock(symbol) {
   if (await guardBackfill()) return;
   const analysisDiv = document.getElementById(`analysis-${symbol}`);
   const chartCanvas = document.getElementById(`chart-${symbol}`);
-  
+  const summaryDiv = document.getElementById(`analysis-summary-${symbol}`);
+
   // Block analysis during market hours to reduce server load
   if (isMarketHours()) {
     if (analysisDiv) analysisDiv.innerHTML = '<div style="padding:20px;text-align:center;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.3);border-radius:8px;color:#ffc107"><div style="font-size:14px;font-weight:600;margin-bottom:8px">Market is Live</div><div style="font-size:12px">Analysis disabled during trading hours (9:15 AM - 3:30 PM) to keep server focused on paper trading.<br><br><em>Try again after 3:30 PM for full analysis</em></div></div>';
+    if (summaryDiv) summaryDiv.style.display = 'none';
     return;
   }
-  
-  // Show loading state immediately
+
+  // Show loading state immediately. The summary strip is hidden rather than
+  // left showing the PREVIOUS analysis (if the user re-runs this for the
+  // same stock) while new data is still loading underneath it.
   if (analysisDiv) analysisDiv.innerHTML = panelOrb(`Analyzing ${symbol}…`,
     'AI signals, fundamentals, supply chain, FII/MF and targets — 15–30s');
+  if (summaryDiv) summaryDiv.style.display = 'none';
   
   // Refresh candles in background (so they're fresh when analysis renders)
   api('/api/candles/refresh', {
@@ -5255,11 +5302,20 @@ async function analyzeWatchlistStock(symbol) {
     if (!analysis.success) {
       toast('No analysis available for ' + symbol);
       if (analysisDiv) analysisDiv.innerHTML = '';
+      if (summaryDiv) summaryDiv.style.display = 'none';
       return;
     }
-    
+
+    // Key info first (item 9: Company -> key info -> chart -> insights).
+    // Written before the chart renders, since it belongs above it and the
+    // canvas element can't be reordered around Chart.js's binding to it.
+    if (summaryDiv) {
+      summaryDiv.innerHTML = buildAnalysisSummaryHTML(analysis);
+      summaryDiv.style.display = 'block';
+    }
+
     const returnColor = analysis.return_pct >= 0 ? 'var(--pnl-up)' : 'var(--pnl-down)';
-    
+
     // Render chart
     if (priceData.prices && priceData.prices.length > 0) {
       chartCanvas.style.display = 'block';
@@ -5390,6 +5446,7 @@ async function analyzeWatchlistStock(symbol) {
   } catch (e) {
     toast(`Analysis failed: ${e.message}`);
     if (analysisDiv) analysisDiv.innerHTML = `<div style="padding:12px;color:var(--red);font-size:12px"> Analysis failed: ${e.message}</div>`;
+    if (summaryDiv) summaryDiv.style.display = 'none';
     console.error(e);
   }
 }
