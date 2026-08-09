@@ -25,6 +25,11 @@
   :root {
     --bg: #f5f0e6; --surface: #ffffff; --border: #d2d2d7;
     --text: #1d1d1f; --muted: #6e6e73; --accent: #0071e3;
+    /* Tab active-state only — deliberately separate from --accent, which
+       stays blue for buttons/links/badges elsewhere. Scoped this way so
+       "make the tabs light brown" doesn't quietly recolor everything that
+       happens to share --accent too. */
+    --tab-active: #9c7a52;
     --green: #34c759; --red: #ff3b30; --yellow: #ff9500;
     /* Profit and loss keeps its colour while the rest of the text is
        monochrome. Separate tokens rather than --green/--red directly, so the
@@ -456,7 +461,7 @@
   .tabs::-webkit-scrollbar { display: none; }
   .tab { padding: 10px 16px; cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500; border-bottom: 2px solid transparent; border-radius: 0; transition: var(--transition); white-space: nowrap; letter-spacing: -.01em; }
   .tab:hover { color: var(--text); border-bottom-color: var(--border); }
-  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; background: transparent; }
+  .tab.active { color: var(--tab-active); border-bottom-color: var(--tab-active); font-weight: 600; background: transparent; }
   .tab-panel { display: none; animation: fadeIn .3s ease-out; }
   .tab-panel.active { display: block; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -476,7 +481,7 @@
 
   /* ── Confidence bar ────────────────────── */
   .conf-bar { width: 80px; height: 4px; background: rgba(0,0,0,.06); border-radius: 2px; display: inline-block; vertical-align: middle; margin-left: 8px; overflow: hidden; }
-  .conf-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width .6s cubic-bezier(.4,0,.2,1); }
+  .conf-fill { height: 100%; border-radius: 2px; background: var(--text); transition: width .6s cubic-bezier(.4,0,.2,1); }
 
   /* ── Loader ─────────────────────────────── */
   .loader { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(0,113,227,.15); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -678,7 +683,7 @@
   .loading-text { font-size: 18px; font-weight: 600; color: var(--text); margin-bottom: 10px; letter-spacing: -.01em; }
   .loading-status { font-size: 13px; color: var(--muted); letter-spacing: -.005em; max-width: 420px; margin: 0 auto; }
   .loading-bar { width: 260px; height: 4px; background: rgba(0,0,0,.06); border-radius: 2px; margin: 18px auto 0; overflow: hidden; }
-  .loading-progress { height: 100%; background: linear-gradient(90deg, var(--accent), rgba(0,113,227,.45)); border-radius: 2px; width: 0%; transition: width .6s cubic-bezier(.4,0,.2,1); }
+  .loading-progress { height: 100%; background: var(--text); border-radius: 2px; width: 0%; transition: width .6s cubic-bezier(.4,0,.2,1); }
   .loading-eta { font-size: 11px; color: var(--muted); margin-top: 10px; letter-spacing: .02em; text-transform: uppercase; font-weight: 600; }
 
   /* ── Inline section loaders (mini thinking-orbs, no empty-page flash) ── */
@@ -1089,7 +1094,7 @@
       min-height: 2.3em;
     }
 
-    .tabs .tab[data-mobile-primary].active { color: var(--accent); }
+    .tabs .tab[data-mobile-primary].active { color: var(--tab-active); }
     /* 20px matches Apple's tab-bar glyph size; 22px read heavy next to
        9.5px labels. */
     .tabs .tab svg, #mobile-more-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
@@ -3902,8 +3907,10 @@ function signalBadge(s) {
 
 function confBar(c) {
   const pct = Math.round(c * 100);
-  const color = pct > 70 ? 'var(--green)' : pct > 50 ? 'var(--yellow)' : 'var(--red)';
-  return `${pct}%<span class="conf-bar"><span class="conf-fill" style="width:${pct}%;background:${color}"></span></span>`;
+  // Fill colour used to be semantic (green/yellow/red by confidence tier);
+  // now solid — the confidence number itself and the width already carry
+  // that information, so no accuracy is lost by not also colour-coding it.
+  return `${pct}%<span class="conf-bar"><span class="conf-fill" style="width:${pct}%"></span></span>`;
 }
 
 // ── Parse recommendation text into organized sections ────────────────────
@@ -5803,7 +5810,7 @@ function renderDataHealth(d) {
           hasBar ? c.pct + '%' : c.value + 'd'}</span>
       </div>
       ${hasBar ? `<div style="height:5px;background:rgba(0,0,0,.07);border-radius:3px;margin:5px 0 4px">
-        <div style="height:100%;width:${Math.min(100, c.pct)}%;background:${col};border-radius:3px"></div>
+        <div style="height:100%;width:${Math.min(100, c.pct)}%;background:var(--text);border-radius:3px"></div>
       </div>
       <div style="font-size:10px;color:var(--muted)">${c.value} of ${c.total}</div>` : ''}
       ${c.detail ? `<div style="font-size:11px;color:${c.status === 'ok' ? 'var(--muted)' : col};margin-top:3px">${c.detail}</div>` : ''}
@@ -6915,7 +6922,7 @@ async function renderHeatmap(commodity) {
     const isDisrupted = data.disruptions.some(d => d.iso_n3 === p.iso_n3);
     return `<div class="producer-row">
       <span style="min-width:90px;font-weight:600">${p.country}</span>
-      <div class="producer-bar" style="width:${barW}%;background:${d3.interpolateGreens(p.share_pct / maxShare)}"></div>
+      <div class="producer-bar" style="width:${barW}%;background:var(--text)"></div>
       <span style="min-width:45px;text-align:right;font-weight:600">${p.share_pct > 0 ? p.share_pct + '%' : '—'}</span>
       <span style="font-size:10px;color:var(--muted);flex:1">${p.volume}</span>
       ${isDisrupted ? '<span title="Active disruption" style="font-size:12px"></span>' : ''}
@@ -10329,7 +10336,7 @@ function _dimBar(label, score, maxScore=100) {
   return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
     <span style="width:100px;font-size:13px;color:var(--text);font-weight:500">${label}</span>
     <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
-      <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:3px;transition:width .6s cubic-bezier(.4,0,.2,1)"></div>
+      <div style="width:${pct}%;height:100%;background:var(--text);border-radius:3px;transition:width .6s cubic-bezier(.4,0,.2,1)"></div>
     </div>
     <span style="width:30px;text-align:right;font-size:13px;font-weight:600;color:var(--text)">${score.toFixed(0)}</span>
   </div>`;
