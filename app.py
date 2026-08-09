@@ -66,7 +66,73 @@ import stock_search
 import trade_chart_manager
 from thesis_manager import get_manager as get_thesis_manager
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ── Log rotation ──────────────────────────────────────────────────────────
+# The launchd-redirected server.log (StandardOutPath/StandardErrorPath in
+# launchd/com.parthsharma.parths.flask.plist) grew to 431MB / 6.58M lines
+# with no rotation. It can't be rotated from outside the process: launchd
+# opens that file once at process start and hands the fd to Python, so an
+# external rename-then-recreate (the usual logrotate/newsyslog approach)
+# would just leave Python still writing at its old file offset into the
+# renamed file — the "new" path would stay empty until the next restart.
+#
+# The fix that needs no restart at all is Python's own logging module:
+# RotatingFileHandler holds the file itself, so when it rotates it closes,
+# renames, and reopens from within the same process — no stale fd. Werkzeug
+# routes its per-request access log through logging.getLogger('werkzeug'),
+# which has no handler of its own and propagates to root (verified), so
+# this handler catches that too — it's the large majority of this file's
+# 6.58M lines, since it fires on every request rather than once per run.
+#
+# What this does NOT catch: raw print() and the one-time Flask/werkzeug
+# startup banner, which bypass `logging` entirely and go straight to real
+# stdout/stderr — launchd's redirection is still the only thing capturing
+# those. That channel is now pointed at a separate file (see the plist) so
+# it can't collide with the path this handler owns, and left unrotated
+# deliberately: it only grows on process (re)start rather than per request,
+# so at this app's actual restart cadence it stays negligible for a long
+# time. See launchd/README.md for the full split and its limits.
+#
+# Bootstrap-level setting, not a runtime-tunable one — matches FLASK_HOST/
+# FLASK_PORT living in config.py (env-based) rather than config_settings
+# (DB-based, via get_config()): the handler is constructed once at import
+# time, before the DB session machinery exists, and changing it needs a
+# restart regardless of where the value lives, so there is no benefit to
+# making it live-editable from Settings.
+_LOG_DIR = os.path.expanduser("~/Library/Logs/ParthS")
+_LOG_MAX_BYTES = 20 * 1024 * 1024       # 20MB per file
+_LOG_BACKUP_COUNT = 5                   # + 5 rotated copies = 120MB ceiling
+
+os.makedirs(_LOG_DIR, exist_ok=True)
+_log_handlers = []
+# StreamHandler only when a human is actually watching stdout — i.e. someone
+# ran `python3 app.py` directly in a terminal. Under launchd there is no
+# terminal (sys.stdout.isatty() is False there), but launchd is STILL
+# redirecting real stdout to raw.log — so unconditionally adding this
+# handler doubled every line: once via RotatingFileHandler into app.log,
+# once via this handler -> real stdout -> launchd's redirect -> raw.log.
+# Caught by checking raw.log's actual growth after deploying, not by
+# reasoning about it in advance: it was gaining bytes at the same rate the
+# old unrotated server.log used to, not the "once per restart" rate raw.log
+# was designed for.
+if sys.stdout.isatty():
+    _log_handlers.append(logging.StreamHandler())
+try:
+    from logging.handlers import RotatingFileHandler
+    _log_handlers.append(
+        RotatingFileHandler(
+            os.path.join(_LOG_DIR, "app.log"),
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUP_COUNT,
+        )
+    )
+except OSError:
+    pass  # log directory unwritable — fall back to stdout only rather than crash on startup
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=_log_handlers,
+)
 logger = logging.getLogger(__name__)
 
 CLOSED_TRADE_STATUSES = ("CLOSED", "HIT_TARGET", "HIT_SL")

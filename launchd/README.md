@@ -26,13 +26,26 @@ nothing further to do after this.
 ```bash
 launchctl print gui/$(id -u)/com.parthsharma.parths.flask | head -20
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/api/config
-tail -f ~/Library/Logs/ParthS/server.log
+tail -f ~/Library/Logs/ParthS/app.log
 ```
 
-Note the log lives in `~/Library/Logs/ParthS/`, **not** the project's own
-`server.log`. `~/Desktop` is TCC-protected on modern macOS, and launchd's
-spawn helper is denied access to it — pointing the log there made every
+Note the logs live in `~/Library/Logs/ParthS/`, **not** the project's own
+directory. `~/Desktop` is TCC-protected on modern macOS, and launchd's
+spawn helper is denied access to it — pointing a log there made every
 launch fail with exit 78 (`EX_CONFIG`) before Python even started.
+
+**Two log files, not one — this is deliberate, see "Log rotation" below:**
+
+- `app.log` — everything that goes through Python's `logging` module:
+  app-level `logger.info/warning/error(...)` calls and werkzeug's
+  per-request access log. This is where almost all volume lives, and it
+  self-rotates (`RotatingFileHandler` in `app.py`, 20MB × 5 = 120MB cap).
+  **This is the file to `tail -f` day to day.**
+- `raw.log` — only what bypasses `logging` entirely: the one-time Flask
+  startup banner, `warnings.warn()` deprecation notices, and any stray
+  `print()`. Grows once per process (re)start, not once per request, so it
+  stays small at this app's actual restart cadence. Not rotated — hasn't
+  needed it, revisit if that ever changes.
 
 ## Stop it
 
@@ -71,13 +84,44 @@ restriction is only on the *management* commands, not on uptime.
   cut mid-operation, no rollback. Adding a signal handler to a live
   trading process deserves its own careful pass (ideally with the
   money-safety skill) rather than being bolted on here.
-- **The log has no rotation** — pre-existing (start.sh had the same
-  property), but now the process can run unattended for much longer, so
-  `~/Library/Logs/ParthS/server.log` can grow further. Fine short-term;
-  revisit if disk usage matters.
 - **The port-8000 cleanup step kills whatever is listening there**, not
   specifically orphaned Python — pre-existing behavior from start.sh,
   carried over rather than introduced here.
+
+## Log rotation
+
+Fixed — `server.log` had grown to 431MB / 6.58M lines with nothing
+bounding it. Two files replace it (see above): `app.log` self-rotates
+inside Python via `RotatingFileHandler`; `raw.log` catches what's left and
+stays small because it only grows on restart.
+
+**Why rotation had to happen inside Python, not from outside.** The usual
+external approach (`logrotate` on Linux, `newsyslog` on macOS: rename the
+file, let the process pick up a fresh one) doesn't work here. launchd opens
+`StandardOutPath`/`StandardErrorPath` once at process start and hands
+Python that file descriptor; renaming the file externally doesn't move
+where that descriptor points, so the running process keeps appending to
+the *renamed* file forever, and the path you renamed it away from stays
+empty until the next restart. `RotatingFileHandler` avoids this by owning
+the file itself — it closes, renames, and reopens from inside the same
+process, so there's no stale descriptor.
+
+**Why two files instead of pointing both at the same path.** They're two
+independent writers. If `RotatingFileHandler` rotated a file that launchd's
+raw redirection was *also* writing to, the same stale-descriptor problem
+would just reappear on the launchd side — its descriptor would keep
+appending to whatever the file got renamed to, invisibly.
+
+**A bug worth knowing about, since it's the kind that's easy to reintroduce.**
+The first version of this fix added a `logging.StreamHandler()` unconditionally,
+for terminal output when running `python3 app.py` directly. Under launchd
+that handler writes to real stdout, which launchd redirects to `raw.log` —
+so every line landed in *both* files, and `raw.log` grew at the same rate
+`server.log` used to. Fixed by gating the `StreamHandler` on
+`sys.stdout.isatty()`, so it only exists when a human is actually watching
+a terminal. Caught by checking `raw.log`'s growth after deploying, not by
+reasoning about it up front — worth re-checking the same way if this area
+changes again.
 
 ## scheduler.py doesn't need its own service
 

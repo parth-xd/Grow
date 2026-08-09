@@ -56,12 +56,27 @@
         kernel: (Sandbox) System Policy: xpcproxy(...) deny(1) file-read-data
           /Users/parthsharma/Desktop/Grow/server.log
       ~/Library/Logs is the standard, unrestricted location for this.
+
+      NOT app.log either — that name is now owned by app.py's own
+      RotatingFileHandler (see app.py's "Log rotation" comment). This raw
+      launchd redirection and Python's in-process handler are two
+      independent writers; if both targeted the same path, the handler's
+      rotation (rename + reopen, done entirely inside Python) would leave
+      this redirection's file descriptor still writing into the renamed
+      copy forever, since launchd has no way to know the file moved. Kept
+      as two separate, clearly-named files instead of trying to make one
+      fd aware of the other's rotation.
+      raw.log only catches what bypasses Python's `logging` module
+      entirely — the one-time Flask/werkzeug startup banner and any stray
+      print(). That happens once per process start, not once per request,
+      so unlike the old server.log it stays small at this app's actual
+      restart cadence and doesn't need its own rotation for now.
     -->
     <key>StandardOutPath</key>
-    <string>/Users/parthsharma/Library/Logs/ParthS/server.log</string>
+    <string>/Users/parthsharma/Library/Logs/ParthS/raw.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/parthsharma/Library/Logs/ParthS/server.log</string>
+    <string>/Users/parthsharma/Library/Logs/ParthS/raw.log</string>
 
     <key>ProcessType</key>
     <string>Interactive</string>
