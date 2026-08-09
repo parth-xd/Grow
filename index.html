@@ -10331,11 +10331,18 @@ function renderResearchReport(container, r) {
       <div class="card-title"> Active Catalysts (${cats.length})</div>`;
     cats.forEach(c => {
       const impactC = c.impact === 'HIGH' ? 'var(--accent)' : c.impact === 'MEDIUM' ? 'var(--muted)' : 'var(--muted)';
-      html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;font-size:12px">
-        <span style="background:${impactC}15;color:${impactC};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${c.impact}</span>
-        <span style="color:var(--muted);font-size:11px;width:70px">${c.type}</span>
-        <span style="color:var(--text)">${c.catalyst}</span>
-        <span style="color:var(--muted);font-size:11px">${c.timeframe||''}</span>
+      // align-items was center, which centers every item against the row's
+      // tallest — and c.catalyst is the one span with no fixed width, so
+      // whenever the row is narrow enough to wrap it (any width where three
+      // badges plus the catalyst text exceed the card, not just mobile), the
+      // single-line badges floated relative to where the wrapped text
+      // *started* rather than lining up with it. flex-start pins every badge
+      // to the top of the row regardless of how many lines the text wraps to.
+      html += `<div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:12px">
+        <span style="background:${impactC}15;color:${impactC};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;flex-shrink:0">${c.impact}</span>
+        <span style="color:var(--muted);font-size:11px;width:70px;flex-shrink:0">${c.type}</span>
+        <span style="color:var(--text);flex:1">${c.catalyst}</span>
+        <span style="color:var(--muted);font-size:11px;flex-shrink:0">${c.timeframe||''}</span>
       </div>`;
     });
     html += '</div>';
