@@ -23,7 +23,7 @@
 <link rel="manifest" href="/manifest.json" />
 <style>
   :root {
-    --bg: #fbfbfd; --surface: #ffffff; --border: #d2d2d7;
+    --bg: #f5f0e6; --surface: #ffffff; --border: #d2d2d7;
     --text: #1d1d1f; --muted: #6e6e73; --accent: #0071e3;
     --green: #34c759; --red: #ff3b30; --yellow: #ff9500;
     /* Profit and loss keeps its colour while the rest of the text is
@@ -322,7 +322,7 @@
        is meaningless once mobile stretches its children, so it belongs here
        too. */
     header {
-      background: rgba(251,251,253,.72);
+      background: rgba(250,247,240,.72);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       backdrop-filter: saturate(180%) blur(20px);
       border-bottom: .5px solid rgba(0,0,0,.1);
@@ -607,7 +607,7 @@
 
   /* ── Autocomplete dropdown ─────────── */
   .ac-wrap { position: relative; display: inline-block; }
-  .ac-drop { position: absolute; top: 100%; left: 0; width: 300px; max-height: 240px; overflow-y: auto; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; z-index: 50; display: none; margin-top: 6px; box-shadow: var(--shadow-lg); }
+  .ac-drop { position: absolute; top: 100%; left: 0; width: 300px; max-height: 240px; overflow-y: auto; background: rgba(250,247,240,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; z-index: 50; display: none; margin-top: 6px; box-shadow: var(--shadow-lg); }
   .ac-drop.show { display: block; animation: scaleIn .2s cubic-bezier(.4,0,.2,1); }
   @keyframes scaleIn { from { opacity: 0; transform: scale(.95) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
   .ac-item { padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: .5px solid rgba(0,0,0,.06); transition: var(--transition); }
@@ -623,7 +623,7 @@
   .heatmap-controls label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .heatmap-svg-wrap { position: relative; width: 100%; }
   .heatmap-svg-wrap svg { display: block; width: 100%; }
-  .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
+  .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(250,247,240,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
   .heatmap-tooltip.show { opacity: 1; }
   /* ── Skeleton loading states ──────────────────────────────────────────
      Shown only after a ~300ms delay (see withLoader) so fast loads never
@@ -644,7 +644,7 @@
     .skel { animation: none; background: rgba(0,0,0,.06); }
   }
   /* Partner (supplier/customer) performance snapshot on hover */
-  .sc-tooltip { position: fixed; pointer-events: none; background: rgba(255,255,255,.97); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 12px; padding: 12px 14px; font-size: 11px; box-shadow: var(--shadow-lg); z-index: 9997; max-width: 320px; opacity: 0; transition: opacity .15s ease-out; }
+  .sc-tooltip { position: fixed; pointer-events: none; background: rgba(250,247,240,.97); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 12px; padding: 12px 14px; font-size: 11px; box-shadow: var(--shadow-lg); z-index: 9997; max-width: 320px; opacity: 0; transition: opacity .15s ease-out; }
   .sc-tooltip.show { opacity: 1; }
   .sc-tooltip .sct-head { font-weight: 700; font-size: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
   .sc-tooltip .sct-grid { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
@@ -669,7 +669,7 @@
   .chokepoint-marker:hover circle { r: 7; }
 
   /* ── Thinking Orb Loading Screen (6 canvas states, random per show) ── */
-  .loading-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(251,251,253,.88); -webkit-backdrop-filter: saturate(180%) blur(40px); backdrop-filter: saturate(180%) blur(40px); display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity .3s ease; }
+  .loading-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(250,247,240,.88); -webkit-backdrop-filter: saturate(180%) blur(40px); backdrop-filter: saturate(180%) blur(40px); display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity .3s ease; }
   .loading-overlay.active { display: flex; opacity: 1; }
   .loading-container { text-align: center; }
   .orb-pill { display: inline-flex; align-items: center; gap: 14px; height: 74px; padding: 0 32px 0 10px; border-radius: 980px; background: rgba(255,255,255,.72); border: .5px solid var(--border); box-shadow: var(--shadow-lg); margin-bottom: 28px; }
@@ -805,10 +805,14 @@
 
     /* A near-white page behind white cards gives nothing to separate them, so
        every card needs its own border and shadow, and forty bordered boxes is
-       what "clustered" looks like. Dropping the page to iOS's grouped-list
-       grey lets the card colour itself do the separating — no border, no
-       shadow, fewer edges competing for attention. */
-    body { background: #f2f2f7; }
+       what "clustered" looks like. Dropping the page to a grouped-list grey
+       lets the card colour itself do the separating — no border, no shadow,
+       fewer edges competing for attention.
+       Deliberately a touch deeper than --bg (#f5f0e6), same relationship the
+       original iOS-grey (#f2f2f7) had to the old --bg (#fbfbfd) — the gap
+       between page and card is what makes borderless white cards read as
+       separated at all; matching --bg exactly here would undo that. */
+    body { background: #efe6d3; }
     .card {
       padding: 16px !important;
       border-radius: 14px;
@@ -891,7 +895,7 @@
       flex-direction: column;
       align-items: stretch;
       gap: 10px;
-      background: rgba(242,242,247,.92);
+      background: rgba(250,247,240,.92);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       border-bottom: .5px solid rgba(0,0,0,.08);
@@ -1039,7 +1043,7 @@
          home-indicator thickness (~5px) — it has to carry five labelled,
          thumb-reachable destinations, and a bar that thin cannot. */
       padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
-      background: rgba(255,255,255,.92);
+      background: rgba(250,247,240,.92);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       border-top: .5px solid rgba(0,0,0,.07);
@@ -1311,7 +1315,7 @@
       content: "";
       position: absolute; top: 0; right: 0; bottom: 0; width: 26px;
       pointer-events: none;
-      background: linear-gradient(to right, rgba(242,242,247,0), rgba(242,242,247,.92));
+      background: linear-gradient(to right, rgba(239,230,211,0), rgba(239,230,211,.92));
     }
     #predictions-hint { display: block !important; }
 
