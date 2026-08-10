@@ -23,13 +23,8 @@
 <link rel="manifest" href="/manifest.json" />
 <style>
   :root {
-    --bg: #f5f0e6; --surface: #ffffff; --border: #d2d2d7;
+    --bg: #fbfbfd; --surface: #ffffff; --border: #d2d2d7;
     --text: #1d1d1f; --muted: #6e6e73; --accent: #0071e3;
-    /* Tab active-state only — deliberately separate from --accent, which
-       stays blue for buttons/links/badges elsewhere. Scoped this way so
-       "make the tabs light brown" doesn't quietly recolor everything that
-       happens to share --accent too. */
-    --tab-active: #9c7a52;
     --green: #34c759; --red: #ff3b30; --yellow: #ff9500;
     /* Profit and loss keeps its colour while the rest of the text is
        monochrome. Separate tokens rather than --green/--red directly, so the
@@ -100,8 +95,21 @@
     -webkit-backdrop-filter: none;
     align-items: stretch;
     justify-content: stretch;
-    padding: calc(28px + env(safe-area-inset-top)) 24px
-             calc(28px + env(safe-area-inset-bottom));
+    /* Full-bleed, including the status-bar and home-indicator strips.
+       inset:0 from the base rule should already reach them under
+       viewport-fit=cover, but in the iOS wrapper the strip behind the notch
+       was still painting the document background — a stale staging colour —
+       instead of this element. Pulling the box out past the insets makes the
+       lock's own background cover them whatever the viewport is doing.
+
+       The insets go into the padding twice over: once to cancel the negative
+       offset, once to keep the content clear of the notch exactly as before.
+       Where the viewport already covers the strips, every env() here is 0 and
+       this collapses to the original top:0 / 28px padding. */
+    top: calc(0px - env(safe-area-inset-top));
+    bottom: calc(0px - env(safe-area-inset-bottom));
+    padding: calc(28px + 2 * env(safe-area-inset-top)) 24px
+             calc(28px + 2 * env(safe-area-inset-bottom));
     overflow: hidden;
     /* Stops iOS rubber-banding the lock screen away from the viewport edge,
        which is the other half of why colour appeared to stop short. */
@@ -137,8 +145,20 @@
   .pin-title {
     margin: auto 0 0;
     font-size: clamp(52px, 22vw, 150px);
-    font-weight: 500;
-    letter-spacing: -.045em;
+    font-weight: 700;
+    /* The r/t pair sets this value, not the overall look. Negative tracking
+       runs the r's arm into the t's stem — they sit at the same height, so
+       unlike P/a (whose bowl and x-height clear each other vertically) any
+       horizontal tightening reads as a collision, and bold widens both
+       strokes. Measured minimum ink distance at 150px: r-t trails P-a by
+       ~1px at every uniform value, so the pair to check is always r-t.
+         -.045em -> 1.0px   (touching)
+         -.015em -> 5.0px   (still tight at phone sizes)
+          .02em  -> 10.0px  (matches P-a's 11px)
+       Phone renders this at ~82px, not the 150px ceiling, so gaps there are
+       ~55% of the numbers above — the reason a value that looked fine on a
+       desktop screenshot still clashed on the device. */
+    letter-spacing: .02em;
     line-height: .9;
     color: var(--lock-ink);
   }
@@ -219,7 +239,11 @@
 
   /* No transition here on purpose. An earlier version walked navy -> olive
      -> wine while you watched; the colour is meant to be a fixed backdrop
-     for one visit, not an effect. It is set once at load and never moves. */
+     for one visit, not an effect. It is set once at load and never moves.
+     A later attempt to cross-fade it to the photo's colour during the zoom
+     hit the same problem from the other end — the backdrop visibly changing
+     mid-animation reads as a bug. Only the ink adapts while the photo moves;
+     this repaints once, at the end, hidden behind the fully-expanded photo. */
   .pin-canvas {
     position: absolute; inset: 0; z-index: 0;
     background: var(--lock-ground);
@@ -258,12 +282,34 @@
     animation-delay: calc(var(--i) * 45ms);
   }
 
+  /* Optical kerning for "Parth". Two reasons letter-spacing alone cannot even
+     these out: it adds the same amount to every pair, and splitting the
+     wordmark into per-character spans (for the drop animation) disables the
+     font's own kerning — so the rendered gaps are both unequal and different
+     from what the same string measures as unsplit text.
+
+     Measured on the real spans at 150px/700/.02em: P-a 19.9, a-r 15.2,
+     r-t 11.5, t-h 15.3 — "Pa" gaping while "rt" pinched. These bring all four
+     to ~15px. In em so they hold across the clamp() range.
+
+     Indices are 1-based over "Parth S." — P(1) a(2) r(3) t(4) h(5) ␣(6) S(7)
+     .(8) — so they are tied to this exact wordmark. Retune if the name
+     changes; a wrong index only shifts spacing, it cannot break the layout. */
+  .pin-title .ch:nth-child(2) { margin-left: -.006em; }   /* a: tighten P|a */
+  .pin-title .ch:nth-child(3) { margin-left: -.014em; }   /* r: tighten a|r */
+  .pin-title .ch:nth-child(4) { margin-left:  .056em; }   /* t: widen r|t */
+  .pin-title .ch:nth-child(5) { margin-left: -.002em; }   /* h: tighten t|h */
+
   /* The wordmark does not travel. Its resting position already sits at the
      vertical centre, so an earlier attempt to lift it to centre during the
      intro measured a distance of 0.2px and animated nothing — and settling
      in place is what was wanted anyway. Only the colour transitions. */
+  /* 1.2s, not .6s: this is triggered on the same beat as the zoom and matches
+     its duration, so the wordmark finishes turning exactly as the photo
+     finishes expanding. At .6s it completed halfway through and the second
+     half of the zoom played against an already-settled colour. */
   .pin-title {
-    transition: color .6s cubic-bezier(.215,.61,.355,1);
+    transition: color 1.2s cubic-bezier(.215,.61,.355,1);
   }
 
   .pin-logo, .pin-subtitle, .pin-dots, .pin-pad {
@@ -327,7 +373,7 @@
        is meaningless once mobile stretches its children, so it belongs here
        too. */
     header {
-      background: rgba(250,247,240,.72);
+      background: rgba(251,251,253,.72);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       backdrop-filter: saturate(180%) blur(20px);
       border-bottom: .5px solid rgba(0,0,0,.1);
@@ -461,7 +507,7 @@
   .tabs::-webkit-scrollbar { display: none; }
   .tab { padding: 10px 16px; cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500; border-bottom: 2px solid transparent; border-radius: 0; transition: var(--transition); white-space: nowrap; letter-spacing: -.01em; }
   .tab:hover { color: var(--text); border-bottom-color: var(--border); }
-  .tab.active { color: var(--tab-active); border-bottom-color: var(--tab-active); font-weight: 600; background: transparent; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; background: transparent; }
   .tab-panel { display: none; animation: fadeIn .3s ease-out; }
   .tab-panel.active { display: block; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -612,7 +658,7 @@
 
   /* ── Autocomplete dropdown ─────────── */
   .ac-wrap { position: relative; display: inline-block; }
-  .ac-drop { position: absolute; top: 100%; left: 0; width: 300px; max-height: 240px; overflow-y: auto; background: rgba(250,247,240,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; z-index: 50; display: none; margin-top: 6px; box-shadow: var(--shadow-lg); }
+  .ac-drop { position: absolute; top: 100%; left: 0; width: 300px; max-height: 240px; overflow-y: auto; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; z-index: 50; display: none; margin-top: 6px; box-shadow: var(--shadow-lg); }
   .ac-drop.show { display: block; animation: scaleIn .2s cubic-bezier(.4,0,.2,1); }
   @keyframes scaleIn { from { opacity: 0; transform: scale(.95) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
   .ac-item { padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: .5px solid rgba(0,0,0,.06); transition: var(--transition); }
@@ -628,7 +674,7 @@
   .heatmap-controls label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .heatmap-svg-wrap { position: relative; width: 100%; }
   .heatmap-svg-wrap svg { display: block; width: 100%; }
-  .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(250,247,240,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
+  .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
   .heatmap-tooltip.show { opacity: 1; }
   /* ── Skeleton loading states ──────────────────────────────────────────
      Shown only after a ~300ms delay (see withLoader) so fast loads never
@@ -649,7 +695,7 @@
     .skel { animation: none; background: rgba(0,0,0,.06); }
   }
   /* Partner (supplier/customer) performance snapshot on hover */
-  .sc-tooltip { position: fixed; pointer-events: none; background: rgba(250,247,240,.97); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 12px; padding: 12px 14px; font-size: 11px; box-shadow: var(--shadow-lg); z-index: 9997; max-width: 320px; opacity: 0; transition: opacity .15s ease-out; }
+  .sc-tooltip { position: fixed; pointer-events: none; background: rgba(255,255,255,.97); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 12px; padding: 12px 14px; font-size: 11px; box-shadow: var(--shadow-lg); z-index: 9997; max-width: 320px; opacity: 0; transition: opacity .15s ease-out; }
   .sc-tooltip.show { opacity: 1; }
   .sc-tooltip .sct-head { font-weight: 700; font-size: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
   .sc-tooltip .sct-grid { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
@@ -674,7 +720,7 @@
   .chokepoint-marker:hover circle { r: 7; }
 
   /* ── Thinking Orb Loading Screen (6 canvas states, random per show) ── */
-  .loading-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(250,247,240,.88); -webkit-backdrop-filter: saturate(180%) blur(40px); backdrop-filter: saturate(180%) blur(40px); display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity .3s ease; }
+  .loading-overlay { position: fixed; inset: 0; z-index: 9998; background: rgba(251,251,253,.88); -webkit-backdrop-filter: saturate(180%) blur(40px); backdrop-filter: saturate(180%) blur(40px); display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity .3s ease; }
   .loading-overlay.active { display: flex; opacity: 1; }
   .loading-container { text-align: center; }
   .orb-pill { display: inline-flex; align-items: center; gap: 14px; height: 74px; padding: 0 32px 0 10px; border-radius: 980px; background: rgba(255,255,255,.72); border: .5px solid var(--border); box-shadow: var(--shadow-lg); margin-bottom: 28px; }
@@ -810,14 +856,10 @@
 
     /* A near-white page behind white cards gives nothing to separate them, so
        every card needs its own border and shadow, and forty bordered boxes is
-       what "clustered" looks like. Dropping the page to a grouped-list grey
-       lets the card colour itself do the separating — no border, no shadow,
-       fewer edges competing for attention.
-       Deliberately a touch deeper than --bg (#f5f0e6), same relationship the
-       original iOS-grey (#f2f2f7) had to the old --bg (#fbfbfd) — the gap
-       between page and card is what makes borderless white cards read as
-       separated at all; matching --bg exactly here would undo that. */
-    body { background: #efe6d3; }
+       what "clustered" looks like. Dropping the page to iOS's grouped-list
+       grey lets the card colour itself do the separating — no border, no
+       shadow, fewer edges competing for attention. */
+    body { background: #f2f2f7; }
     .card {
       padding: 16px !important;
       border-radius: 14px;
@@ -900,7 +942,7 @@
       flex-direction: column;
       align-items: stretch;
       gap: 10px;
-      background: rgba(250,247,240,.92);
+      background: rgba(242,242,247,.92);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       border-bottom: .5px solid rgba(0,0,0,.08);
@@ -1048,7 +1090,7 @@
          home-indicator thickness (~5px) — it has to carry five labelled,
          thumb-reachable destinations, and a bar that thin cannot. */
       padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
-      background: rgba(250,247,240,.92);
+      background: rgba(255,255,255,.92);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
       border-top: .5px solid rgba(0,0,0,.07);
@@ -1094,7 +1136,7 @@
       min-height: 2.3em;
     }
 
-    .tabs .tab[data-mobile-primary].active { color: var(--tab-active); }
+    .tabs .tab[data-mobile-primary].active { color: var(--accent); }
     /* 20px matches Apple's tab-bar glyph size; 22px read heavy next to
        9.5px labels. */
     .tabs .tab svg, #mobile-more-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
@@ -1320,7 +1362,7 @@
       content: "";
       position: absolute; top: 0; right: 0; bottom: 0; width: 26px;
       pointer-events: none;
-      background: linear-gradient(to right, rgba(239,230,211,0), rgba(239,230,211,.92));
+      background: linear-gradient(to right, rgba(242,242,247,0), rgba(242,242,247,.92));
     }
     #predictions-hint { display: block !important; }
 
@@ -2677,32 +2719,64 @@ function runLockIntro() {
   // Both are chosen before the first paint and never change during the visit.
   const colour = _lockColour();
   canvas.style.backgroundColor = colour;
-  _lockPaintRoot(colour);          // until the image lands and re-paints it
+  // Deliberately NOT the staging colour. In standalone/iOS the strip behind
+  // the status bar is filled from the document background sampled at first
+  // paint, and it is not re-sampled when JS changes it later — so seeding the
+  // root with the throwaway staging colour froze a navy/olive/wine bar at the
+  // top for the whole session, while the screen underneath settled to the
+  // photo. The resting ground is the colour that strip should end up as, so
+  // start there; applyGround() still refines it to the photo's own colour.
+  _lockPaintRoot(getComputedStyle(lock).getPropertyValue('--lock-ground').trim());
   shot.src = _lockDemoShot();
 
   const timers = [];
 
-  // Reading pixels before the image has decoded returns an empty canvas,
-  // which scores as pure black and picks light ink for a light photo — the
-  // text then vanishes into it. Always wait for the decode.
+  // Two halves, deliberately on different beats.
+  //
+  // The ink runs *with* the zoom: --lock-ink flips as the photo expands, and
+  // .pin-title carries a colour transition matched to the zoom's duration, so
+  // the wordmark turns while the photo moves rather than after it stops.
   const applyInk = () => {
     const mean = _lockShotMean(shot);
     if (!mean) return;
     lock.classList.toggle('on-dark', mean.dark);
-    _lockPaintRoot(mean.css);      // edges now match the image, not the page
   };
-  const landInk = () => {
-    if (shot.complete && shot.naturalWidth) applyInk();
-    else shot.addEventListener('load', applyInk, { once: true });
+  // The backdrop does not. Repainting .pin-canvas mid-zoom is visible — the
+  // photo is still smaller than the screen, so the colour change shows around
+  // it and reads as a bug. This runs at the end, behind the fully-expanded
+  // photo, purely so the compositing seam at the safe-area edges (notch /
+  // Dynamic Island) reveals a matching colour rather than the stale staging one.
+  const applyGround = () => {
+    const mean = _lockShotMean(shot);
+    // Fall back to the resting ground rather than returning early. WebKit
+    // taints the canvas for some image sources, and _lockShotMean() then
+    // returns null — the old early return left the staging colour on the
+    // root, which is what showed as a mismatched strip behind the status bar.
+    const css = mean ? mean.css
+      : getComputedStyle(lock).getPropertyValue('--lock-ground').trim();
+    _lockPaintRoot(css);
+    canvas.style.backgroundColor = css;
   };
+  // Reading pixels before decode returns an empty canvas, so both wait for it.
+  const afterDecode = fn => {
+    if (shot.complete && shot.naturalWidth) fn();
+    else shot.addEventListener('load', fn, { once: true });
+  };
+  const landInk    = () => afterDecode(applyInk);
+  const landGround = () => afterDecode(applyGround);
 
-  // End of the choreography. The zoom has already played by this point, so
-  // this only drops the staging state and settles the ink.
+  // End of the choreography. Must not run before the zoom has finished: it
+  // reveals the controls, so firing it mid-zoom pops them in while the image
+  // is still visibly moving — which reads as the last second being skipped.
+  // landInk() normally already ran on the zoom beat; it stays here because
+  // jump() (reduced motion, see below) skips that beat entirely, and it is
+  // idempotent — re-applying the same colours transitions to where they are.
   const finish = () => {
     timers.splice(0).forEach(clearTimeout);
     lock.classList.remove('staging');
     lock.classList.add('shot-in', 'shot-full');
     landInk();
+    landGround();
   };
 
   // Cutting to the end — reduced motion, or a tap partway through. Adding
@@ -2736,8 +2810,16 @@ function runLockIntro() {
 
   const at = (ms, fn) => timers.push(setTimeout(fn, ms));
   at(2150, () => lock.classList.add('shot-in'));
-  at(2550, () => lock.classList.add('shot-full'));
-  at(2950, finish);
+  // Ink turns on the same beat the zoom starts, and over the same 1.2s, so
+  // the wordmark recolours *while* the photo expands. It used to happen only
+  // in finish(), after everything had stopped moving, which read as the screen
+  // recolouring itself a beat late.
+  at(2550, () => { lock.classList.add('shot-full'); landInk(); });
+  // 2550 + the 1.2s transform transition on .pin-shot. These two numbers must
+  // stay in step: an earlier version finished at 2950, cutting the zoom 800ms
+  // short and snapping the whole screen to its end state while it was still
+  // moving. If the CSS duration changes, change this with it.
+  at(3750, finish);
 
   // No skip-on-tap. An earlier version cut to the end state on any touch or
   // keypress so PIN entry never waited on choreography — but the sequence is
@@ -14071,7 +14153,22 @@ function logoutUser() {
   localStorage.removeItem('auth_token');
   sessionStorage.removeItem('pin_ok');
   sessionStorage.removeItem('device_token');
-  location.reload();
+
+  // Re-lock in place instead of location.reload(). The reload did return to
+  // the lock screen and did replay the intro — but only after refetching this
+  // whole page first, so what you actually saw was a blank flash and a wait
+  // where the app-open choreography should have been.
+  //
+  // Clearing the class list is what makes the replay work: a finished intro
+  // leaves 'shot-in shot-full' behind, and runLockIntro() only adds classes,
+  // so without this the image would start already full-size and nothing would
+  // animate. It also drops 'hidden', which the intro checks for and bails on.
+  const lock = document.getElementById('pin-lock');
+  lock.className = '';
+  document.body.classList.add('locked');
+  _pinBuf = '';
+  _pinUpdateDots();
+  runLockIntro();
 }
 
 </script>
