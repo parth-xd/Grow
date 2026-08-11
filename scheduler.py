@@ -46,6 +46,27 @@ def _register(name, fn, interval_seconds, initial_delay=0):
     _task_locks[name] = threading.Lock()
 
 
+def get_task_registry():
+    """Every registered task with its compiled-in default interval.
+
+    Exists so the settings API can list what actually runs instead of keeping a
+    second hand-maintained copy — that copy had drifted to 9 of the 29 tasks, so
+    the other 20 were overridable by the scheduler but invisible in the UI.
+
+    `interval` here is always the registered default: _resolve_interval() returns
+    the effective value per pass without writing it back, so this never reflects
+    a DB override. Empty until start_scheduler() has run.
+    """
+    return [
+        {
+            "name": t["name"],
+            "default_interval": t["interval"],
+            "initial_delay": t["initial_delay"],
+        }
+        for t in _tasks
+    ]
+
+
 def _task_auto_analysis():
     """Run watchlist auto-analysis (predictions for all watchlist stocks)."""
     import auto_analyzer
@@ -491,6 +512,17 @@ def _task_geopolitical_collect():
 def _task_fno_auto_trade():
     """Run F&O automated trading cycle — entry/exit signals + order execution."""
     try:
+        from db_manager import get_config
+        # Master switch, mirroring the gate in _task_cash_auto_trade below.
+        #
+        # This task previously ran unconditionally: fno_trader defines
+        # _AUTO_TRADE_CONFIG["enabled"] but nothing ever reads it, so the only
+        # thing standing between this loop and a real F&O order was paper_trading.
+        #
+        # Defaults to "true" — seeding this key must not silently stop F&O
+        # trading. Turning it off is the deliberate action.
+        if get_config("fno_auto_trade_enabled", "true").lower() != "true":
+            return
         import fno_trader
         result = fno_trader.auto_trade_fno()
         actions = result.get("actions", []) if result else []

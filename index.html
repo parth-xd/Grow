@@ -512,6 +512,57 @@
   .tab-panel.active { display: block; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
+  /* ── Settings sections ──────────────────────────────────────────────
+     Still one #settings tab-panel, so activateTab and the mobile More sheet
+     are untouched — the rail only switches which .set-section inside it is
+     visible. */
+  .set-wrap { display: grid; grid-template-columns: 210px 1fr; gap: 28px; align-items: start; }
+  .set-rail { position: sticky; top: 84px; display: flex; flex-direction: column; gap: 2px; }
+  .set-navbtn { text-align: left; padding: 9px 12px; border-radius: 8px; border: none;
+                background: transparent; color: var(--muted); font: inherit; font-size: 13px;
+                font-weight: 500; cursor: pointer; transition: var(--transition); }
+  .set-navbtn:hover { background: rgba(0,0,0,.04); color: var(--text); }
+  .set-navbtn.active { background: rgba(0,0,0,.06); color: var(--text); font-weight: 600; }
+  .set-section { display: none; }
+  .set-section.active { display: block; animation: fadeIn .25s ease-out; }
+  .set-head { margin-bottom: 16px; }
+  .set-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.03em; margin: 0 0 6px; }
+  .set-head p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0; }
+  /* One setting: label/help on the left, control on the right, wrapping when narrow */
+  .set-row { display: flex; align-items: flex-start; gap: 16px; padding: 13px 0;
+             border-bottom: .5px solid var(--border); flex-wrap: wrap; }
+  .set-row:last-child { border-bottom: none; }
+  .set-row-main { flex: 1 1 240px; min-width: 0; }
+  .set-row-label { font-size: 13px; font-weight: 600; color: var(--text); }
+  .set-row-help { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 3px; }
+  .set-row-ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+  .set-input { padding: 9px 12px; background: var(--bg); border: .5px solid var(--border);
+               border-radius: 9px; color: var(--text); font-family: inherit; font-size: 13px; width: 150px; }
+  .set-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(0,113,227,.12); }
+  .set-input.wide { width: 250px; }
+  .set-src { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+  .set-val { font-size: 14px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  .set-pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 980px;
+              font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; }
+  .set-pill-live { background: rgba(0,0,0,.06); color: var(--muted); }
+  .set-pill-warn { background: rgba(255,149,0,.14); color: #a35c00; }
+  .set-note { padding: 12px 14px; border-radius: 10px; font-size: 12px; line-height: 1.6;
+              background: rgba(255,149,0,.08); border: .5px solid rgba(255,149,0,.3);
+              color: #a35c00; margin-bottom: 16px; }
+  .set-swatch { width: 36px; height: 36px; border-radius: 9px; border: .5px solid var(--border);
+                padding: 0; cursor: pointer; background: none; }
+  .set-preview { height: 96px; border-radius: 12px; display: flex; align-items: flex-end;
+                 padding: 12px 14px; font-weight: 600; letter-spacing: -.02em; font-size: 15px; }
+  @media (max-width: 768px) {
+    .set-wrap { grid-template-columns: 1fr; gap: 14px; }
+    .set-rail { position: static; flex-direction: row; overflow-x: auto; gap: 6px;
+                padding-bottom: 4px; scrollbar-width: none; }
+    .set-rail::-webkit-scrollbar { display: none; }
+    .set-navbtn { white-space: nowrap; flex: 0 0 auto; border: .5px solid var(--border); }
+    .set-input { width: 128px; }
+    .set-input.wide { width: 100%; }
+  }
+
   /* ── Table ──────────────────────────────── */
   table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
   th, td { padding: 14px 16px; text-align: left; border-bottom: .5px solid var(--border); }
@@ -2443,7 +2494,20 @@ window.fetch = function(...args) {
   </div>
 
   <div id="settings" class="tab-panel">
-    <div style="max-width:980px">
+    <div class="set-wrap">
+      <nav class="set-rail" id="set-rail" aria-label="Settings sections"></nav>
+      <div style="min-width:0">
+
+      <!-- ── Trading ──────────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="trading">
+        <div class="set-head">
+          <h2>Trading</h2>
+          <p>The switches that decide whether this system can place an order at all.</p>
+        </div>
+        <div class="card" style="padding:24px;margin-bottom:20px">
+          <div id="set-master-switches"></div>
+        </div>
+
       <div class="card" style="padding:28px;margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px;flex-wrap:wrap">
           <div>
@@ -2496,6 +2560,23 @@ window.fetch = function(...args) {
           <span id="paper-save-status" style="margin-left:12px;font-size:12px;color:var(--green)"></span>
         </div>
       </div>
+      </section>
+
+      <!-- ── Risk & strategy (read-only) ──────────────────────────────── -->
+      <section class="set-section" data-sec="risk">
+        <div class="set-head">
+          <h2>Risk &amp; strategy</h2>
+          <p>Every value the bot uses to size, enter and exit a position. Read-only: these feed live order placement, so they are changed in code — deliberately — not from a phone.</p>
+        </div>
+        <div id="set-risk-body"></div>
+      </section>
+
+      <!-- ── Automation ───────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="automation">
+        <div class="set-head">
+          <h2>Automation</h2>
+          <p>How often each background task runs.</p>
+        </div>
 
       <div class="card" style="padding:28px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
@@ -2504,8 +2585,9 @@ window.fetch = function(...args) {
         </div>
 
         <p style="color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.6">
-          Configure how frequently trading signals are generated and trades are monitored. 
-          Changes will take effect after restarting the app. Lower intervals = more frequent signals (faster response).
+          How often each background task runs. Changes apply within about 15 seconds — no restart needed.
+          The scheduler's dispatch loop ticks every 15s, so anything set below that still fires every 15s.
+          Tasks marked <b>live money</b> place or close real orders.
         </p>
 
         <div id="settings-grid" style="display:grid;gap:16px;margin-bottom:24px">
@@ -2527,6 +2609,93 @@ window.fetch = function(...args) {
           </div>
         </div>
       </div>
+      </section>
+
+      <!-- ── Data collection ──────────────────────────────────────────── -->
+      <section class="set-section" data-sec="data">
+        <div class="set-head">
+          <h2>Data collection</h2>
+          <p>Which sources are consulted, how often, and how long results are cached.</p>
+        </div>
+        <div class="card" style="padding:24px;margin-bottom:20px">
+          <h3 style="font-size:14px;font-weight:600;margin:0 0 4px">News sources</h3>
+          <p style="color:var(--muted);font-size:12px;margin:0 0 6px;line-height:1.6">Turn a source off if it is rate-limiting you or returning noise. All six are consulted in parallel, so switching one off makes news fetches cheaper, not slower.</p>
+          <div id="set-news-list"></div>
+        </div>
+        <div class="card" style="padding:24px">
+          <h3 style="font-size:14px;font-weight:600;margin:0 0 4px">Supply chain &amp; fundamentals (Tijori)</h3>
+          <p style="color:var(--muted);font-size:12px;margin:0 0 6px;line-height:1.6">Pacing for the Tijori collector. Lower delays and higher per-run caps collect faster but are more likely to get you blocked.</p>
+          <div id="set-tijori-list"></div>
+        </div>
+      </section>
+
+      <!-- ── Costs & charges ──────────────────────────────────────────── -->
+      <section class="set-section" data-sec="costs">
+        <div class="set-head">
+          <h2>Costs &amp; charges</h2>
+          <p>Broker and statutory rates used for breakeven and P&amp;L. These do not place orders, but they decide whether a trade looks profitable.</p>
+        </div>
+        <div class="card" style="padding:24px;margin-bottom:20px">
+          <h3 style="font-size:14px;font-weight:600;margin:0 0 6px">Equity</h3>
+          <div id="set-cost-equity-list"></div>
+        </div>
+        <div class="card" style="padding:24px">
+          <h3 style="font-size:14px;font-weight:600;margin:0 0 6px">F&amp;O</h3>
+          <div id="set-cost-fno-list"></div>
+        </div>
+      </section>
+
+      <!-- ── Signals ──────────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="signals">
+        <div class="set-head">
+          <h2>Signals</h2>
+          <p>How the prediction blend is weighted.</p>
+        </div>
+        <div class="card" style="padding:24px">
+          <div class="set-note">
+            <b>These weights are your trading strategy.</b> They control how ML, trend, news and market context combine into every signal. The four should sum to 1.0 — the running total is shown below and warns if it drifts.
+          </div>
+          <div id="set-weights-list"></div>
+          <div id="set-weights-total" style="margin-top:14px;font-size:13px;font-weight:600"></div>
+        </div>
+      </section>
+
+      <!-- ── Notifications ────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="notifications">
+        <div class="set-head">
+          <h2>Notifications</h2>
+          <p>Telegram delivery. The bot token is stored server-side and never sent back to this page.</p>
+        </div>
+        <div class="card" style="padding:24px">
+          <div id="set-notif-list"></div>
+        </div>
+      </section>
+
+      <!-- ── Appearance ───────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="appearance">
+        <div class="set-head">
+          <h2>Appearance</h2>
+          <p>The three colours the lock screen cycles through — one per load, behind the wordmark until the photo lands.</p>
+        </div>
+        <div class="card" style="padding:24px">
+          <div class="set-note">
+            All three must stay <b>dark</b>. The intro keeps the ink light for the whole staging phase, so a light colour here makes the wordmark disappear until the photo arrives. Anything that fails a 4.5:1 contrast check against the light ink is rejected.
+          </div>
+          <div id="set-lock-list"></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap">
+            <button onclick="saveLockPalette(this)" class="btn btn-primary">Save palette</button>
+            <button onclick="resetLockPalette(this)" class="btn">Reset to defaults</button>
+            <span id="set-lock-status" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Advanced ─────────────────────────────────────────────────── -->
+      <section class="set-section" data-sec="advanced">
+        <div class="set-head">
+          <h2>Advanced</h2>
+          <p>Direct access to every database-backed setting, including ones the sections above do not surface.</p>
+        </div>
 
       <!-- ── System Configuration: every DB-backed setting, editable ── -->
       <div class="card" style="padding:28px;margin-top:20px">
@@ -2551,6 +2720,9 @@ window.fetch = function(...args) {
  <b>Prediction weights define your trading strategy.</b>They control how the algo blends ML, news, trend and market context into every trade signal. Change with care — the four weights should sum to 1.0.
         </div>
         <div id="cfg-list" style="margin-top:12px"></div>
+      </div>
+      </section>
+
       </div>
     </div>
   </div>
@@ -2610,6 +2782,9 @@ function pinKey(n) {
         // Release the root colour the lock screen painted, or the dashboard
         // overscrolls against a dark edge for the rest of the session.
         _lockPaintRoot('');
+        // Now that we're authenticated, top up the cached lock palette for the
+        // next load. Deliberately after unlock rather than on the lock screen.
+        refreshLockPaletteCache();
       } else {
         document.querySelectorAll('.pin-dot').forEach(d => { d.classList.add('wrong'); d.classList.remove('filled'); });
         _pinBuf = '';
@@ -2662,9 +2837,16 @@ function _lockDemoShot() {
 // each reload visibly different, where random repeats itself often enough to
 // look broken.
 function _lockColour() {
-  const n = (Number(localStorage.getItem('lock_col_n') || 0) + 1) % LOCK_COLOURS.length;
+  // Read synchronously from localStorage, not the server: this runs before the
+  // first paint of the lock screen, and awaiting a fetch here would either flash
+  // a default colour first or delay the intro. The cache is refreshed in the
+  // background after unlock (refreshLockPaletteCache), so an edit made on
+  // another device lands on the next load. Falls back to the built-in triple
+  // when nothing is cached or the cached value is malformed.
+  const palette = readLockPaletteCache() || LOCK_COLOURS;
+  const n = (Number(localStorage.getItem('lock_col_n') || 0) + 1) % palette.length;
   localStorage.setItem('lock_col_n', String(n));
-  return LOCK_COLOURS[n];
+  return palette[n];
 }
 
 // Mean colour of the image: its luminance picks the ink, and the colour
@@ -2879,9 +3061,10 @@ function handleTabActivation(tabName) {
     loadTelegramStatus();
     loadNLPStatus();
   } else if (tabName === 'settings') {
-    loadPaperTradingSettings();
-    loadSchedulerSettings();
-    loadSystemConfig();
+    // Sections load lazily on first open (see _SET_LOADERS). This used to fire
+    // three network calls for a tab you might only be opening to change one
+    // colour.
+    buildSettingsRail();
   }
 }
 
@@ -3162,22 +3345,18 @@ async function savePaperTradingSettings() {
       Number(document.getElementById('paper-amount-limit')?.value || 0)
     );
 
-    // Save to server so the auto-trader actually enforces the limit
-    try {
-      const resp = await fetch(API + '/api/paper-trading/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount_limit: amountLimit }),
-      });
-      if (resp.ok) {
-        const result = await resp.json();
-        console.log('Server save OK:', result);
-      } else {
-        console.warn('Server save returned', resp.status);
-      }
-    } catch (serverErr) {
-      console.warn('Server save failed, limit saved locally only:', serverErr);
-    }
+    // Save to server so the auto-trader actually enforces the limit.
+    //
+    // This used to swallow the failure with a console.warn and still report
+    // "Saved" — so a limit that never reached the server looked applied. It now
+    // throws to the outer catch, which shows the error, because a cap the auto
+    // trader is not enforcing is exactly the thing you must not be wrong about.
+    // Via api() so it carries X-Device-Token, which the raw fetch did not.
+    await api('/api/paper-trading/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount_limit: amountLimit }),
+    });
 
     const saveStatus = document.getElementById('paper-save-status');
     if (saveStatus) {
@@ -3197,83 +3376,75 @@ async function savePaperTradingSettings() {
   }
 }
 
+// Categories come from the endpoint, which reads the scheduler's own registry —
+// so every registered task appears here, not the 9 that used to be hardcoded.
+const SCHED_CATEGORY_LABELS = {
+  trading:     ['Trading', 'These place or close real orders. Shortening them raises order frequency; lengthening auto-close delays stop-losses.'],
+  data:        ['Data collection', 'Feeds the dashboard. Safe to tune.'],
+  maintenance: ['Maintenance', 'Housekeeping, retraining and summaries.'],
+};
+
 async function loadSchedulerSettings() {
+  const grid = document.getElementById('settings-grid');
+  const statusEl = document.getElementById('settings-status');
+  if (!grid) return;
   try {
-    const resp = await fetch(`${API}/api/scheduler/settings`);
-    const data = await resp.json();
-    
-    if (!data.settings) return;
-    
-    const grid = document.getElementById('settings-grid');
-    grid.innerHTML = '';
-    
-    // Create input fields for each setting
-    for (const [taskName, config] of Object.entries(data.settings)) {
-      const row = document.createElement('div');
-      row.style.display = 'grid';
-      row.style.gridTemplateColumns = '1fr 1fr';
-      row.style.gap = '16px';
-      row.style.alignItems = 'center';
-      row.style.padding = '16px';
-      row.style.background = 'var(--bg)';
-      row.style.borderRadius = '10px';
-      row.style.borderLeft = '3px solid var(--accent)';
-      
-      const label = document.createElement('div');
-      label.innerHTML = `
-        <div style="font-weight:600;font-size:13px;color:var(--text)">${taskName.replace(/_/g, ' ').toUpperCase()}</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:4px">${config.description}</div>
-      `;
-      
-      const inputWrap = document.createElement('div');
-      inputWrap.style.display = 'flex';
-      inputWrap.style.gap = '8px';
-      inputWrap.style.alignItems = 'center';
-      
-      const input = document.createElement('input');
-      input.type = 'number';
-      input.value = config.interval;
-      input.min = '1';
-      input.id = `sched_${taskName}`;
-      input.style.padding = '10px 14px';
-      input.style.background = 'var(--surface)';
-      input.style.border = '.5px solid var(--border)';
-      input.style.borderRadius = '8px';
-      input.style.color = 'var(--text)';
-      input.style.fontFamily = 'inherit';
-      input.style.flex = '1';
-      
-      const unit = document.createElement('span');
-      unit.textContent = 'sec';
-      unit.style.fontSize = '12px';
-      unit.style.color = 'var(--muted)';
-      unit.style.minWidth = '30px';
-      
-      inputWrap.appendChild(input);
-      inputWrap.appendChild(unit);
-      
-      row.appendChild(label);
-      row.appendChild(inputWrap);
-      grid.appendChild(row);
-    }
-    
-    // Update preview
+    const data = await api('/api/scheduler/settings');
+    if (!data || !data.settings) return;
+
+    const byCat = { trading: [], data: [], maintenance: [] };
+    Object.entries(data.settings).forEach(([name, cfg]) => {
+      (byCat[cfg.category] || byCat.maintenance).push([name, cfg]);
+    });
+
+    const tick = data.dispatch_tick_seconds || 15;
+    grid.innerHTML = Object.entries(byCat).filter(([, list]) => list.length).map(([cat, list]) => {
+      const [title, blurb] = SCHED_CATEGORY_LABELS[cat] || [cat, ''];
+      return `
+      <div style="margin-bottom:6px">
+        <div style="font-size:13px;font-weight:700;letter-spacing:-.01em">${title}</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-top:2px">${blurb}</div>
+      </div>
+      ${list.map(([name, cfg]) => {
+        // A task set below the dispatch tick cannot actually run that often —
+        // say so rather than letting the two numbers look contradictory.
+        const subTick = cfg.interval < tick;
+        const notes = [
+          cfg.overridden ? `default ${cfg.default_interval}s` : null,
+          subTick ? `fires every ${tick}s — dispatch tick` : null,
+        ].filter(Boolean).join(' · ');
+        return `<div class="set-row">
+          <div class="set-row-main">
+            <div class="set-row-label">${name.replace(/_/g, ' ')}
+              ${cfg.affects_trading ? '<span class="set-pill set-pill-warn">live money</span>' : ''}</div>
+            <div class="set-row-help">${_cfgEscape(cfg.description || '')}</div>
+            ${notes ? `<div class="set-src">${notes}</div>` : ''}
+          </div>
+          <div class="set-row-ctl">
+            <input id="sched_${name}" class="set-input" type="number"
+                   min="${cfg.min_interval || 1}" value="${cfg.interval}"
+                   aria-label="${name} interval in seconds">
+            <span style="font-size:12px;color:var(--muted)">sec</span>
+          </div>
+        </div>`;
+      }).join('')}`;
+    }).join('');
+
     updateSettingsPreview(data.settings);
-    document.getElementById('settings-status').textContent = 'Loaded';
-    
+    if (statusEl) statusEl.textContent = `${Object.keys(data.settings).length} tasks`;
   } catch (e) {
-    console.error('Error loading scheduler settings:', e);
-    document.getElementById('settings-status').textContent = 'Failed to load';
+    // api() already toasted. Keep whatever was rendered rather than blanking it.
+    if (statusEl) statusEl.textContent = 'Failed to load';
   }
 }
 
 function updateSettingsPreview(settings) {
   const preview = document.getElementById('settings-preview');
-  let html = '';
-  for (const [task, config] of Object.entries(settings)) {
-    html += `<div><span style="color:var(--accent)">${task}</span> = ${config.interval}s</div>`;
-  }
-  preview.innerHTML = html;
+  if (!preview) return;
+  preview.innerHTML = Object.entries(settings).map(([task, cfg]) =>
+    `<div><span style="color:var(--muted)">${task}</span> = ${cfg.interval}s` +
+    `${cfg.overridden ? ` <span style="color:var(--muted)">(default ${cfg.default_interval}s)</span>` : ''}</div>`
+  ).join('');
 }
 
 async function saveSchedulerSettings() {
@@ -3284,30 +3455,35 @@ async function saveSchedulerSettings() {
     
     inputs.forEach(input => {
       const taskName = input.id.replace('sched_', '');
-      settings[taskName] = parseInt(input.value);
+      const parsed = parseInt(input.value, 10);
+      // Skip blanks instead of sending NaN, which the server would reject as an
+      // "invalid interval" for a field the user never touched.
+      if (Number.isFinite(parsed)) settings[taskName] = parsed;
     });
-    
-    const resp = await fetch(`${API}/api/scheduler/settings`, {
+
+    // Via api() so it carries X-Device-Token — the raw fetch here did not, and
+    // would start failing the moment the CSRF guard is tightened.
+    const data = await api('/api/scheduler/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings)
     });
-    
-    const data = await resp.json();
-    
+
+    const statusEl = document.getElementById('save-status');
     if (data.status === 'success' || data.status === 'partial') {
-      toast(`Settings saved. ${data.message}`);
-      document.getElementById('save-status').textContent = 'Saved';
-      document.getElementById('save-status').style.color = 'var(--green)';
-    } else {
-      toast(`Error: ${data.error}`);
-      document.getElementById('save-status').textContent = 'Error';
-      document.getElementById('save-status').style.color = 'var(--red)';
+      toast(data.message);
+      if (statusEl) {
+        statusEl.textContent = data.errors && data.errors.length ? 'Partly saved' : 'Saved';
+        statusEl.style.color = data.errors && data.errors.length ? 'var(--yellow)' : 'var(--green)';
+      }
+      loadSchedulerSettings();   // reflect clamped/rejected values rather than what was typed
+    } else if (statusEl) {
+      statusEl.textContent = 'Error';
+      statusEl.style.color = 'var(--red)';
     }
-    
   } catch (e) {
-    console.error('Error saving scheduler settings:', e);
-    toast('Failed to save settings');
+    const statusEl = document.getElementById('save-status');
+    if (statusEl) { statusEl.textContent = 'Error'; statusEl.style.color = 'var(--red)'; }
   }
 }
 
@@ -3445,6 +3621,448 @@ async function saveConfigKey(key, inputId) {
       if (s) s.value = value;
     }
   } catch (e) { /* api() already toasts the error */ }
+}
+
+// ── Settings sections ────────────────────────────────────────────────────
+// Still one #settings tab-panel — the rail only switches which .set-section
+// inside it is visible, so activateTab and the mobile More sheet are untouched.
+
+const SETTINGS_SECTIONS = [
+  ['trading',       'Trading'],
+  ['risk',          'Risk & strategy'],
+  ['automation',    'Automation'],
+  ['data',          'Data collection'],
+  ['costs',         'Costs & charges'],
+  ['signals',       'Signals'],
+  ['notifications', 'Notifications'],
+  ['appearance',    'Appearance'],
+  ['advanced',      'Advanced'],
+];
+let _setSection = 'trading';
+let _cfgLoaded = false;
+
+function buildSettingsRail() {
+  const rail = document.getElementById('set-rail');
+  if (!rail) return;
+  if (!rail.dataset.built) {
+    rail.innerHTML = SETTINGS_SECTIONS.map(([id, label]) =>
+      `<button class="set-navbtn" data-secbtn="${id}" onclick="showSettingsSection('${id}')">${label}</button>`
+    ).join('');
+    rail.dataset.built = '1';
+  }
+  showSettingsSection(_setSection);
+}
+
+function showSettingsSection(id) {
+  _setSection = id;
+  document.querySelectorAll('#settings .set-section').forEach(s =>
+    s.classList.toggle('active', s.dataset.sec === id));
+  document.querySelectorAll('#set-rail .set-navbtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.secbtn === id));
+  const load = _SET_LOADERS[id];
+  if (load) load();
+}
+
+// Sections load when first opened rather than all at once: most visits touch
+// one section, and loading everything meant three network calls just to change
+// a colour.
+const _SET_LOADERS = {
+  trading:       () => { renderMasterSwitches(); loadPaperTradingSettings(); },
+  risk:          () => loadRiskParameters(),
+  automation:    () => loadSchedulerSettings(),
+  data:          () => renderConfigGroups(['set-news-list', 'set-tijori-list']),
+  costs:         () => renderConfigGroups(['set-cost-equity-list', 'set-cost-fno-list']),
+  signals:       () => renderConfigGroups(['set-weights-list']),
+  notifications: () => renderConfigGroups(['set-notif-list']),
+  appearance:    () => renderLockPalette(),
+  advanced:      () => ensureConfigLoaded(),
+};
+
+async function ensureConfigLoaded(force = false) {
+  if (_cfgLoaded && !force) return;
+  await loadSystemConfig();
+  _cfgLoaded = true;
+}
+
+// Which keys each container claims. Anything unclaimed still appears under
+// Advanced, so a newly seeded key can never become invisible just because it
+// has no home in a section yet.
+const SET_GROUPS = {
+  'set-news-list':        k => k.startsWith('news.'),
+  'set-tijori-list':      k => k.startsWith('tijori.'),
+  'set-cost-equity-list': k => k.startsWith('cost.'),
+  'set-cost-fno-list':    k => k.startsWith('fno.') && !k.startsWith('fno.lot.'),
+  'set-weights-list':     k => k.startsWith('prediction.weight.'),
+  'set-notif-list':       k => k.startsWith('telegram'),
+};
+
+function setPrettyLabel(key) {
+  return key
+    .replace(/^news\.source\./, '')
+    .replace(/^(news|tijori|cost|fno)\./, '')
+    .replace(/^prediction\.weight\./, '')
+    .replace(/^telegram_?/, '')
+    .replace(/[._]/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase()) || key;
+}
+
+const _SET_BOOLS = ['true', 'false'];
+
+function setBoolSwitchHTML(id, onclick, on) {
+  return `<button id="${id}" class="at-toggle${on ? ' is-on' : ''}" role="switch"
+            aria-checked="${!!on}" ${onclick}>
+    <span class="at-toggle-label">${on ? 'On' : 'Off'}</span>
+    <span class="at-toggle-track" aria-hidden="true"><span class="at-toggle-thumb"></span></span>
+  </button>`;
+}
+
+function setRowHTML(s) {
+  const id = 'setv-' + s.key;
+  const label = _cfgEscape(setPrettyLabel(s.key));
+  const help = _cfgEscape(s.description || '');
+  const raw = String(s.value == null ? '' : s.value);
+  let ctl;
+  if (s.readonly) {
+    ctl = `<span class="set-val">${_cfgEscape(raw)}</span>
+           <span class="set-pill set-pill-live">system</span>`;
+  } else if (_SET_BOOLS.includes(raw.trim().toLowerCase())) {
+    ctl = setBoolSwitchHTML(id, `onclick="setToggleBool('${s.key}', this)"`,
+                            raw.trim().toLowerCase() === 'true');
+  } else if (s.sensitive) {
+    // Never pre-filled: the server sends a mask, and submitting the mask back
+    // is a no-op. Leaving this blank means "keep the stored value".
+    ctl = `<input id="${id}" class="set-input wide" type="password" autocomplete="off"
+             placeholder="${s.has_value ? 'stored — type to replace' : 'not set'}"
+             onchange="setSaveValue('${s.key}','${id}')">`;
+  } else {
+    const numeric = /^-?\d+(\.\d+)?$/.test(raw.trim());
+    const wide = raw.length > 24 || raw.trim().startsWith('{');
+    ctl = `<input id="${id}" class="set-input${wide ? ' wide' : ''}"
+             type="${numeric ? 'number' : 'text'}"${numeric ? ' step="any"' : ''}
+             value="${_cfgEscape(raw)}" onchange="setSaveValue('${s.key}','${id}')">`;
+  }
+  return `<div class="set-row">
+    <div class="set-row-main">
+      <div class="set-row-label">${label}</div>
+      ${help ? `<div class="set-row-help">${help}</div>` : ''}
+      <div class="set-src">${_cfgEscape(s.key)}</div>
+    </div>
+    <div class="set-row-ctl">${ctl}</div>
+  </div>`;
+}
+
+async function renderConfigGroups(containerIds) {
+  await ensureConfigLoaded();
+  containerIds.forEach(cid => {
+    const el = document.getElementById(cid);
+    if (!el) return;
+    const match = SET_GROUPS[cid];
+    const rows = (_cfgSettings || []).filter(s => match(s.key));
+    el.innerHTML = rows.length
+      ? rows.map(setRowHTML).join('')
+      : '<div class="set-row-help">No settings in this group yet.</div>';
+  });
+  if (containerIds.includes('set-weights-list')) updateWeightTotal();
+}
+
+// Optimistic: the control moves immediately and rolls back if the save fails,
+// rather than making you wait on a round trip to see your own click register.
+async function setSaveValue(key, inputId) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  const value = el.value;
+  if (el.type === 'password' && !value.trim()) return;   // untouched secret
+  const row = (_cfgSettings || []).find(x => x.key === key);
+  const before = row ? row.value : '';
+  try {
+    const res = await api('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    });
+    if (res && res.success) {
+      if (row && !res.unchanged) row.value = value;
+      if (el.type === 'password') { el.value = ''; el.placeholder = 'stored — type to replace'; }
+      toast(`Saved ${key}`);
+      if (key.startsWith('prediction.weight.')) updateWeightTotal();
+    }
+  } catch (e) {
+    el.value = before;   // never leave a value on screen the server rejected
+  }
+}
+
+async function setToggleBool(key, btn) {
+  const was = btn.getAttribute('aria-checked') === 'true';
+  const next = !was;
+  _setBoolBtn(btn, next);
+  try {
+    const res = await api('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value: next ? 'true' : 'false' }),
+    });
+    if (!res || !res.success) throw new Error('save failed');
+    const row = (_cfgSettings || []).find(x => x.key === key);
+    if (row) row.value = next ? 'true' : 'false';
+    toast(`${setPrettyLabel(key)} ${next ? 'on' : 'off'}`);
+  } catch (e) {
+    _setBoolBtn(btn, was);
+  }
+}
+
+function _setBoolBtn(btn, on) {
+  btn.classList.toggle('is-on', on);
+  btn.setAttribute('aria-checked', String(on));
+  const lbl = btn.querySelector('.at-toggle-label');
+  if (lbl) lbl.textContent = on ? 'On' : 'Off';
+}
+
+function updateWeightTotal() {
+  const el = document.getElementById('set-weights-total');
+  if (!el) return;
+  const ws = (_cfgSettings || []).filter(s => s.key.startsWith('prediction.weight.'));
+  if (!ws.length) { el.textContent = ''; return; }
+  const total = ws.reduce((a, s) => a + (parseFloat(s.value) || 0), 0);
+  const ok = Math.abs(total - 1) < 0.001;
+  el.innerHTML = `Total: <span style="font-variant-numeric:tabular-nums">${total.toFixed(2)}</span> ` +
+    (ok ? '<span class="set-pill set-pill-live">balanced</span>'
+        : '<span class="set-pill set-pill-warn">should sum to 1.00</span>');
+}
+
+// ── Trading: the master switches ─────────────────────────────────────────
+function _setSwitchRow(label, on, help, onclick, warn) {
+  return `<div class="set-row">
+    <div class="set-row-main">
+      <div class="set-row-label">${label}
+        ${warn ? '<span class="set-pill set-pill-warn">live money</span>' : ''}</div>
+      <div class="set-row-help">${help}</div>
+    </div>
+    <div class="set-row-ctl">${setBoolSwitchHTML('', onclick, on)}</div>
+  </div>`;
+}
+
+async function renderMasterSwitches() {
+  const el = document.getElementById('set-master-switches');
+  if (!el) return;
+  await withLoader('set-master-switches', async () => {
+    const [status] = await Promise.all([
+      api('/api/cash-auto-trade/status').catch(() => null),
+      ensureConfigLoaded(),
+    ]);
+    const paperOn = status ? !!status.paper_mode : false;
+    const cashOn  = status ? !!status.enabled : false;
+    const fnoRow  = (_cfgSettings || []).find(s => s.key === 'fno_auto_trade_enabled');
+    const fnoOn   = fnoRow ? String(fnoRow.value).toLowerCase() === 'true' : true;
+    el.innerHTML =
+      _setSwitchRow('Paper mode', paperOn,
+        paperOn ? 'Orders are simulated. Nothing reaches the broker.'
+                : 'Off means orders go to the real Groww account.',
+        'onclick="setTogglePaperMode(this)"', !paperOn) +
+      _setSwitchRow('Cash auto-trade', cashOn,
+        'Scans the watchlist and places equity orders without asking.',
+        'onclick="setToggleCashAuto(this)"', cashOn && !paperOn) +
+      _setSwitchRow('F&amp;O auto-trade', fnoOn,
+        'Runs the options entry/exit cycle on its own. Until now this had no switch at all — it ran whenever the scheduler did.',
+        `onclick="setToggleBool('fno_auto_trade_enabled', this)"`, fnoOn && !paperOn);
+  }, { tier: 'list', n: 3 });
+}
+
+async function setTogglePaperMode(btn) {
+  // The one switch between simulated and real money — always confirm.
+  const goingLive = btn.getAttribute('aria-checked') === 'true';
+  if (goingLive && !confirm('Turn paper mode OFF?\n\nOrders will be placed with real money.')) return;
+  try { await api('/api/paper-trading/toggle', { method: 'POST' }); }
+  catch (e) { return; }
+  renderMasterSwitches();
+  _syncCashAutoTradeHeader();
+}
+
+async function setToggleCashAuto(btn) {
+  try { await api('/api/cash-auto-trade/toggle', { method: 'POST' }); }
+  catch (e) { return; }
+  renderMasterSwitches();
+  _syncCashAutoTradeHeader();
+}
+
+// The header chip and the Portfolio Analysis card show the same state, so keep
+// them in step rather than letting Settings drift from the rest of the page.
+async function _syncCashAutoTradeHeader() {
+  try {
+    const st = await api('/api/cash-auto-trade/status');
+    if (st && typeof updateCashAutoTradeUI === 'function') {
+      updateCashAutoTradeUI(st.enabled, st.paper_mode);
+    }
+  } catch (e) { /* header just keeps its previous state */ }
+}
+
+// ── Risk & strategy (read-only) ──────────────────────────────────────────
+async function loadRiskParameters() {
+  const el = document.getElementById('set-risk-body');
+  if (!el) return;
+  await withLoader('set-risk-body', async () => {
+    const d = await api('/api/risk-parameters');
+    el.innerHTML = (d.groups || []).map(g => `
+      <div class="card" style="padding:24px;margin-bottom:16px">
+        <h3 style="font-size:14px;font-weight:600;margin:0 0 4px">${_cfgEscape(g.name)}</h3>
+        ${g.note ? `<p style="color:var(--muted);font-size:12px;margin:0 0 6px;line-height:1.6">${_cfgEscape(g.note)}</p>` : ''}
+        ${(g.params || []).map(p => `
+          <div class="set-row">
+            <div class="set-row-main">
+              <div class="set-row-label">${_cfgEscape(p.label)}</div>
+              ${p.description ? `<div class="set-row-help">${_cfgEscape(p.description)}</div>` : ''}
+              <div class="set-src">${_cfgEscape(p.source)}</div>
+            </div>
+            <div class="set-row-ctl">
+              <span class="set-val">${_cfgEscape(p.value)}</span>
+              ${p.live ? '<span class="set-pill set-pill-live">live</span>' : ''}
+            </div>
+          </div>`).join('')}
+      </div>`).join('');
+  }, { tier: 'cards', n: 3 });
+}
+
+// ── Appearance: the lock screen palette ──────────────────────────────────
+const LOCK_PALETTE_CACHE_KEY = 'lock_palette';
+
+function readLockPaletteCache() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LOCK_PALETTE_CACHE_KEY) || 'null');
+    if (Array.isArray(raw) && raw.length === 3 &&
+        raw.every(v => /^#[0-9a-f]{6}$/i.test(String(v)))) return raw;
+  } catch (e) {}
+  return null;
+}
+function writeLockPaletteCache(vals) {
+  try { localStorage.setItem(LOCK_PALETTE_CACHE_KEY, JSON.stringify(vals)); } catch (e) {}
+}
+
+// Pulled from the server after unlock so a change made on another device shows
+// up next time. Never on the critical path: _lockColour() has already read the
+// cache synchronously and painted by the time this resolves.
+function refreshLockPaletteCache() {
+  api('/api/config').then(d => {
+    if (!d || !d.settings) return;
+    const vals = [1, 2, 3].map(i => {
+      const row = d.settings.find(s => s.key === 'lock.colour.' + i);
+      return row && row.value;
+    });
+    if (vals.every(v => /^#[0-9a-f]{6}$/i.test(String(v)))) writeLockPaletteCache(vals);
+  }).catch(() => {});
+}
+
+function _hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function _relLuminance(rgb) {
+  const a = rgb.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+  return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+}
+// Against --lock-ink in its on-dark form (#e9e7e2), which is what the wordmark
+// uses for the whole staging phase.
+function lockContrast(hex) {
+  const rgb = _hexToRgb(hex);
+  if (!rgb) return 0;
+  const l1 = _relLuminance(rgb), l2 = _relLuminance([233, 231, 226]);
+  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function _readLockInputs() {
+  return [0, 1, 2].map(i => {
+    const el = document.getElementById('lockh-' + i);
+    return el ? el.value : '';
+  });
+}
+
+async function renderLockPalette() {
+  const el = document.getElementById('set-lock-list');
+  if (!el) return;
+  await ensureConfigLoaded();
+  const cur = [1, 2, 3].map((n, i) => {
+    const row = (_cfgSettings || []).find(s => s.key === 'lock.colour.' + n);
+    return (row && row.value) || LOCK_COLOURS[i];
+  });
+  el.innerHTML = cur.map((c, i) => `
+    <div class="set-row">
+      <div class="set-row-main">
+        <div class="set-row-label">Colour ${i + 1}</div>
+        <div class="set-row-help">Used on every ${i + 1}${i === 0 ? 'st' : i === 1 ? 'nd' : 'rd'} load of three.</div>
+      </div>
+      <div class="set-row-ctl">
+        <input type="color" class="set-swatch" id="lockc-${i}" value="${c}"
+               oninput="syncLockFromSwatch(${i})" aria-label="Colour ${i + 1} picker" title="Colour ${i + 1} picker">
+        <input type="text" class="set-input" id="lockh-${i}" value="${c}" spellcheck="false"
+               oninput="syncLockFromHex(${i})" aria-label="Colour ${i + 1} hex" title="Colour ${i + 1} hex value">
+      </div>
+    </div>`).join('') +
+    `<div id="set-lock-preview" style="margin-top:16px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>`;
+  updateLockPreview();
+}
+
+function syncLockFromSwatch(i) {
+  const s = document.getElementById('lockc-' + i), h = document.getElementById('lockh-' + i);
+  if (s && h) h.value = s.value;
+  updateLockPreview();
+}
+function syncLockFromHex(i) {
+  const s = document.getElementById('lockc-' + i), h = document.getElementById('lockh-' + i);
+  if (s && h && /^#[0-9a-f]{6}$/i.test(h.value.trim())) s.value = h.value.trim();
+  updateLockPreview();
+}
+
+function updateLockPreview() {
+  const wrap = document.getElementById('set-lock-preview');
+  if (!wrap) return;
+  wrap.innerHTML = _readLockInputs().map((c, i) => {
+    const valid = /^#[0-9a-f]{6}$/i.test(String(c).trim());
+    const ratio = valid ? lockContrast(c) : 0;
+    const pass = ratio >= 4.5;
+    return `<div class="set-preview" style="background:${valid ? c : 'var(--border)'};color:#e9e7e2">
+      <span>${!valid ? 'invalid hex'
+        : (pass ? ratio.toFixed(1) + ':1' : '⚠ ' + ratio.toFixed(1) + ':1 too light')}</span>
+    </div>`;
+  }).join('');
+}
+
+async function saveLockPalette(btn) {
+  const vals = _readLockInputs().map(v => String(v).trim());
+  const status = document.getElementById('set-lock-status');
+  for (let i = 0; i < 3; i++) {
+    if (!/^#[0-9a-f]{6}$/i.test(vals[i])) {
+      toast(`Colour ${i + 1} is not a 6-digit hex like #1f2b3a`, 4000); return;
+    }
+    const r = lockContrast(vals[i]);
+    if (r < 4.5) {
+      toast(`Colour ${i + 1} is too light — ${r.toFixed(1)}:1 against the light ink, needs 4.5:1`, 5000);
+      return;
+    }
+  }
+  await withBusy(btn, 'save-lock-palette', async () => {
+    // Three independent writes — no reason to run them one after another.
+    await Promise.all(vals.map((v, i) => api('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'lock.colour.' + (i + 1), value: v }),
+    })));
+    vals.forEach((v, i) => {
+      const row = (_cfgSettings || []).find(s => s.key === 'lock.colour.' + (i + 1));
+      if (row) row.value = v;
+    });
+    writeLockPaletteCache(vals);
+    if (status) status.textContent = 'Saved — the next lock screen uses these.';
+    toast('Lock palette saved');
+  });
+}
+
+async function resetLockPalette(btn) {
+  LOCK_COLOURS.forEach((c, i) => {
+    const s = document.getElementById('lockc-' + i), h = document.getElementById('lockh-' + i);
+    if (s) s.value = c;
+    if (h) h.value = c;
+  });
+  updateLockPreview();
+  await saveLockPalette(btn);
 }
 
 // ── Toast ─────────────────────────────────────────

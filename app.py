@@ -692,6 +692,48 @@ try:
         seed_tijori_config()
     except Exception as e:
         logger.warning("⚠️  Tijori config seed failed (non-fatal): %s", e)
+    # Seed the keys the Settings section exposes.
+    #
+    # Every default here is the value the code already used while the setting was
+    # hardcoded or unseeded, so seeding changes no behaviour — it only makes the
+    # value reachable. This matters because POST /api/config deliberately 404s on
+    # unknown keys, so a key that is read but never seeded is invisible and
+    # uneditable (which is what the first four below were).
+    #
+    # One batched read rather than get_config in a loop (CLAUDE.md standard #1).
+    try:
+        from db_manager import get_configs
+        _settings_defaults = [
+            ("fno_auto_trade_enabled", "true",
+             "Master switch for F&O auto-trading"),
+            ("lock.colour.1", "#1f2b3a", "Lock screen intro colour 1 (navy)"),
+            ("lock.colour.2", "#4a4f36", "Lock screen intro colour 2 (olive)"),
+            ("lock.colour.3", "#5c2230", "Lock screen intro colour 3 (wine)"),
+            # Read at app.py:937 / app.py:476 / scheduler.py:521 /
+            # cost_notifications.py:181 but never seeded until now.
+            ("close_trade.max_price_divergence_pct", "20",
+             "Reject a close if price moved more than this % from the quote"),
+            ("idempotency.require_key", "0",
+             "Require an Idempotency-Key header on order endpoints"),
+            ("idempotency.retention_hours", "48",
+             "How long used idempotency keys are kept before pruning"),
+            ("telegram_cost_notifications", "true",
+             "Send a Telegram alert when broker cost rates change"),
+            ("news.cache_ttl_seconds", "600",
+             "How long news sentiment stays cached in memory"),
+            ("news.source.google", "true", "Fetch news from Google News RSS"),
+            ("news.source.newsapi", "true", "Fetch news from NewsAPI"),
+            ("news.source.et_rss", "true", "Fetch news from Economic Times RSS"),
+            ("news.source.moneycontrol", "true", "Fetch news from Moneycontrol RSS"),
+            ("news.source.extra_rss", "true", "Fetch news from the extra RSS feeds"),
+            ("news.source.x_posts", "true", "Fetch posts from X/Twitter"),
+        ]
+        _present = get_configs([k for k, _, _ in _settings_defaults])
+        for _k, _v, _d in _settings_defaults:
+            if _k not in _present:
+                set_config(_k, _v, _d)
+    except Exception as e:
+        logger.warning("⚠️  Settings key seed failed (non-fatal): %s", e)
 except ImportError:
     logger.warning("⚠️  Database modules not installed. Run: pip install -r requirements.txt")
     logger.warning("    Portfolio and predictions will work but without persistent storage.")
@@ -1617,12 +1659,38 @@ def supply_chain_refresh():
 
 # ── System Configuration (Settings tab) ──────────────────────────────────────
 
-# Internal per-symbol state markers — hidden from the settings UI
-_CONFIG_HIDDEN_PREFIXES = ("tijori.last_collected.", "earnings.last_qrev.")
+# Internal per-symbol state markers — hidden from the settings UI.
+# tijori.onboarded.* is written by the collector and never read back; it was
+# leaking one row per symbol into the settings list.
+_CONFIG_HIDDEN_PREFIXES = (
+    "tijori.last_collected.", "earnings.last_qrev.", "tijori.onboarded.",
+)
 # State values the app manages itself — shown but not editable
 _CONFIG_READONLY_KEYS = {"tijori.backfill_status", "fno.used_capital", "portfolio_reviewed"}
 # Values masked in the UI until revealed
 _CONFIG_SENSITIVE_KEYS = {"telegram_bot_token"}
+# What a masked secret reads as. The real value never leaves the server; the UI
+# only submits this field when the user actually types a replacement.
+_CONFIG_MASK = "••••••••"
+
+# Rows that exist in the table but nothing reads.
+#
+# cost_updater.py writes these lowercase JSON-valued twins, while costs.py only
+# ever reads the UPPERCASE names — so editing one of these looks like it changes
+# a charge rate and silently does nothing. cash_autotrade_enabled is a typo twin
+# of cash_auto_trade_enabled with no readers.
+#
+# Hidden rather than deleted: removing rows needs an explicit decision, and
+# hiding is enough to stop them misleading anyone in the new Settings UI.
+_CONFIG_DEAD_KEYS = {
+    "cash_autotrade_enabled",
+    "cost.brokerage_flat_per_order", "cost.brokerage_pct_per_order",
+    "cost.exchange_charge_bse_pct", "cost.exchange_charge_nse_pct",
+    "cost.gst_rate", "cost.sebi_fee_pct",
+    "cost.stamp_duty_pct_delivery_buy", "cost.stamp_duty_pct_intraday_buy",
+    "cost.stt_commodity_sell", "cost.stt_fno_sell", "cost.stt_option_premium",
+    "cost.stt_pct_delivery_sell", "cost.stt_pct_intraday_sell",
+}
 
 
 @app.route("/api/config")
@@ -1640,13 +1708,19 @@ def list_config():
         for key, value, desc, updated in rows:
             if any(key.startswith(p) for p in _CONFIG_HIDDEN_PREFIXES):
                 continue
+            if key in _CONFIG_DEAD_KEYS:
+                continue
+            sensitive = key in _CONFIG_SENSITIVE_KEYS
             items.append({
                 "key": key,
-                "value": value,
+                # Masked here, not in the browser. This response previously
+                # carried the real bot token and relied on the client to hide it.
+                "value": (_CONFIG_MASK if sensitive and value else value),
+                "has_value": bool(value),
                 "description": desc or "",
                 "updated_at": updated.isoformat() if updated else None,
                 "readonly": key in _CONFIG_READONLY_KEYS,
-                "sensitive": key in _CONFIG_SENSITIVE_KEYS,
+                "sensitive": sensitive,
             })
         return jsonify({"settings": items, "count": len(items)})
     except Exception as e:
@@ -1665,6 +1739,13 @@ def update_config():
             return jsonify({"error": "key and value required"}), 400
         if any(key.startswith(p) for p in _CONFIG_HIDDEN_PREFIXES) or key in _CONFIG_READONLY_KEYS:
             return jsonify({"error": f"'{key}' is managed by the system and cannot be edited"}), 403
+        if key in _CONFIG_DEAD_KEYS:
+            return jsonify({"error": f"'{key}' is unused — nothing reads it"}), 403
+        # The mask is what GET returns for a secret. Submitting it back means the
+        # field was never edited, so treat it as a no-op rather than overwriting
+        # a live token with bullet characters.
+        if key in _CONFIG_SENSITIVE_KEYS and str(value).strip() == _CONFIG_MASK:
+            return jsonify({"success": True, "key": key, "unchanged": True})
 
         from db_manager import get_db, ConfigSetting, get_config, set_config
         old_value = get_config(key)
@@ -1680,11 +1761,149 @@ def update_config():
             return jsonify({"error": err}), 400
 
         set_config(key, normalized)
-        logger.info("⚙️ Config updated via dashboard: %s = %s (was %s)", key, normalized, old_value)
-        return jsonify({"success": True, "key": key, "old_value": old_value, "new_value": normalized})
+        # costs.py caches its rates at import and only reloads on request, so a
+        # cost.* edit would otherwise not reach the running process until restart.
+        if key.startswith("cost."):
+            try:
+                import costs
+                costs.reload_rates()
+            except Exception as e:
+                logger.warning("Cost rates edited but reload failed: %s", e)
+        _redacted = _CONFIG_MASK if key in _CONFIG_SENSITIVE_KEYS else normalized
+        logger.info("⚙️ Config updated via dashboard: %s = %s (was %s)",
+                    key, _redacted,
+                    _CONFIG_MASK if key in _CONFIG_SENSITIVE_KEYS else old_value)
+        return jsonify({
+            "success": True,
+            "key": key,
+            "old_value": (_CONFIG_MASK if key in _CONFIG_SENSITIVE_KEYS else old_value),
+            "new_value": _redacted,
+        })
     except Exception as e:
         logger.exception("Config update error")
         return jsonify({"error": str(e)}), 500
+
+
+# ── Risk parameters (read-only) ──────────────────────────────────────────────
+#
+# Everything the bot uses to size, enter and exit a position, surfaced so it can
+# be seen in one place. Deliberately read-only: these feed live order placement,
+# and /api/config has no range clamping, so exposing them as editable fields
+# would put a free-text box in front of the order path.
+#
+# `live: true` means the value was read out of the running module. `live: false`
+# means it is a literal inside a function body, declared here with its location
+# so the number shown and the number used cannot silently diverge without the
+# source reference being wrong too.
+
+def _risk_declared(label, value, source, description):
+    return {"label": label, "value": str(value), "source": source,
+            "description": description, "live": False}
+
+
+def _risk_live(label, value, source, description):
+    return {"label": label, "value": str(value), "source": source,
+            "description": description, "live": True}
+
+
+@app.route("/api/risk-parameters")
+def risk_parameters():
+    """Read-only view of every risk/strategy value driving the trading logic."""
+    groups = []
+    try:
+        import config as _cfg
+        groups.append({"name": "Order limits", "note": "Applied on every buy and sell path.", "params": [
+            _risk_live("Max trade quantity", _cfg.MAX_TRADE_QUANTITY, "config.py:16",
+                       "Hard cap on order size — the last-resort guard against a runaway quantity. Set via MAX_TRADE_QUANTITY in .env."),
+            _risk_live("Max trade value", f"₹{_cfg.MAX_TRADE_VALUE:,.0f}", "config.py:17",
+                       "Ceiling on the value of a single order. Set via MAX_TRADE_VALUE in .env, which overrides the default in config.py."),
+            _risk_live("Exchange", _cfg.DEFAULT_EXCHANGE, "config.py:12", "Exchange used for orders."),
+            _risk_live("Product", _cfg.DEFAULT_PRODUCT, "config.py:14",
+                       "CNC is delivery; MIS would make the same orders leveraged intraday."),
+        ]})
+        groups.append({"name": "Cash entry & exit", "note": "", "params": [
+            _risk_live("Confidence threshold", _cfg.CONFIDENCE_THRESHOLD, "config.py:22",
+                       "Minimum model confidence before a live auto-trade is placed."),
+            _risk_live("Stop loss", f"{_cfg.STOP_LOSS_PCT}%", "config.py:31",
+                       "Sets the GTT stop on live orders and the paper stop."),
+            _risk_live("Target", f"{_cfg.TARGET_PCT}%", "config.py:32",
+                       "Profit target. Also feeds the cost gate, so raising it loosens that check."),
+            _risk_live("Max positions", _cfg.MAX_POSITIONS, "config.py:33",
+                       "Maximum concurrent cash positions."),
+            _risk_declared("Paper confidence floor", "0.40", "bot.py:1466",
+                           "Lower entry bar in paper mode than live."),
+            _risk_declared("Per-trade budget", "10% of available", "bot.py:1106",
+                           "Position size when quantity is not supplied explicitly."),
+            _risk_declared("Buy / sell boundary", "±0.15", "bot.py:744",
+                           "Combined score beyond which a signal becomes BUY or SELL rather than HOLD."),
+        ]})
+    except Exception as e:
+        logger.warning("Risk parameters: config/bot section unavailable: %s", e)
+
+    try:
+        import fno_trader as _fno
+        ac = getattr(_fno, "_AUTO_TRADE_CONFIG", {}) or {}
+        groups.append({
+            "name": "F&O auto-trade",
+            "note": "Runtime-only — held in process memory and reset to these values on every restart.",
+            "params": [
+                _risk_live("Min confidence", ac.get("min_confidence"), "fno_trader.py:2161",
+                           "Minimum confidence to open an F&O position."),
+                _risk_live("Min strength", ac.get("min_strength"), "fno_trader.py:2162",
+                           "Minimum signal strength to act on."),
+                _risk_live("Max positions", ac.get("max_positions"), "fno_trader.py:2163",
+                           "Maximum concurrent F&O positions."),
+                _risk_live("Stop loss", f"{ac.get('stop_loss_pct')}%", "fno_trader.py:2164",
+                           "Exit when the option premium falls this far."),
+                _risk_live("Target", f"{ac.get('target_pct')}%", "fno_trader.py:2165",
+                           "Exit when the premium gains this much."),
+                _risk_live("Trailing trigger", f"{ac.get('trailing_sl_pct')}%", "fno_trader.py:2166",
+                           "Gain at which the trailing stop starts following."),
+                _risk_live("Avoid expiry day", ac.get("avoid_expiry_day"), "fno_trader.py:2167",
+                           "Skip new entries on expiry day."),
+                _risk_live("Instruments", ", ".join(ac.get("preferred_instruments") or []),
+                           "fno_trader.py:2168", "Underlyings the scanner will consider."),
+                _risk_live("Market hours only", ac.get("market_hours_only"), "fno_trader.py:2169",
+                           "If off, orders could be attempted outside market hours."),
+                _risk_declared("Trailing drawdown exit", "15%", "fno_trader.py:2290",
+                               "Pullback from peak premium that forces a sell — separate from the trigger above."),
+                _risk_declared("Open-interest floor", "10,000", "fno_trader.py:2472",
+                               "Contracts below this OI are skipped as too illiquid to exit."),
+            ]})
+        weights = getattr(_fno, "_SIGNAL_WEIGHTS", {}) or {}
+        if weights:
+            total = sum(v for v in weights.values() if isinstance(v, (int, float)))
+            groups.append({
+                "name": "F&O signal weights",
+                "note": f"Blend that produces the F&O score. Sums to {total:.2f}.",
+                "params": [
+                    _risk_live(k.replace("_", " ").title(), v, "fno_trader.py:1150", "")
+                    for k, v in weights.items()
+                ]})
+    except Exception as e:
+        logger.warning("Risk parameters: F&O section unavailable: %s", e)
+
+    groups.append({
+        "name": "Trailing stop & loss management",
+        "note": "Runs every auto_close_trades tick. All literals in trailing_stop.py.",
+        "params": [
+            _risk_declared("Trailing activates at", "1.5% profit", "trailing_stop.py:276",
+                           "Peak profit before trailing protection engages."),
+            _risk_declared("Ladder: peak ≥3%", "give back 0.5%", "trailing_stop.py:279", ""),
+            _risk_declared("Ladder: peak ≥2%", "give back 0.75%", "trailing_stop.py:283", ""),
+            _risk_declared("Ladder: otherwise", "give back 1.0%", "trailing_stop.py:287", ""),
+            _risk_declared("Profit erosion exit", "60% of peak", "trailing_stop.py:300",
+                           "Close once this much of peak profit has been given back."),
+            _risk_declared("Loss ladder — CRITICAL", "-1.5%", "trailing_stop.py:408",
+                           "Auto-closes the position. The other tiers only warn."),
+            _risk_declared("Loss ladder — HIGH", "-1.0%", "trailing_stop.py:409", "Hold and warn."),
+            _risk_declared("Loss ladder — MEDIUM", "-0.5%", "trailing_stop.py:410", "Hold and warn."),
+            _risk_declared("Paper trailing buffer", "1.5% of price", "paper_trader.py:247",
+                           "Distance the paper trailing stop sits below the current price."),
+            _risk_declared("Paper trailing starts at", "1.5% profit", "paper_trader.py:256", ""),
+        ]})
+
+    return jsonify({"groups": groups, "editable": False})
 
 
 @app.route("/api/data-health")
@@ -6904,39 +7123,129 @@ def get_5min_candles():
 
 # ── Scheduler Settings API ──────────────────────────────────────────────────
 
+# Tasks whose interval changes how often real orders can be placed or exited.
+# They get a higher floor and are flagged for the UI: shortening them raises
+# order frequency and broker rate-limit risk, and lengthening auto_close_trades
+# directly delays stop-loss and target execution.
+_SCHEDULER_TRADING_TASKS = {
+    "cash_auto_trade", "fno_auto_trade", "auto_close_trades", "record_pnl",
+}
+_SCHEDULER_MIN_TRADING_INTERVAL = 5
+
+# The scheduler's dispatch loop sleeps this long between passes, so it is the
+# floor on real resolution — a task set to 5s actually fires every 15s. Surfaced
+# rather than hidden, because otherwise the two numbers look contradictory.
+_SCHEDULER_DISPATCH_TICK = 15
+
+# name -> (category, description). Category drives the UI grouping.
+_SCHEDULER_TASK_META = {
+    # Trading
+    "cash_auto_trade":        ("trading", "Scan the watchlist and place cash equity orders"),
+    "fno_auto_trade":         ("trading", "Run the F&O entry/exit cycle and place option orders"),
+    "auto_close_trades":      ("trading", "Check open positions and close them at target or stop-loss"),
+    "record_pnl":             ("trading", "Snapshot portfolio P&L for the chart"),
+    # Data collection
+    "collect_5min_candles":   ("data", "Collect 5-minute candles for the active symbols"),
+    "sync_historical_candles":("data", "End-of-day sync of historical daily candles"),
+    "update_watchlist_prices":("data", "Refresh the latest price for every watchlist stock"),
+    "auto_analysis":          ("data", "Re-run technical analysis and predictions for the watchlist"),
+    "news_prefetch":          ("data", "Prefetch news articles for watchlist symbols"),
+    "global_indices":         ("data", "Update global index levels"),
+    "world_news":             ("data", "Collect world and market news"),
+    "geopolitical":           ("data", "Collect geopolitical news for commodity risk"),
+    "supply_chain":           ("data", "Scan for supply-chain disruptions"),
+    "tijori_refresh":         ("data", "Refresh Tijori supply-chain and fundamentals data"),
+    "market_intelligence":    ("data", "Refresh market intelligence scrapes"),
+    "research_engine":        ("data", "Re-score the research alpha model"),
+    "deep_analysis":          ("data", "Run the deep analysis pass"),
+    "cost_scraper":           ("data", "Re-scrape broker charge rates from Groww"),
+    # Maintenance
+    "token_refresh":          ("maintenance", "Refresh the Groww API access token"),
+    "cache_refresh":          ("maintenance", "Refresh internal caches"),
+    "fno_capital_sync":       ("maintenance", "Sync F&O capital from the Groww account balance"),
+    "prune_idempotency":      ("maintenance", "Delete expired idempotency keys"),
+    "build_daily_snapshots":  ("maintenance", "Build end-of-day portfolio snapshots"),
+    "telegram_summary":       ("maintenance", "Send the daily Telegram summary"),
+    "paper_eod_summary":      ("maintenance", "Send the paper-trading end-of-day summary"),
+    "ml_retrain":             ("maintenance", "Retrain the ML prediction model"),
+    "retrain_xgb_daily":      ("maintenance", "Retrain the daily XGBoost model"),
+    "auto_metadata":          ("maintenance", "Refresh lot sizes and instrument metadata"),
+}
+
+# Only used if the scheduler has not registered in this process (e.g. app
+# imported without start_scheduler). Keeps the endpoint degrading to the old
+# behaviour instead of returning an empty list.
+_SCHEDULER_FALLBACK_DEFAULTS = {
+    "cash_auto_trade": 5, "auto_close_trades": 5, "fno_auto_trade": 5,
+    "collect_5min_candles": 300, "auto_analysis": 300, "news_prefetch": 600,
+    "global_indices": 900, "deep_analysis": 1800, "prune_idempotency": 3600,
+}
+
+
+def _scheduler_registry():
+    """Registered tasks, falling back to the legacy list if none are registered."""
+    try:
+        import scheduler as _sched
+        registry = _sched.get_task_registry()
+        if registry:
+            return registry
+    except Exception as e:
+        logger.debug("Scheduler registry unavailable: %s", e)
+    return [
+        {"name": n, "default_interval": d, "initial_delay": 0}
+        for n, d in _SCHEDULER_FALLBACK_DEFAULTS.items()
+    ]
+
+
 @app.route("/api/scheduler/settings", methods=["GET"])
 def get_scheduler_settings():
-    """Get all scheduler settings (task intervals in seconds)."""
+    """Every registered scheduler task, its interval, and where that came from.
+
+    Reads the task list from the scheduler itself rather than a second copy kept
+    here — that copy had drifted to 9 of the ~28 registered tasks, so most were
+    overridable by the scheduler yet invisible in the UI.
+    """
     try:
-        from db_manager import get_config
-        
-        # Define default intervals for each task
-        tasks = {
-            "cash_auto_trade": ("5", "Generate BUY/SELL signals on watchlist (seconds)"),
-            "auto_close_trades": ("5", "Check and close trades at target/SL (seconds)"),
-            "fno_auto_trade": ("5", "F&O auto-trading interval (seconds)"),
-            "collect_5min_candles": ("300", "Collect 5-min candles (seconds)"),
-            "auto_analysis": ("300", "Run technical analysis (seconds)"),
-            "news_prefetch": ("600", "Prefetch news articles (seconds)"),
-            "global_indices": ("900", "Update global indices (seconds)"),
-            "deep_analysis": ("1800", "Deep analysis (seconds)"),
-            "prune_idempotency": ("3600", "Prune expired idempotency keys (seconds)"),
-        }
-        
+        from db_manager import get_configs_prefix
+
+        # One query for every override, not one per task (CLAUDE.md standard #1).
+        overrides = get_configs_prefix("scheduler_interval_") or {}
+
         settings = {}
-        for task_name, (default_val, description) in tasks.items():
-            key = f"scheduler_interval_{task_name}"
-            value = get_config(key, default_val)
-            settings[task_name] = {
-                "interval": int(value),
+        for task in _scheduler_registry():
+            name = task["name"]
+            key = f"scheduler_interval_{name}"
+            default_interval = int(task["default_interval"])
+            effective, overridden = default_interval, False
+            raw = overrides.get(key)
+            if raw:
+                try:
+                    # float() first: a stored "1800.5" used to reach int() directly
+                    # and 500 this whole endpoint.
+                    parsed = int(float(raw))
+                    if parsed > 0:
+                        effective = parsed
+                        overridden = parsed != default_interval
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring non-numeric interval for %s: %r", name, raw)
+            category, description = _SCHEDULER_TASK_META.get(name, ("maintenance", ""))
+            is_trading = name in _SCHEDULER_TRADING_TASKS
+            settings[name] = {
+                "interval": effective,
+                "default_interval": default_interval,
+                "overridden": overridden,
+                "category": category,
+                "affects_trading": is_trading,
+                "min_interval": _SCHEDULER_MIN_TRADING_INTERVAL if is_trading else 1,
                 "description": description,
-                "key": key
+                "key": key,
             }
-        
+
         return jsonify({
             "status": "success",
             "settings": settings,
-            "message": "Scheduler settings (changes require app restart)"
+            "dispatch_tick_seconds": _SCHEDULER_DISPATCH_TICK,
+            "message": "Interval changes apply within about 15 seconds — no restart needed.",
         })
     except Exception as e:
         logger.exception("Error getting scheduler settings")
@@ -6945,38 +7254,44 @@ def get_scheduler_settings():
 
 @app.route("/api/scheduler/settings", methods=["POST"])
 def update_scheduler_settings():
-    """Update scheduler settings (task intervals)."""
+    """Update one or more task intervals."""
     try:
-        from db_manager import set_config, get_config
+        from db_manager import set_config
         data = request.get_json() or {}
-        
-        updated = []
-        errors = []
-        
+
+        known = {t["name"] for t in _scheduler_registry()}
+        updated, errors = [], []
+
         for task_name, interval in data.items():
+            if task_name not in known:
+                errors.append(f"{task_name}: unknown task")
+                continue
             try:
-                # Validate interval is positive integer
-                interval_int = int(interval)
-                if interval_int < 1:
-                    errors.append(f"{task_name}: interval must be >= 1 second")
-                    continue
-                
-                key = f"scheduler_interval_{task_name}"
-                set_config(key, str(interval_int), f"Interval for {task_name} task")
-                updated.append(f"{task_name}={interval_int}s")
+                interval_int = int(float(interval))
             except (ValueError, TypeError):
                 errors.append(f"{task_name}: invalid interval value")
-        
-        message = f"Updated {len(updated)} setting(s). App restart required."
+                continue
+            floor = (_SCHEDULER_MIN_TRADING_INTERVAL
+                     if task_name in _SCHEDULER_TRADING_TASKS else 1)
+            if interval_int < floor:
+                errors.append(f"{task_name}: minimum is {floor}s")
+                continue
+            set_config(f"scheduler_interval_{task_name}", str(interval_int),
+                       f"Interval for {task_name} task")
+            updated.append(f"{task_name}={interval_int}s")
+
+        # Not "restart required": _load_interval_overrides() re-reads every
+        # dispatch pass, so a change lands within one 15s tick.
+        message = f"Updated {len(updated)} setting(s); applies within ~15s."
         if errors:
             message += f" Errors: {', '.join(errors)}"
-        
+
         return jsonify({
             "status": "success" if not errors else "partial",
             "updated": updated,
             "errors": errors,
             "message": message,
-            "restart_required": True
+            "restart_required": False,
         })
     except Exception as e:
         logger.exception("Error updating scheduler settings")

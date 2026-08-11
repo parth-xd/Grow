@@ -313,7 +313,56 @@ def _is_recent(date_str: str, max_days: int = 7) -> bool:
 # ── News fetchers ────────────────────────────────────────────────────────────
 
 _cache = {}  # symbol -> (timestamp, NewsSentiment)
-CACHE_TTL = 600  # 10 minutes
+CACHE_TTL = 600  # 10 minutes — fallback when the DB setting is unreadable
+
+# Which sources are consulted, and how long results are cached, are settings.
+# Keys are seeded in app.py; see news.source.* and news.cache_ttl_seconds.
+_NEWS_SETTING_KEYS = (
+    "news.cache_ttl_seconds",
+    "news.source.google", "news.source.newsapi", "news.source.et_rss",
+    "news.source.moneycontrol", "news.source.extra_rss", "news.source.x_posts",
+)
+_news_cfg_cache = (0.0, {})
+
+
+def _news_settings() -> dict:
+    """News settings, re-read at most once every 30s.
+
+    get_configs() populates the config memo but never reads it, so it queries
+    every time — calling it per request would add a DB round-trip to the
+    cache-hit path. Holding the batch for 30s keeps it to one query per window
+    and matches the memo's own TTL, while still avoiding get_config in a loop.
+    """
+    global _news_cfg_cache
+    ts, cached = _news_cfg_cache
+    now = time.time()
+    if cached and now - ts < 30:
+        return cached
+    try:
+        from db_manager import get_configs
+        cfg = get_configs(_NEWS_SETTING_KEYS) or {}
+    except Exception as e:
+        logger.debug("News settings unreadable, using defaults: %s", e)
+        cfg = {}
+    _news_cfg_cache = (now, cfg)
+    return cfg
+
+
+def _news_cache_ttl(cfg: dict = None) -> int:
+    """Configured cache TTL, falling back to CACHE_TTL on anything unparseable."""
+    raw = (cfg if cfg is not None else _news_settings()).get("news.cache_ttl_seconds")
+    try:
+        val = int(float(raw))
+        if val > 0:
+            return val
+    except (TypeError, ValueError):
+        pass
+    return CACHE_TTL
+
+
+def _news_source_enabled(cfg: dict, name: str) -> bool:
+    """Sources default to on, so an unseeded/unreadable key changes nothing."""
+    return str(cfg.get(f"news.source.{name}", "true")).strip().lower() != "false"
 
 
 def _fetch_google_news(query: str, limit: int = 10) -> List[NewsItem]:
@@ -663,9 +712,10 @@ def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentimen
     Results cached in memory for 10 minutes.
     """
     now = time.time()
+    _cfg = _news_settings()
     if not force_refresh and symbol in _cache:
         ts, cached = _cache[symbol]
-        if now - ts < CACHE_TTL:
+        if now - ts < _news_cache_ttl(_cfg):
             return cached
 
     # 1. Load articles already stored in DB (recent 7 days)
@@ -680,14 +730,18 @@ def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentimen
     # this was 8 HTTP round-trips (each up to a 10s timeout) on the request path.
     # Order is preserved so downstream dedup keeps the same source precedence.
     from concurrent.futures import ThreadPoolExecutor
-    _sources = [
-        (_fetch_google_news, (search_query,), {"limit": 10}),
-        (_fetch_newsapi, (f"{company} stock",), {"limit": 10}),
-        (_fetch_et_rss, (symbol,), {"limit": 5}),
-        (_fetch_moneycontrol_rss, (symbol,), {"limit": 5}),
-        (_fetch_extra_rss, (symbol,), {"limit": 5}),
-        (_fetch_x_posts, (symbol,), {"limit": 5}),
+    # Each source can be switched off from Settings. Order is still preserved
+    # among whichever remain, so dedup keeps the same source precedence.
+    _all_sources = [
+        ("google",       (_fetch_google_news, (search_query,), {"limit": 10})),
+        ("newsapi",      (_fetch_newsapi, (f"{company} stock",), {"limit": 10})),
+        ("et_rss",       (_fetch_et_rss, (symbol,), {"limit": 5})),
+        ("moneycontrol", (_fetch_moneycontrol_rss, (symbol,), {"limit": 5})),
+        ("extra_rss",    (_fetch_extra_rss, (symbol,), {"limit": 5})),
+        ("x_posts",      (_fetch_x_posts, (symbol,), {"limit": 5})),
     ]
+    _sources = [spec for name, spec in _all_sources
+                if _news_source_enabled(_cfg, name)]
 
     def _safe_fetch(spec):
         fn, args, kwargs = spec
@@ -770,7 +824,7 @@ def get_market_sentiment() -> NewsSentiment:
     cache_key = "__MARKET__"
     if cache_key in _cache:
         ts, cached = _cache[cache_key]
-        if now - ts < CACHE_TTL:
+        if now - ts < _news_cache_ttl():
             return cached
 
     articles = _fetch_market_general_news(limit=15)
@@ -809,7 +863,7 @@ def get_geopolitical_news(symbol: str, limit: int = 8) -> dict:
     now = time.time()
     if cache_key in _cache:
         ts, cached = _cache[cache_key]
-        if now - ts < CACHE_TTL:
+        if now - ts < _news_cache_ttl():
             return cached
 
     # Fetch news using geopolitical search terms
