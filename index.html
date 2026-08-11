@@ -1527,6 +1527,20 @@
     .pa-stat { padding: 12px; }
     .pa-stat .val { font-size: 20px; }
 
+    /* ── News & Sentiment: let headlines break, and stop shipping 9px text ──
+       Article rows are inline flow with no overflow-wrap, so a long headline
+       or an unbroken token — a URL, a ticker, a hyphenated company name — had
+       nothing to break on and pushed its row wider than the card. Applied to
+       the panel rather than to each template because the rows are built in
+       several different renderers (market news, related news, per-symbol).
+
+       The 9px spans carry the sentiment marker and the source name. 9px is
+       below what iOS will render legibly and these are not decoration — the
+       source is how you judge whether a headline is worth trusting. Raised to
+       11px, which is the smallest size used anywhere else in this file. */
+    #news, #news .card, #news .card * { overflow-wrap: anywhere; }
+    #news [style*="font-size:9px"] { font-size: 11px !important; }
+
     /* ── 16. Overflow found by the 375px audit ───────────────────────────
        A proper audit across all 13 tabs (the earlier one silently reported
        zero because it called switchTab(), which does not exist in this file
@@ -5314,7 +5328,20 @@ async function loadWatchlist() {
     if (data.stocks.length > 0) {
       const firstStock = data.stocks[0];
       const lastStock = data.stocks[data.stocks.length - 1];
-      document.getElementById('wl-date-range').textContent = `${firstStock.earliest_date} to ${firstStock.latest_date}`;
+      // "Thu, 02 Jan 2020 00:00:00 GMT to Mon, 10 Aug 2026 00:00:00 GMT" is 62
+      // characters, of which the weekday, day-of-month, time and timezone are
+      // all noise for a coverage range. Rendered in full it wrapped to four
+      // lines and made this the tallest card on the tab. Month + year is the
+      // resolution that actually means anything for "how far back does the
+      // data go", so the value is reformatted rather than just shrunk.
+      const shortDate = (s) => {
+        const d = new Date(s);
+        return isNaN(d.getTime())
+          ? (s || '--')
+          : d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+      };
+      document.getElementById('wl-date-range').textContent =
+        `${shortDate(firstStock.earliest_date)} – ${shortDate(firstStock.latest_date)}`;
     }
     
     summary.style.display = 'grid';
