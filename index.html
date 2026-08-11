@@ -36,6 +36,12 @@
     --shadow-md: 0 4px 14px rgba(0,0,0,.06), 0 2px 6px rgba(0,0,0,.04);
     --shadow-lg: 0 12px 40px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.04);
     --transition: .25s cubic-bezier(.4,0,.2,1);
+    /* Real measured height of the fixed mobile tab bar, excluding the safe-area
+       inset (which is added wherever this is used). Anything that has to sit
+       clear of that bar derives from this instead of restating the number:
+       .container's bottom padding and the toast's offset both did, and the
+       relationship between them was previously enforced only by a comment. */
+    --nav-h: 61px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -486,12 +492,62 @@
   .btn-red:hover { background: #e8342a; transform: scale(1.01); box-shadow: 0 4px 12px rgba(255,59,48,.3); }
   .btn:disabled { opacity: .42; cursor: not-allowed; transform: none; }
 
+  /* ── Control tiers ────────────────────────────────────────────────────
+     Four tiers, so hierarchy is carried by weight rather than by each control
+     picking its own colour. Colour alone was doing the work before, which is
+     why the header read as four unrelated widgets.
+
+       PRIMARY      .btn-primary   filled accent — the one main action
+       SECONDARY    .btn-secondary surface + border — ordinary actions
+       STATUS       .status-pill   reports state; deliberately not button-shaped
+       DESTRUCTIVE  .btn-danger    red text on a red-tinted border
+
+     .btn-secondary was used in 17 places and defined in none, so all 17 fell
+     back to plain .btn. It is defined here as the quieter sibling of .btn:
+     muted label instead of accent blue, so a row of secondary actions stops
+     competing with the primary one. .btn-red (filled) stays for in-content
+     destructive actions like "Close All Open"; .btn-danger is the restrained
+     version for chrome, where a filled red block would dominate the header.
+
+     Both new tiers style via class, never inline colour — the monochrome
+     override above matches inline `color:var(--…)` and an enumerated class
+     list, so class-based colour here survives deliberately rather than by
+     accident. That override is why Logout's inline red never rendered. */
+  .btn-secondary { color: var(--muted); }
+  .btn-secondary:hover { color: var(--text); background: rgba(0,0,0,.04); }
+  .btn-danger { color: var(--red); border-color: rgba(255,59,48,.35); }
+  .btn-danger:hover { color: var(--red); background: rgba(255,59,48,.08); border-color: rgba(255,59,48,.55); }
+
+  /* Status, not action: a tinted pill with a dot. Shorter and rounder than a
+     button so the eye can tell "this reports something" from "this does
+     something" without reading either. */
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 980px;
+    background: rgba(0,0,0,.05); border: .5px solid transparent;
+    color: var(--text); font-size: 12px; font-weight: 500;
+    letter-spacing: -.01em; cursor: pointer;
+    transition: var(--transition);
+  }
+  .status-pill:hover { background: rgba(0,0,0,.08); }
+  /* .status-dot already carries its size and a 6px right margin; inside a pill
+     the flex `gap` does that job, so the margin is zeroed rather than restated. */
+  .status-pill .status-dot { margin-right: 0; flex-shrink: 0; }
+
   /* ── Layout ─────────────────────────────── */
   .container { max-width: 1400px; margin: 0 auto; padding: 32px 24px; }
   .grid { display: grid; gap: 16px; }
   /* .grid sets display:grid, which outranks the UA stylesheet's
      [hidden] { display: none }, so the attribute alone would do nothing here. */
   .grid[hidden] { display: none; }
+  /* Per-metric hiding for the global stat row (see TAB_STATS).
+     !important because the mobile block sets `.grid-4 .card { display: flex }`,
+     which is a class selector and so outranks the UA's [hidden] rule — without
+     this the attribute would silently do nothing on a phone, which is exactly
+     where the row costs the most vertical space. */
+  #global-stats-row .card[hidden] { display: none !important; }
+  /* A lone visible card shouldn't sit in a half-width column. */
+  #global-stats-row[data-count="1"] .card { grid-column: 1 / -1; }
   .grid-2 { grid-template-columns: 1fr 1fr; }
   @media (max-width: 1024px) { .container { padding: 24px 16px; } }
   @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } .container { padding: 20px 14px; } }
@@ -589,9 +645,40 @@
   @keyframes liveMarker { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
   /* ── Toast ──────────────────────────────── */
-  #toast { position: fixed; bottom: 28px; right: 28px; padding: 14px 20px; background: rgba(29,29,31,.92); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); color: #fff; border: none; border-radius: 14px; font-size: 13px; font-weight: 500; display: none; z-index: 200; max-width: 380px; box-shadow: var(--shadow-lg); letter-spacing: -.01em; }
-  #toast.show { display: block; animation: slideUp .35s cubic-bezier(.4,0,.2,1); }
-  @keyframes slideUp { from { opacity: 0; transform: translateY(12px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  /* Hidden with opacity/visibility, never `display:none`.
+     A live region that is display:none at the moment its text is written is not
+     reliably announced by VoiceOver — the region has to be present and rendered
+     first (W3C ARIA22). The old rule toggled display, so the role added below
+     would have been decorative. */
+  #toast {
+    position: fixed;
+    bottom: 28px; right: 28px;
+    padding: 14px 20px;
+    background: rgba(29,29,31,.92);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+    color: #fff;
+    border: none; border-radius: 14px;
+    font-size: 13px; font-weight: 500; letter-spacing: -.01em;
+    z-index: 200;
+    max-width: 380px;
+    box-shadow: var(--shadow-lg);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transform: translateY(12px) scale(.96);
+    transition: opacity .3s cubic-bezier(.4,0,.2,1),
+                transform .3s cubic-bezier(.4,0,.2,1),
+                visibility .3s;
+  }
+  #toast.show { opacity: 1; visibility: visible; transform: none; }
+  /* Severity is carried on a left edge rather than by recolouring the text —
+     the monochrome override only rewrites inline `color`, so a border is the
+     one channel that survives it. P&L colours stay the deliberate exception. */
+  #toast[data-level="success"] { border-left: 3px solid var(--green); }
+  #toast[data-level="warning"] { border-left: 3px solid var(--yellow); }
+  #toast[data-level="error"]   { border-left: 3px solid var(--red); }
+  @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+  /* slideUp removed with the display:none toggle it animated — the toast now
+     transitions opacity/transform directly so the live region can stay in the
+     accessibility tree. It had no other users. */
 
   /* ── Forms ──────────────────────────────── */
   .trade-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
@@ -1063,6 +1150,13 @@
        or distinguishing class; same attribute-selector approach already used
        for the monochrome overrides further up this file. */
     .header-actions .btn[onclick*="openSettings"] { display: none; }
+    /* Logout moves to the More sheet on mobile (see buildMobileMoreSheet).
+       Settings above and Logout here are both reachable there; removing them
+       from the action row is what gets the header back to a single line.
+       Matched on the onclick because neither button carries an id or class of
+       its own — same approach the Settings rule above already uses. */
+    .header-actions .btn[onclick*="logoutUser"] { display: none; }
+    #mobile-more-sheet .sheet-item-danger { color: var(--red); }
 
     /* With the status chip and Settings out of the flow, the auto-trade
        indicator and the data-gap chip lead the row and land on-screen. */
@@ -1196,7 +1290,33 @@
        4px of breathing room. This and the two mask-image offsets below are
        derived from the bar's real height and must be changed together —
        under-reserving here hides the last row of content behind the bar. */
-    .container { padding-bottom: calc(65px + env(safe-area-inset-bottom)) !important; }
+    .container { padding-bottom: calc(var(--nav-h) + 4px + env(safe-area-inset-bottom)) !important; }
+
+    /* ── Toast: lift it above the tab bar ──────────────────────────────────
+       This was the only fixed element never brought into the safe-area system
+       the rest of this block uses. At `bottom:28px; right:28px; z-index:200` it
+       sat entirely inside the tab bar's band and *behind* it (bar is z-900), so
+       on any iPhone with a home indicator a toast was 100% invisible — while
+       being the application's only error channel, carrying nine money-path
+       messages including "the order may still have reached the broker".
+
+       Two separate faults, both fixed here:
+       1. Vertical: anchored above the bar, derived from --nav-h so it stays
+          correct if the bar changes, and raised above it in the stack. This is
+          the same fix Material ships as Snackbar.setAnchorView(bottomNav).
+       2. Horizontal: `right:28px` + `max-width:380px` put the left edge at
+          -33px on a 375px screen, so the first ~33px of every line of the long
+          critical messages was clipped off-screen by overflow-x:hidden. Pinned
+          to both edges instead, respecting the landscape insets. */
+    #toast {
+      left: max(12px, env(safe-area-inset-left));
+      right: max(12px, env(safe-area-inset-right));
+      bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom));
+      max-width: none;
+      z-index: 950;              /* above .tabs (900) */
+      font-size: 13px;
+      padding: 13px 16px;
+    }
 
     /* ── 8. "More" sheet — the other 9 destinations ─────────────────────── */
     #mobile-more-sheet {
@@ -1336,6 +1456,17 @@
        two columns rather than being squeezed into unreadable slivers.
        Type size is untouched. */
     #watchlist-stocks .card { min-width: 0; }
+
+    /* Let the stock row's action pair drop to its own line instead of being
+       crushed. The row is `justify-content:space-between` with no wrap, so the
+       two buttons were squeezed to exactly the 44px min-width floor and STILL
+       overflowed the card by 2.3px — "Remove" clipped mid-word and "View
+       Analysis" stacked onto two lines inside a 44px box.
+       flex-shrink:0 stops them being compressed below their natural width;
+       flex-wrap gives them somewhere to go when that no longer fits, so they
+       keep full, readable labels and a proper tap target. */
+    #watchlist-stocks .card > div:first-child { flex-wrap: wrap; row-gap: 10px; }
+    #watchlist-stocks .card > div:first-child > div:last-child { flex-shrink: 0; }
     #watchlist-stocks [id^="analysis-"],
     #watchlist-stocks [id^="analysis-"] div { min-width: 0; }
     #watchlist-stocks [id^="analysis-"] { overflow-wrap: anywhere; }
@@ -1655,7 +1786,7 @@ window.fetch = function(...args) {
   <h1>Parth S.</h1>
   <div class="header-actions">
     <span id="connection-status" style="font-size:12px;color:var(--muted)"><span class="status-dot dot-red"></span>Disconnected</span>
-    <button class="btn" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px" title="Re-authenticate with the Groww API and refresh the access token">Reconnect</button>
+    <button class="btn btn-secondary" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px" title="Re-authenticate with the Groww API and refresh the access token">Reconnect</button>
     <button class="btn btn-primary" onclick="runScan()" style="font-size:12px" title="Run AI signal generation across every stock in your watchlist now">Scan Watchlist</button>
     <!-- Was a <span onclick=…> styled to look like a pill: no role, no
          tabindex, no keyboard access, and nothing telling a screen reader it
@@ -1670,9 +1801,14 @@ window.fetch = function(...args) {
       <span class="at-toggle-label">Cash Auto-Trade: OFF</span>
       <span class="at-toggle-track" aria-hidden="true"><span class="at-toggle-thumb"></span></span>
     </button>
-    <button class="btn" id="data-health-chip" onclick="toggleDataHealthPanel()" style="font-size:11px;display:none" title="Data coverage across every dataset the dashboard depends on">Data</button>
-    <button class="btn" onclick="openSettings()" style="font-size:12px">Settings</button>
-    <button class="btn" onclick="logoutUser()" style="font-size:12px;color:var(--red)">Logout</button>
+    <!-- Status, not an action: reports coverage rather than performing something,
+         so it takes the pill tier instead of looking like a third button. -->
+    <button class="status-pill" id="data-health-chip" onclick="toggleDataHealthPanel()" style="display:none" title="Data coverage across every dataset the dashboard depends on">Data</button>
+    <button class="btn btn-secondary" onclick="openSettings()" style="font-size:12px">Settings</button>
+    <!-- Destructive styling by class. The inline color:var(--red) that used to
+         be here was rewritten to --text by the monochrome override, so Logout
+         had been rendering identical to Settings. -->
+    <button class="btn btn-danger" onclick="logoutUser()" style="font-size:12px">Logout</button>
   </div>
 </header>
 
@@ -1685,10 +1821,10 @@ window.fetch = function(...args) {
        preceding sibling rather than something inside a panel, hiding it
        reflows the content below on its own — no gap left behind. -->
   <div class="grid grid-4" id="global-stats-row" style="margin-bottom:18px">
-    <div class="card"><div class="card-title">Available Margin</div><div class="card-value" id="stat-margin">--</div></div>
-    <div class="card"><div class="card-title">Open Positions</div><div class="card-value" id="stat-positions">--</div></div>
-    <div class="card"><div class="card-title">Today's P&L</div><div class="card-value" id="stat-pnl">--</div></div>
-    <div class="card"><div class="card-title">Market Sentiment</div><div class="card-value" id="stat-market">--</div></div>
+    <div class="card" data-stat="margin"><div class="card-title">Available Margin</div><div class="card-value" id="stat-margin">--</div></div>
+    <div class="card" data-stat="positions"><div class="card-title">Open Positions</div><div class="card-value" id="stat-positions">--</div></div>
+    <div class="card" data-stat="pnl"><div class="card-title">Today's P&L</div><div class="card-value" id="stat-pnl">--</div></div>
+    <div class="card" data-stat="market"><div class="card-title">Market Sentiment</div><div class="card-value" id="stat-market">--</div></div>
   </div>
 
   <!-- Tabs -->
@@ -2729,7 +2865,12 @@ window.fetch = function(...args) {
 
 </div>
 
-<div id="toast"></div>
+<!-- role/aria-live must be on the element at load, before any message is written
+     into it — a region that only becomes a live region at announcement time is
+     not reliably announced (W3C ARIA22). aria-atomic is stated explicitly even
+     though role="status" implies it, because not every AT honours the implicit
+     value. This is the app's only error channel, so it has to be announced. -->
+<div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 // ── PIN Lock ─────────────────────────────────────────
@@ -3108,12 +3249,38 @@ function activateTab(tabName) {
 // Analysis, Intraday, Paper Trading and the rest, and loadMargin() /
 // loadDashboardStats() / loadMarketSentiment() keep populating it regardless
 // of which tab is showing, so it is correct the moment it returns.
-const TABS_WITHOUT_GLOBAL_STATS = ['predictions', 'research'];
+//
+// This was a blocklist — every tab not named here got all four cards, which is
+// how Available Margin ended up on Raw Materials and Market Sentiment on the
+// Trade Journal. It is now an allowlist keyed per metric, because the honest
+// answer differs per card: News wants Market Sentiment and nothing else, the
+// P&L Chart wants only today's P&L. A tab absent from this map shows none.
+//
+// Deliberately excluded and worth knowing why:
+//  - journal / rawmat / alerts / settings / thesis / fno-backtest: none of the
+//    four describe what those screens are for.
+//  - paper: shows positions and P&L but NOT margin — the global margin figure
+//    is the LIVE account balance, and showing it on a simulated-trading tab
+//    invites reading a real number as a paper one.
+const TAB_STATS = {
+  analysis:    ['margin', 'positions', 'pnl'],
+  intraday:    ['margin', 'positions', 'pnl'],
+  paper:       ['positions', 'pnl'],
+  'pnl-chart': ['pnl'],
+  news:        ['market'],
+};
 
 function applyGlobalStatsVisibility(tabName) {
   const row = document.getElementById('global-stats-row');
   if (!row) return;
-  row.hidden = TABS_WITHOUT_GLOBAL_STATS.includes(tabName);
+  const wanted = TAB_STATS[tabName] || [];
+  row.hidden = wanted.length === 0;
+  // data-count drives the single-card layout on mobile (see CSS); without it a
+  // lone card would sit in a half-width 2-up column.
+  row.dataset.count = String(wanted.length);
+  row.querySelectorAll('[data-stat]').forEach(card => {
+    card.hidden = !wanted.includes(card.dataset.stat);
+  });
 }
 
 function goBackFromBackfill() {
@@ -3250,6 +3417,26 @@ function buildMobileTabBar() {
     });
     itemsEl.appendChild(item);
   });
+
+  // Logout lives here on mobile, not in the header.
+  //
+  // The header's action row needed ~370px of a 343px screen, so it sat on two
+  // lines and the header stood at 144.5px — 18% of the viewport before any
+  // content. Logout is the right one to move: it is the least frequent action
+  // of the four and the only destructive one, so burying it one tap deeper is
+  // a safety improvement rather than a cost. Scan (primary) and Auto-Trade
+  // (status) stay, because those are what you actually reach for.
+  const logout = document.createElement('div');
+  logout.className = 'sheet-item sheet-item-danger';
+  logout.setAttribute('role', 'button');
+  logout.setAttribute('tabindex', '0');
+  logout.textContent = 'Logout';
+  const doLogout = () => { closeMoreSheet(); logoutUser(); };
+  logout.addEventListener('click', doLogout);
+  logout.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); doLogout(); }
+  });
+  itemsEl.appendChild(logout);
 
   moreBtn.addEventListener('click', openMoreSheet);
   // Tapping the dim backdrop dismisses, tapping the panel itself does not.
@@ -4066,11 +4253,47 @@ async function resetLockPalette(btn) {
 }
 
 // ── Toast ─────────────────────────────────────────
-function toast(msg, ms=3000) {
+// Severity → how long the message stays up. Money-path messages get longer,
+// because "your order may or may not have reached the broker" is not something
+// to read in three seconds.
+const TOAST_LEVELS = { info: 3000, success: 3000, warning: 5000, error: 6000 };
+let _toastTimer = null;
+
+function toast(msg, opts) {
   const el = document.getElementById('toast');
-  el.textContent = msg; el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), ms);
+  if (!el) return;
+
+  // The second argument has always been a duration in ms, but several call
+  // sites pass a severity string instead. Those reached setTimeout as NaN,
+  // which clamps to 0 — the message was removed on the very next tick and was
+  // never actually seen. The trailing-stop auto-close notice was one of them.
+  // Accepting both is cheaper and safer than hunting every call site.
+  let ms, level = 'info';
+  if (typeof opts === 'string') {
+    level = TOAST_LEVELS[opts] ? opts : 'info';
+    ms = TOAST_LEVELS[level];
+  } else {
+    ms = Number(opts);
+    if (!Number.isFinite(ms) || ms <= 0) ms = 3000;
+  }
+
+  el.textContent = msg;
+  el.dataset.level = level;
+  el.classList.add('show');
+
+  // ONE timer, not one per call. Previously every call scheduled its own, and
+  // whichever fired first removed .show regardless of which message was on
+  // screen — so a 2s toast fired just after a 6s broker warning cut it short.
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
+
+// Severity-aware alias. This was called from six places in manualCloseTrade()
+// without ever being defined anywhere in the file, so that function threw
+// ReferenceError on its first statement after the confirm() and aborted inside
+// its own try — the catch then called the same undefined function again. The
+// manual trade-close path has been dead code the whole time.
+function showToast(msg, level) { return toast(msg, level || 'info'); }
 
 // ── API helpers ───────────────────────────────────
 async function api(path, opts) {
@@ -6468,7 +6691,9 @@ async function loadDataHealth() {
   if (!chip || !_dataHealth) return;
   const st = _dataHealth.overall_status || 'unknown';
   const n = _dataHealth.issues || 0;
-  chip.style.display = 'inline-block';
+  // inline-flex, not inline-block: .status-pill lays the dot and label out with
+  // flex `gap`, and an inline display set here would win over the class.
+  chip.style.display = 'inline-flex';
   // The status colour rides on a dot, not on the text.
   //
   // Setting chip.style.color here looked right but never reached the screen:
@@ -11903,8 +12128,9 @@ async function manualCloseTrade(tradeId, symbol, entryPrice, signal) {
       }
       const pnl = data.trade.actual_profit_pnl;
       const pnlFormatted = pnl > 0 ? `+${pnl.toFixed(2)}%` : `${pnl.toFixed(2)}%`;
-      const pnlColor = pnl > 0 ? 'green' : 'red';
-      showToast(`Trade closed: ${symbol} at ₹${currentPrice.toFixed(2)} | P&L: <span style="color:${pnlColor};font-weight:bold">${pnlFormatted}</span>`, 'success');
+      // Plain text: the toast writes via textContent, so the <span> that used
+      // to be here rendered literally as markup in the message.
+      showToast(`Trade closed: ${symbol} at ₹${currentPrice.toFixed(2)} — P&L ${pnlFormatted}`, 'success');
       
       // Refresh the dashboard
       loadPaperTradingStatus();
