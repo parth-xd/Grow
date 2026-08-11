@@ -812,6 +812,26 @@
   .heatmap-controls label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .heatmap-svg-wrap { position: relative; width: 100%; }
   .heatmap-svg-wrap svg { display: block; width: 100%; }
+  /* Top-right: clear of the legend along the bottom edge and of the fixed tab
+     bar on mobile, and out of the way of the densest part of a world map.
+     44px targets on both axes — these are the WCAG 2.5.1 single-pointer
+     alternative to pinch, so they have to be genuinely tappable. */
+  .map-zoom {
+    position: absolute; top: 10px; right: 10px; z-index: 5;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .map-zoom-btn {
+    width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    border: .5px solid var(--border); border-radius: 10px;
+    background: rgba(255,255,255,.92);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    color: var(--text); font-size: 17px; font-weight: 600; line-height: 1;
+    font-family: inherit; cursor: pointer; box-shadow: var(--shadow-sm);
+    transition: var(--transition);
+  }
+  .map-zoom-btn:hover { background: #fff; }
+  .map-zoom-btn:active { transform: scale(.94); }
   .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
   .heatmap-tooltip.show { opacity: 1; }
   /* ── Skeleton loading states ──────────────────────────────────────────
@@ -1479,6 +1499,33 @@
        from Chart.js's responsive pass against a parent that was itself
        overflowing. */
     #watchlist-stocks canvas[id^="chart-"] { width: 100% !important; }
+
+    /* ── Portfolio Analysis: make the collapsed row fit ────────────────────
+       .pa-stock-header is `justify-content:space-between` with no wrap, and it
+       holds nine things across two inner flex groups that also do not wrap:
+       symbol · qty@avg · health · recommendation | LTP · P&L · signal · conf
+       bar · chevron. Measured wanting 441px inside a 346px card — it
+       overflowed before the user had tapped anything.
+
+       .pa-stock and .pa-stat had NO mobile rules at all, so they were also
+       still carrying desktop padding and a 24px stat value on a phone.
+
+       Wrapping rather than shrinking: the numbers here are prices and P&L, and
+       making those smaller to win space is the wrong trade. Nothing is hidden
+       except the confidence *bar*, whose 80px is fixed and whose percentage is
+       printed next to it anyway — so no information is lost with it gone. */
+    .pa-stock-header {
+      flex-wrap: wrap;
+      row-gap: 8px;
+      align-items: flex-start;
+      padding: 14px 16px;
+    }
+    .pa-stock-header > div { flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+    /* Fixed 80px, and confBar() already prints the number beside it. */
+    .pa-stock-header .conf-bar { display: none; }
+    .pa-stock-detail { padding: 0 16px 16px; }
+    .pa-stat { padding: 12px; }
+    .pa-stat .val { font-size: 20px; }
 
     /* ── 16. Overflow found by the 375px audit ───────────────────────────
        A proper audit across all 13 tabs (the earlier one silently reported
@@ -7692,6 +7739,38 @@ async function renderHeatmap(commodity) {
   // Zoom + Pan
   _heatmapZoom = d3.zoom().scaleExtent([1, 8]).on('zoom', (e) => g.attr('transform', e.transform));
   svg.call(_heatmapZoom);
+
+  // On-screen zoom controls — a single-pointer alternative to pinch.
+  //
+  // WCAG 2.5.1 Pointer Gestures (Level A) requires that anything driven by a
+  // multipoint gesture also work with a single pointer, and the criterion's own
+  // worked example is precisely this case: "a map view that supports the
+  // pinch/spread gesture... also includes plus/minus buttons to zoom in and
+  // out." Pinch-only was therefore a Level A failure, not just awkward on a
+  // phone.
+  //
+  // Buttons rather than the drag-slider that was originally suggested: dragging
+  // a slider is itself a path-based gesture, so a slider would fail the very
+  // criterion it was meant to satisfy. Buttons also work with a keyboard.
+  //
+  // These drive the SAME _heatmapZoom behaviour as pinch and wheel, via
+  // scaleBy/transform, so panning, the [1,8] scaleExtent clamp and the tooltip
+  // all keep working with no second zoom implementation to keep in sync.
+  // Rebuilt on each render because mapDiv.innerHTML is cleared above.
+  const zoomCtl = document.createElement('div');
+  zoomCtl.className = 'map-zoom';
+  zoomCtl.innerHTML =
+    '<button type="button" class="map-zoom-btn" data-z="in" aria-label="Zoom in" title="Zoom in">+</button>' +
+    '<button type="button" class="map-zoom-btn" data-z="out" aria-label="Zoom out" title="Zoom out">−</button>' +
+    '<button type="button" class="map-zoom-btn" data-z="reset" aria-label="Reset zoom" title="Reset zoom">⟲</button>';
+  zoomCtl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.map-zoom-btn');
+    if (!btn) return;
+    const t = svg.transition().duration(220);
+    if (btn.dataset.z === 'reset') t.call(_heatmapZoom.transform, d3.zoomIdentity);
+    else t.call(_heatmapZoom.scaleBy, btn.dataset.z === 'in' ? 1.6 : 1 / 1.6);
+  });
+  mapDiv.appendChild(zoomCtl);
 
   // Tooltip
   let tooltip = document.getElementById('heatmap-tooltip');
