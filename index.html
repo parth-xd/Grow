@@ -972,7 +972,7 @@
      on its own instead of needing to be kept in sync with the map. */
   .map-zoom-mobile {
     display: none;   /* shown only inside the mobile media query below */
-    position: absolute; top: 6px; bottom: 6px; right: 32px; z-index: 5;
+    position: absolute; top: 6px; bottom: 6px; right: 20px; z-index: 5;
     flex-direction: column; align-items: center;
   }
   .mzm-btn {
@@ -1031,7 +1031,13 @@
      sits ON the tick line the same way the ticks themselves do, rather than
      floating to one side of it. */
   .mzm-indicator {
-    position: absolute; left: calc(50% - 20px); transform: translateY(50%);
+    /* Anchor pulled further left than the track's own centre — the track
+       column itself sits closer to the card edge now (right: 20px vs the
+       32px it was before), which left no room for the value label before it
+       clipped the card. The pill+value group floating beside the track was
+       always wider than the 44px track anyway, so only this anchor needed
+       adjusting, not the track/tick column position. */
+    position: absolute; left: calc(50% - 32px); transform: translateY(50%);
     display: flex; align-items: center; gap: 6px; pointer-events: none;
   }
   .mzm-pill {
@@ -1040,7 +1046,12 @@
     background: var(--yellow);
     box-shadow: 0 1px 3px rgba(0,0,0,.3);
     display: flex; align-items: center; justify-content: center;
+    transition: transform .15s ease, box-shadow .15s ease;
   }
+  /* Grow, don't shrink, on grab — this is a drag handle, not a button, so
+     the feedback should read as "picked up" rather than "pressed down"
+     (.btn:active elsewhere in this file shrinks; that convention is for taps). */
+  .mzm-indicator.is-active .mzm-pill { transform: scale(1.3); box-shadow: 0 2px 6px rgba(0,0,0,.35); }
   /* Rounded corners via a thick round-joined stroke tracing the same path as
      the fill — a plain CSS border-triangle can't take a border-radius, and
      this reads noticeably softer than a bare glyph at this size. */
@@ -8001,10 +8012,22 @@ async function renderHeatmap(commodity) {
   // this handler, which updates the readout and slider — so pinch, wheel,
   // slider and presets all converge on the same single path.
   let reflectZoom = null;
-  _heatmapZoom = d3.zoom().scaleExtent([1, 8]).on('zoom', (e) => {
-    g.attr('transform', e.transform);
-    if (reflectZoom) reflectZoom(e.transform.k);
-  });
+  _heatmapZoom = d3.zoom().scaleExtent([1, 8])
+    // Cooperative gestures: this map sits inside a normally-scrolling page,
+    // not a full-bleed view, so a bare one-finger touch must be free to
+    // scroll past it. Requiring two touches to start a touch-driven pan/zoom
+    // (mouse/wheel untouched) is the same pattern Google Maps/Mapbox GL use
+    // for embedded maps. Rejecting the filter means d3-zoom never calls
+    // preventDefault on that touchstart, so the browser's native scroll
+    // takes it instead.
+    .filter((event) => {
+      if (event.type.startsWith('touch')) return event.touches.length > 1;
+      return (!event.ctrlKey || event.type === 'wheel') && !event.button;
+    })
+    .on('zoom', (e) => {
+      g.attr('transform', e.transform);
+      if (reflectZoom) reflectZoom(e.transform.k);
+    });
   svg.call(_heatmapZoom);
 
   // On-screen zoom control — a vertical slider beside the map.
@@ -8137,6 +8160,13 @@ async function renderHeatmap(commodity) {
   mSlider.addEventListener('input', () => {
     svg.call(_heatmapZoom.scaleTo, tToScale(Number(mSlider.value) / 1000));
   });
+  // Grab feedback: the pill grows while the slider is actively held, so a
+  // finger landing on it gets an immediate "yes, this is now yours" cue.
+  // pointercancel covers a drag that gets interrupted (e.g. an incoming
+  // scroll/pinch elsewhere) so the pill never gets stuck enlarged.
+  mSlider.addEventListener('pointerdown', () => mIndicator.classList.add('is-active'));
+  ['pointerup', 'pointercancel'].forEach(evt =>
+    mSlider.addEventListener(evt, () => mIndicator.classList.remove('is-active')));
   // +/- step by a fixed multiplicative factor from the CURRENT scale — an
   // increment model, matching the reference's +/- semantics. Deliberately
   // different from the desktop control's jump-to-preset chips. √2 so two taps
