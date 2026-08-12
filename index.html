@@ -31,7 +31,22 @@
        monochrome override can tell "this number is a P&L" from "this text
        happens to be green" — they are otherwise identical once rendered. */
     --pnl-up: var(--green); --pnl-down: var(--red);
+    /* Radius scale. --radius (16px) already existed and is the "lg" step —
+       kept under its original name rather than renamed, so its 6 existing
+       call sites (.card, .journal-entry, .pa-stock, .unlock-banner,
+       .heatmap-wrap) don't need to change. --r-sm/--r-md/--r-pill are new,
+       applied to .btn/.status-pill/.set-navbtn below — the exact values
+       those already rendered at, just named now instead of restated.
+       Deliberately NOT a file-wide sweep: the stylesheet alone has ~25
+       distinct radius values and inline styles in JS templates add several
+       hundred more (badges, pills, chips built per-row). Retagging all of
+       those is a much larger, separate change with its own review; this
+       gives the four sizes that actually recur across components one name
+       each, without touching one-off decorative radii. */
     --radius: 16px;
+    --r-sm: 8px;
+    --r-md: 12px;
+    --r-pill: 980px;
     --shadow-sm: 0 1px 3px rgba(0,0,0,.04), 0 1px 2px rgba(0,0,0,.06);
     --shadow-md: 0 4px 14px rgba(0,0,0,.06), 0 2px 6px rgba(0,0,0,.04);
     --shadow-lg: 0 12px 40px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.04);
@@ -481,7 +496,7 @@
   .deep-exit-bottom { margin: 14px 0 4px; }
 
   /* ── Buttons ────────────────────────────── */
-  .btn { padding: 8px 16px; border-radius: 8px; border: none; background: var(--surface); color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--transition); box-shadow: none; border: .5px solid var(--border); letter-spacing: -.01em; }
+  .btn { padding: 8px 16px; border-radius: var(--r-sm); border: none; background: var(--surface); color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--transition); box-shadow: none; border: .5px solid var(--border); letter-spacing: -.01em; }
   .btn:hover { background: rgba(0,113,227,.06); transform: scale(1.01); }
   .btn:active { transform: scale(.97); }
   .btn-primary { background: var(--accent); color: #fff; border: none; box-shadow: 0 2px 8px rgba(0,113,227,.2); }
@@ -523,7 +538,7 @@
      something" without reading either. */
   .status-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 5px 12px; border-radius: 980px;
+    padding: 5px 12px; border-radius: var(--r-pill);
     background: rgba(0,0,0,.05); border: .5px solid transparent;
     color: var(--text); font-size: 12px; font-weight: 500;
     letter-spacing: -.01em; cursor: pointer;
@@ -574,7 +589,7 @@
      visible. */
   .set-wrap { display: grid; grid-template-columns: 210px 1fr; gap: 28px; align-items: start; }
   .set-rail { position: sticky; top: 84px; display: flex; flex-direction: column; gap: 2px; }
-  .set-navbtn { text-align: left; padding: 9px 12px; border-radius: 8px; border: none;
+  .set-navbtn { text-align: left; padding: 9px 12px; border-radius: var(--r-sm); border: none;
                 background: transparent; color: var(--muted); font: inherit; font-size: 13px;
                 font-weight: 500; cursor: pointer; transition: var(--transition); }
   .set-navbtn:hover { background: rgba(0,0,0,.04); color: var(--text); }
@@ -582,7 +597,19 @@
   .set-section { display: none; }
   .set-section.active { display: block; animation: fadeIn .25s ease-out; }
   .set-head { margin-bottom: 16px; }
-  .set-head h2 { font-size: 20px; font-weight: 700; letter-spacing: -.03em; margin: 0 0 6px; }
+  /* color + text-transform declared explicitly, not left to inherit — every
+     h2 in the document today is one of these section headers, and without
+     this a leftover mobile-only rule (originally written for bare h2 tags
+     that no longer exist anywhere in the file) was reaching in for exactly
+     these two properties, unopposed since this rule never set them. Result:
+     "Trading" rendered black/normal-case on desktop but grey/UPPERCASE on a
+     phone, purely as a side effect of a generic rule with nothing left to
+     generically apply to. Font-size/weight already matched on both — this
+     closes the gap on the two properties that didn't. */
+  .set-head h2 {
+    font-size: 20px; font-weight: 700; letter-spacing: -.03em; margin: 0 0 6px;
+    color: var(--text); text-transform: none;
+  }
   .set-head p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0; }
   /* One setting: label/help on the left, control on the right, wrapping when narrow */
   .set-row { display: flex; align-items: flex-start; gap: 16px; padding: 13px 0;
@@ -605,7 +632,7 @@
   .set-note { padding: 12px 14px; border-radius: 10px; font-size: 12px; line-height: 1.6;
               background: rgba(255,149,0,.08); border: .5px solid rgba(255,149,0,.3);
               color: #a35c00; margin-bottom: 16px; }
-  .set-swatch { width: 36px; height: 36px; border-radius: 9px; border: .5px solid var(--border);
+  .set-swatch { width: 44px; height: 44px; border-radius: 9px; border: .5px solid var(--border);
                 padding: 0; cursor: pointer; background: none; }
   .set-preview { height: 96px; border-radius: 12px; display: flex; align-items: flex-end;
                  padding: 12px 14px; font-weight: 600; letter-spacing: -.02em; font-size: 15px; }
@@ -799,7 +826,9 @@
   .ac-drop { position: absolute; top: 100%; left: 0; width: 300px; max-height: 240px; overflow-y: auto; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; z-index: 50; display: none; margin-top: 6px; box-shadow: var(--shadow-lg); }
   .ac-drop.show { display: block; animation: scaleIn .2s cubic-bezier(.4,0,.2,1); }
   @keyframes scaleIn { from { opacity: 0; transform: scale(.95) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
-  .ac-item { padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: .5px solid rgba(0,0,0,.06); transition: var(--transition); }
+  /* 10px padding measured at 39px tall — every stock-search suggestion in the
+     app, and it was a click-handled div with no role at all. */
+  .ac-item { padding: 14px; cursor: pointer; font-size: 13px; border-bottom: .5px solid rgba(0,0,0,.06); transition: var(--transition); }
   .ac-item:hover, .ac-item.selected { background: rgba(0,113,227,.06); }
   .ac-item .ac-sym { font-weight: 600; color: var(--text); }
   .ac-item .ac-name { color: var(--muted); font-size: 11px; margin-left: 8px; }
@@ -2409,9 +2438,17 @@ window.fetch = function(...args) {
           <div style="font-weight:600;margin-bottom:4px">Paper Intraday Trading Mode</div>
           <div style="font-size:11px;color:var(--muted)">When enabled, all trades are simulated and recorded in the database but NOT executed on Groww. Great for learning and backtesting.</div>
         </div>
+        <!-- 16x16 checkbox switching a real vs simulated trading mode — a money
+             path, so only the TAP TARGET changes here, nothing about how the
+             control works. It stays a real <input type="checkbox"> with the
+             same id/onchange; toggleIntradayPaperMode() and the six places
+             elsewhere that read intraday-paper-mode-toggle.checked directly
+             are untouched. The <label> already wraps the input (native label
+             association gives it the click), so padding it is enough to reach
+             44px without any JS change. -->
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
-            <input type="checkbox" id="intraday-paper-mode-toggle" onchange="toggleIntradayPaperMode()" style="cursor:pointer;width:16px;height:16px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;padding:12px 4px;margin:-12px -4px">
+            <input type="checkbox" id="intraday-paper-mode-toggle" onchange="toggleIntradayPaperMode()" style="cursor:pointer;width:20px;height:20px">
             <span id="intraday-paper-mode-label">OFF</span>
           </label>
         </div>
@@ -2756,7 +2793,7 @@ window.fetch = function(...args) {
     </div>
     <div id="loss-analysis-results" style="display:none;margin-bottom:16px;background:#fef3c7;border:1px solid #fcd34d;border-radius:12px;padding:16px"></div>
     <div style="max-height:600px;overflow-y:auto">
-      <table><thead><tr><th>Symbol</th><th>Signal</th><th>Qty</th><th>Entry Price</th><th>Position Value</th><th>Projected Exit</th><th>Stop Loss</th><th>Current Price</th><th>P&L</th><th>Status</th></tr></thead>
+      <table class="table"><thead><tr><th>Symbol</th><th>Signal</th><th>Qty</th><th>Entry Price</th><th>Position Value</th><th>Projected Exit</th><th>Stop Loss</th><th>Current Price</th><th>P&L</th><th>Status</th></tr></thead>
       <tbody id="paper-trades-body"><tr><td colspan="10" style="color:var(--muted);text-align:center;padding:20px">Loading trades...</td></tr></tbody></table>
     </div>
 
@@ -9604,13 +9641,15 @@ function setupAutocomplete(inputId) {
         const results = await api('/api/search-stocks?q=' + encodeURIComponent(q));
         if (!results.length) { dropdown.classList.remove('show'); return; }
         dropdown.innerHTML = results.map(r =>
-          `<div class="ac-item" data-sym="${r.symbol}"><span class="ac-sym">${r.symbol}</span><span class="ac-name">${r.name}</span></div>`
+          `<div class="ac-item" role="option" tabindex="0" data-sym="${r.symbol}"><span class="ac-sym">${r.symbol}</span><span class="ac-name">${r.name}</span></div>`
         ).join('');
         dropdown.classList.add('show');
         dropdown.querySelectorAll('.ac-item').forEach(item => {
-          item.addEventListener('click', () => {
-            input.value = item.dataset.sym;
-            dropdown.classList.remove('show');
+          const choose = () => { input.value = item.dataset.sym; dropdown.classList.remove('show'); };
+          item.addEventListener('click', choose);
+          // Was click-only: a <div> with no role and no keyboard path at all.
+          item.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); }
           });
         });
       } catch(e) { dropdown.classList.remove('show'); }
@@ -10125,7 +10164,7 @@ async function intradayLoadDashboard() {
     const posArr = positions.positions || [];
     document.getElementById('fno-trade-count').textContent = (trades.trades||[]).length;
     if (posArr.length) {
-      let html = '<table style="width:100%"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>P&L</th><th>Action</th></tr></thead><tbody>';
+      let html = '<table class="table" style="width:100%"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>LTP</th><th>P&L</th><th>Action</th></tr></thead><tbody>';
       posArr.forEach(p => {
         const pnl = p.pnl || p.unrealized_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--pnl-up)' : 'var(--pnl-down)';
@@ -10147,7 +10186,7 @@ async function intradayLoadDashboard() {
     // Trade log
     const tradeArr = trades.trades || [];
     if (tradeArr.length) {
-      let html = '<table style="width:100%"><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Premium</th><th>Total Cost</th><th>Status</th></tr></thead><tbody>';
+      let html = '<table class="table" style="width:100%"><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Premium</th><th>Total Cost</th><th>Status</th></tr></thead><tbody>';
       tradeArr.slice().reverse().forEach(t => {
         const actionColor = t.action === 'BUY' ? 'var(--green)' : 'var(--red)';
         html += `<tr>
@@ -10364,7 +10403,7 @@ async function fnoFindAffordable() {
     }
 
     let html = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Budget: ₹${data.budget} | Max premium/unit: ₹${data.max_premium_per_unit} | Found: ${data.options_found} options</div>`;
-    html += '<table style="width:100%;font-size:13px"><thead><tr><th>Symbol</th><th>Type</th><th>Strike</th><th>LTP</th><th>Total</th><th>Charges</th><th>All-in</th><th>OI</th><th>Score</th><th></th></tr></thead><tbody>';
+    html += '<table class="table" style="width:100%;font-size:13px"><thead><tr><th>Symbol</th><th>Type</th><th>Strike</th><th>LTP</th><th>Total</th><th>Charges</th><th>All-in</th><th>OI</th><th>Score</th><th></th></tr></thead><tbody>';
     opts.forEach(o => {
       const typeColor = o.option_type === 'CE' ? 'var(--green)' : 'var(--red)';
       html += `<tr>
@@ -10409,7 +10448,7 @@ async function fnoLoadChain() {
       return;
     }
 
-    let html = '<table style="width:100%;font-size:12px"><thead><tr><th colspan="4" style="text-align:center;color:var(--green)">CALLS</th><th>Strike</th><th colspan="4" style="text-align:center;color:var(--red)">PUTS</th></tr><tr><th>OI</th><th>LTP</th><th>IV</th><th>Bid</th><th></th><th>Bid</th><th>IV</th><th>LTP</th><th>OI</th></tr></thead><tbody>';
+    let html = '<table class="table" style="width:100%;font-size:12px"><thead><tr><th colspan="4" style="text-align:center;color:var(--green)">CALLS</th><th>Strike</th><th colspan="4" style="text-align:center;color:var(--red)">PUTS</th></tr><tr><th>OI</th><th>LTP</th><th>IV</th><th>Bid</th><th></th><th>Bid</th><th>IV</th><th>LTP</th><th>OI</th></tr></thead><tbody>';
     strikes.forEach(s => {
       const ce = s.call || s.CE || {};
       const pe = s.put || s.PE || {};
@@ -11145,7 +11184,7 @@ async function fnoLoadAutoLog() {
     const log = (data.log || []).slice(-20).reverse();
     if (!log.length) return;
 
-    let html = '<table style="width:100%"><thead><tr><th>Time</th><th>Actions</th><th>Details</th></tr></thead><tbody>';
+    let html = '<table class="table" style="width:100%"><thead><tr><th>Time</th><th>Actions</th><th>Details</th></tr></thead><tbody>';
     log.forEach(entry => {
       const time = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
       const actions = entry.actions || [];
@@ -11210,7 +11249,7 @@ async function intradayLoadDashboard() {
     // Render positions
     const posArr = positions.positions || [];
     if (posArr.length) {
-      let html = '<table style="width:100%;font-size:12px"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>LTP</th><th>P&L ₹</th><th>P&L %</th><th>Margin %</th><th>Action</th></tr></thead><tbody>';
+      let html = '<table class="table" style="width:100%;font-size:12px"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>LTP</th><th>P&L ₹</th><th>P&L %</th><th>Margin %</th><th>Action</th></tr></thead><tbody>';
       posArr.forEach(p => {
         const pnl = p.pnl || p.unrealized_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--pnl-up)' : 'var(--pnl-down)';
@@ -11238,7 +11277,7 @@ async function intradayLoadDashboard() {
     // Trade log (today only)
     const tradeArr = trades.trades || [];
     if (tradeArr.length) {
-      let html = '<table style="width:100%;font-size:11px"><thead><tr><th>Time</th><th>Mode</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Entry/Exit</th><th>P&L</th><th>Status</th></tr></thead><tbody>';
+      let html = '<table class="table" style="width:100%;font-size:11px"><thead><tr><th>Time</th><th>Mode</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Entry/Exit</th><th>P&L</th><th>Status</th></tr></thead><tbody>';
       tradeArr.slice().reverse().forEach(t => {
         const actionColor = t.action === 'BUY' ? 'var(--green)' : 'var(--red)';
         const modeLabel = t.is_paper ? 'PAPER' : 'REAL';
@@ -11554,7 +11593,7 @@ async function intradayLoadAutoLog() {
     const data = await api('/api/fno/auto-trade/log');
     const runs = Array.isArray(data) ? data : data.runs || [];
     if (runs.length) {
-      let html = '<table style="width:100%;font-size:11px"><tr><th>Time</th><th>Symbol</th><th>Signal</th><th>Action</th><th>Status</th></tr>';
+      let html = '<table class="table" style="width:100%;font-size:11px"><tr><th>Time</th><th>Symbol</th><th>Signal</th><th>Action</th><th>Status</th></tr>';
       runs.slice(0,20).forEach(r => {
         html += `<tr>
           <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
@@ -11658,7 +11697,7 @@ function renderResearchLeaderboard(container, lb) {
   let html = `<div class="card" style="margin-bottom:14px">
     <div class="card-title"> Alpha Score Leaderboard — ${lb.length} Stocks Ranked</div>
     <div style="color:var(--muted);font-size:11px;margin-bottom:10px">Same algorithm, every stock. Ranked by composite Alpha Score.</div>
-    <table style="width:100%;border-collapse:collapse"><thead>
+    <table class="table" style="width:100%;border-collapse:collapse"><thead>
       <tr style="font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
         <th style="padding:6px 4px">#</th><th>Stock</th><th>Sector</th><th>Alpha</th><th>Conviction</th>
         <th>Verdict</th><th>Regime</th><th>Tech</th><th>Fund</th><th>Inst</th><th>Sent</th><th>Risk</th><th></th>
