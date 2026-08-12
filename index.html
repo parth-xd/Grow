@@ -507,12 +507,17 @@
      rounded pills — the 8px-radius rectangle plus a solid shadow read as a
      different, louder control family in that one row. Rounded to match its
      neighbours' silhouette and the shadow dropped to match their flatter
-     weight; the accent fill stays, since blue was deliberately kept as the
-     primary colour earlier this session, and it is still the only filled
-     control in the row, so it still reads as the primary action. Scoped by
-     ancestor rather than a new class so the other Scan Watchlist button (in
-     the Watchlist card body) is untouched. */
-  .header-actions .btn-primary { border-radius: var(--r-pill); box-shadow: none; }
+     weight. Background/text now mirror the exact tint the Auto-Trade pill
+     uses (rgba accent at .12 opacity + var(--accent) text, see
+     updateCashAutoTradeUI's `rgba(0,200,83,.12)` / `var(--green)` pair) —
+     the solid fill read heavier than its pill neighbours even after the
+     shape fix. Scoped by ancestor rather than a new class so the other Scan
+     Watchlist button (in the Watchlist card body) is untouched. */
+  .header-actions .btn-primary {
+    border-radius: var(--r-pill); box-shadow: none;
+    background: rgba(0,113,227,.12); color: var(--accent);
+  }
+  .header-actions .btn-primary:hover { background: rgba(0,113,227,.18); box-shadow: none; }
   .btn-primary:hover { background: #0077ED; transform: scale(1.01); box-shadow: 0 4px 12px rgba(0,113,227,.3); }
   .btn-green { background: var(--green); color: #fff; border: none; box-shadow: 0 2px 8px rgba(52,199,89,.2); }
   .btn-green:hover { background: #2db84a; transform: scale(1.01); box-shadow: 0 4px 12px rgba(52,199,89,.3); }
@@ -8113,7 +8118,7 @@ async function renderHeatmap(commodity) {
              'aria-label="Map zoom level">' +
       '<div class="mzm-indicator" id="mzm-indicator">' +
         '<span class="mzm-pill">' +
-          '<svg class="mzm-tri" width="8" height="8" viewBox="0 0 16 16" aria-hidden="true">' +
+          '<svg class="mzm-tri" width="9" height="9" viewBox="0 0 16 16" aria-hidden="true">' +
             '<path d="M4 3 L4 13 L12 8 Z" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>' +
           '</svg>' +
         '</span>' +
