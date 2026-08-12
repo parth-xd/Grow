@@ -812,26 +812,185 @@
   .heatmap-controls label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .heatmap-svg-wrap { position: relative; width: 100%; }
   .heatmap-svg-wrap svg { display: block; width: 100%; }
-  /* Top-right: clear of the legend along the bottom edge and of the fixed tab
-     bar on mobile, and out of the way of the densest part of a world map.
-     44px targets on both axes — these are the WCAG 2.5.1 single-pointer
-     alternative to pinch, so they have to be genuinely tappable. */
-  .map-zoom {
+  /* ── Map zoom: vertical slider (DESKTOP) ────────────────────────────────
+     Right edge of the map, clear of the legend along the bottom. Readout on
+     top, ruler + slider, presets below. Hidden on mobile in favour of
+     .map-zoom-mobile below — same two-variants-always-rendered pattern as
+     .at-full/.at-short and .dh-full/.dh-short elsewhere in this file, so
+     rotating the device is a CSS reflow, not a stale JS branch.
+
+     A NATIVE <input type=range> rather than a hand-rolled drag control. That
+     is the accessibility difference: WCAG 2.5.1 (Level A) wants a
+     single-pointer alternative to pinch, and a native range answers a single
+     tap anywhere on its track plus arrow keys, whereas a custom drag-only
+     slider is itself a path-based gesture and would fail the same criterion
+     it was added to satisfy. */
+  .map-zoom-desktop {
     position: absolute; top: 10px; right: 10px; z-index: 5;
-    display: flex; flex-direction: column; gap: 6px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 10px 6px;
+    border-radius: 14px;
+    background: rgba(255,255,255,.86);
+    -webkit-backdrop-filter: saturate(180%) blur(12px);
+    backdrop-filter: saturate(180%) blur(12px);
+    border: .5px solid var(--border);
+    box-shadow: var(--shadow-sm);
   }
-  .map-zoom-btn {
-    width: 44px; height: 44px;
+  .map-zoom-val {
+    font-size: 13px; font-weight: 700; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums; color: var(--text);
+    min-width: 40px; text-align: center;
+  }
+  /* Ruler of dashes with the scale written alongside, the same idea as a
+     playback-speed control: the dashes give you a sense of travel, and the
+     labelled ones tell you where 1x/2x/4x/8x actually are. They are real
+     elements rather than a repeating gradient because four of them carry a
+     label and sit at logarithmic positions, which a gradient cannot express. */
+  .map-zoom-track { position: relative; height: 132px; width: 40px; }
+  .map-zoom-ticks { position: absolute; inset: 0; pointer-events: none; }
+  .map-zoom-tick {
+    position: absolute; right: 4px;
+    width: 9px; height: 1px; background: var(--border);
+  }
+  .map-zoom-tick.is-major { width: 15px; background: var(--text); opacity: .85; }
+  .map-zoom-tick span {
+    position: absolute; right: 17px; top: -6px;
+    font-size: 9px; font-weight: 600; line-height: 1;
+    color: var(--muted); font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .map-zoom-slider {
+    position: absolute; inset: 0; margin: 0;
+    width: 34px; height: 132px;
+    /* writing-mode is what makes it vertical; appearance:none is what lets the
+       tick ruler behind it show through. The legacy `appearance:
+       slider-vertical` was tried first and is deliberately NOT used: it forces
+       the platform's own opaque track, which painted over the ruler entirely.
+       Where writing-mode is unsupported this degrades to a horizontal slider
+       that still works, and the preset chips are unaffected either way. */
+    writing-mode: vertical-lr;
+    -webkit-appearance: none;
+    appearance: none;
+    direction: rtl;                 /* low value at the bottom, not the top */
+    background: transparent; cursor: pointer;
+  }
+  .map-zoom-slider::-webkit-slider-runnable-track {
+    width: 3px; border-radius: 2px; background: rgba(0,0,0,.12);
+  }
+  .map-zoom-slider::-moz-range-track {
+    width: 3px; border-radius: 2px; background: rgba(0,0,0,.12);
+  }
+  /* A wide black dash, so the thumb reads as the "current" mark on the same
+     ruler rather than as a separate widget sitting on top of it. */
+  .map-zoom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 26px; height: 3px; border-radius: 2px;
+    background: var(--text);
+    box-shadow: 0 0 0 3px rgba(255,255,255,.9); cursor: grab;
+  }
+  .map-zoom-slider::-moz-range-thumb {
+    width: 26px; height: 3px; border: none; border-radius: 2px;
+    background: var(--text);
+    box-shadow: 0 0 0 3px rgba(255,255,255,.9); cursor: grab;
+  }
+  .map-zoom-slider:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+  .map-zoom-presets { display: flex; flex-direction: column; gap: 4px; }
+  .map-zoom-preset {
+    width: 34px; height: 26px;
     display: flex; align-items: center; justify-content: center;
-    border: .5px solid var(--border); border-radius: 10px;
-    background: rgba(255,255,255,.92);
-    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-    color: var(--text); font-size: 17px; font-weight: 600; line-height: 1;
-    font-family: inherit; cursor: pointer; box-shadow: var(--shadow-sm);
-    transition: var(--transition);
+    border: none; border-radius: 8px;
+    background: rgba(0,0,0,.06); color: var(--text);
+    font-family: inherit; font-size: 11px; font-weight: 600;
+    cursor: pointer; transition: var(--transition);
   }
-  .map-zoom-btn:hover { background: #fff; }
-  .map-zoom-btn:active { transform: scale(.94); }
+  .map-zoom-preset:hover { background: rgba(0,0,0,.12); }
+  .map-zoom-preset.active { background: var(--text); color: #fff; }
+
+  /* ── Map zoom: depth gauge (MOBILE) ─────────────────────────────────────
+     Deliberately different from the desktop control, not a resize of it: no
+     card, no background, no border, no shadow — the control sits directly
+     over the map. Thin dashes, an orange (var(--yellow), Apple's system
+     orange — already a token, not a new colour) triangle + value in place of
+     a slider thumb, plain +/- glyphs. Closer to an Apple Watch depth gauge
+     than a web slider, per the supplied reference.
+
+     Structurally independent from .map-zoom-desktop (separate class names
+     throughout, "mzm-" prefix) so nothing here can leak into or be broken by
+     the desktop rules above. Shares only the zoom MATH (tToScale/scaleToT)
+     and the single _heatmapZoom instance — there is still exactly one zoom
+     implementation, only the presentation forks. */
+  /* Pinned to BOTH top and bottom, not a fixed height: the map's rendered
+     height on mobile turns out to be ~160px, not the 420px the SVG's own
+     viewBox uses internally — it is scaled to fit the container width and
+     that produces a much shorter box in portrait. Rather than hardcode a
+     guess that would silently overflow if a different commodity or a
+     different screen width changes that number, the container spans
+     whatever space actually exists between the two insets and .mzm-track
+     (flex:1) fills whatever is left after the two buttons — so this adapts
+     on its own instead of needing to be kept in sync with the map. */
+  .map-zoom-mobile {
+    display: none;   /* shown only inside the mobile media query below */
+    position: absolute; top: 6px; bottom: 6px; right: 28px; z-index: 5;
+    flex-direction: column; align-items: center;
+  }
+  .mzm-btn {
+    width: 44px; height: 26px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; padding: 0; margin: 0;
+    font-family: inherit; font-size: 18px; font-weight: 300; line-height: 1;
+    color: var(--text); cursor: pointer;
+  }
+  .mzm-btn:active { opacity: .5; }
+  .mzm-caption {
+    font-size: 8px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted); opacity: .75;
+    flex-shrink: 0; line-height: 1; margin: 1px 0;
+  }
+  .mzm-track { position: relative; width: 44px; flex: 1 1 auto; min-height: 34px; margin: 2px 0; }
+  .mzm-ticks { position: absolute; inset: 0; pointer-events: none; }
+  .mzm-tick {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    width: 7px; height: 1px; background: rgba(0,0,0,.25);
+  }
+  .mzm-tick.is-major { width: 12px; background: rgba(0,0,0,.5); }
+  .mzm-tick span {
+    position: absolute; left: -21px; top: -5px; width: 18px; text-align: right;
+    font-size: 8px; font-weight: 600; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  /* Transparent and thumb-less on purpose — this is the real interactive
+     surface (drag, single-tap-to-position, arrow keys), the orange triangle
+     below is a pure readout. Exactly one element captures touch input, so
+     there is nothing for a drag gesture to be ambiguous between. */
+  .mzm-slider {
+    /* inset:0 matches whatever height .mzm-track (flex:1) resolves to —
+       no fixed height here, so nothing to keep in sync with the map. */
+    position: absolute; inset: 0; margin: 0;
+    writing-mode: vertical-lr;
+    -webkit-appearance: none; appearance: none;
+    direction: rtl; background: transparent; cursor: pointer; opacity: 0;
+  }
+  .mzm-slider::-webkit-slider-runnable-track { background: transparent; }
+  .mzm-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 44px; height: 22px; background: transparent; }
+  .mzm-slider::-moz-range-track { background: transparent; border: none; }
+  .mzm-slider::-moz-range-thumb { width: 44px; height: 22px; background: transparent; border: none; }
+  /* :focus-within on the wrapper, not :focus-visible on the slider itself —
+     the slider is opacity:0, so its own outline would be invisible too. */
+  .mzm-track:focus-within { outline: 2px solid var(--yellow); outline-offset: 4px; border-radius: 8px; }
+  .mzm-indicator {
+    position: absolute; left: calc(50% + 8px); transform: translateY(50%);
+    display: flex; align-items: center; gap: 3px; pointer-events: none;
+  }
+  .mzm-tri { color: var(--yellow); font-size: 9px; line-height: 1; }
+  .mzm-val {
+    color: var(--yellow); font-size: 11px; font-weight: 700;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  @media (max-width: 768px) {
+    .map-zoom-desktop { display: none; }
+    .map-zoom-mobile { display: flex; }
+  }
   .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(255,255,255,.92); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border: .5px solid var(--border); border-radius: 14px; padding: 14px 18px; font-size: 12px; box-shadow: var(--shadow-lg); z-index: 20; max-width: 300px; opacity: 0; transition: opacity .2s ease-out; }
   .heatmap-tooltip.show { opacity: 1; }
   /* ── Skeleton loading states ──────────────────────────────────────────
@@ -7764,40 +7923,157 @@ async function renderHeatmap(commodity) {
   const g = svg.append('g');
 
   // Zoom + Pan
-  _heatmapZoom = d3.zoom().scaleExtent([1, 8]).on('zoom', (e) => g.attr('transform', e.transform));
+  // Assigned once the zoom control below exists. Declared here because the zoom
+  // behaviour has to be created before the control (the control needs `svg`),
+  // yet the handler has to be able to push state INTO the control. One
+  // direction only: zoom -> control. The control calls scaleTo, which fires
+  // this handler, which updates the readout and slider — so pinch, wheel,
+  // slider and presets all converge on the same single path.
+  let reflectZoom = null;
+  _heatmapZoom = d3.zoom().scaleExtent([1, 8]).on('zoom', (e) => {
+    g.attr('transform', e.transform);
+    if (reflectZoom) reflectZoom(e.transform.k);
+  });
   svg.call(_heatmapZoom);
 
-  // On-screen zoom controls — a single-pointer alternative to pinch.
+  // On-screen zoom control — a vertical slider beside the map.
   //
-  // WCAG 2.5.1 Pointer Gestures (Level A) requires that anything driven by a
-  // multipoint gesture also work with a single pointer, and the criterion's own
-  // worked example is precisely this case: "a map view that supports the
-  // pinch/spread gesture... also includes plus/minus buttons to zoom in and
-  // out." Pinch-only was therefore a Level A failure, not just awkward on a
-  // phone.
+  // WCAG 2.5.1 Pointer Gestures (Level A) requires a single-pointer
+  // alternative to any multipoint gesture, and its own worked example is a map
+  // with pinch-zoom plus discrete controls. Pinch-only was a Level A failure.
   //
-  // Buttons rather than the drag-slider that was originally suggested: dragging
-  // a slider is itself a path-based gesture, so a slider would fail the very
-  // criterion it was meant to satisfy. Buttons also work with a keyboard.
+  // A NATIVE <input type=range> is what makes a slider the right answer here.
+  // A hand-rolled drag control would be path-based and would fail the very
+  // criterion it was added for; a native range accepts a single tap anywhere
+  // on the track and responds to arrow keys, so it satisfies 2.5.1 by itself.
+  // The preset chips add discrete jumps on top.
   //
-  // These drive the SAME _heatmapZoom behaviour as pinch and wheel, via
-  // scaleBy/transform, so panning, the [1,8] scaleExtent clamp and the tooltip
-  // all keep working with no second zoom implementation to keep in sync.
-  // Rebuilt on each render because mapDiv.innerHTML is cleared above.
+  // LOGARITHMIC, not linear: zoom is perceptually multiplicative, so a linear
+  // slider would spend half its travel between 4x and 8x and feel dead at the
+  // bottom. t in [0,1] -> scale = 8^t puts 1x at the bottom, ~2.8x mid, 8x top.
+  //
+  // Everything drives the SAME _heatmapZoom as pinch and wheel, so panning, the
+  // [1,8] scaleExtent clamp and the tooltip keep working, with no second zoom
+  // implementation to keep in sync. Rebuilt per render (mapDiv is cleared).
+  const Z_MIN = 1, Z_MAX = 8;
+  const tToScale = (t) => Z_MIN * Math.pow(Z_MAX / Z_MIN, t);
+  const scaleToT = (s) => Math.log(s / Z_MIN) / Math.log(Z_MAX / Z_MIN);
+
   const zoomCtl = document.createElement('div');
-  zoomCtl.className = 'map-zoom';
+  zoomCtl.className = 'map-zoom-desktop';
   zoomCtl.innerHTML =
-    '<button type="button" class="map-zoom-btn" data-z="in" aria-label="Zoom in" title="Zoom in">+</button>' +
-    '<button type="button" class="map-zoom-btn" data-z="out" aria-label="Zoom out" title="Zoom out">−</button>' +
-    '<button type="button" class="map-zoom-btn" data-z="reset" aria-label="Reset zoom" title="Reset zoom">⟲</button>';
-  zoomCtl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.map-zoom-btn');
-    if (!btn) return;
-    const t = svg.transition().duration(220);
-    if (btn.dataset.z === 'reset') t.call(_heatmapZoom.transform, d3.zoomIdentity);
-    else t.call(_heatmapZoom.scaleBy, btn.dataset.z === 'in' ? 1.6 : 1 / 1.6);
-  });
+    '<div class="map-zoom-val" id="map-zoom-val">1.0×</div>' +
+    '<div class="map-zoom-track">' +
+      '<div class="map-zoom-ticks">' + (() => {
+        // 13 dashes so that t = 0, 4/12, 8/12, 1 land exactly on 1x, 2x, 4x and
+        // 8x under scale = 8^t — those four get a label, the rest are plain
+        // dashes for a sense of travel. Positioned from the bottom because the
+        // slider runs low-to-high upward (direction: rtl on a vertical range).
+        const N = 13;
+        let out = '';
+        for (let i = 0; i < N; i++) {
+          const t = i / (N - 1);
+          const label = [1, 2, 4, 8].find(v => Math.abs(tToScale(t) - v) < 0.05);
+          out += `<div class="map-zoom-tick${label ? ' is-major' : ''}" ` +
+                 `style="bottom:${(t * 100).toFixed(2)}%">` +
+                 (label ? `<span>${label}×</span>` : '') + '</div>';
+        }
+        return out;
+      })() + '</div>' +
+      '<input type="range" class="map-zoom-slider" id="map-zoom-slider" ' +
+             'min="0" max="1000" value="0" step="1" orient="vertical" ' +
+             'aria-label="Map zoom level">' +
+    '</div>' +
+    '<div class="map-zoom-presets">' +
+      [1, 2, 4, 8].map(s =>
+        `<button type="button" class="map-zoom-preset" data-scale="${s}" ` +
+        `aria-label="Zoom to ${s} times">${s}×</button>`).join('') +
+    '</div>';
   mapDiv.appendChild(zoomCtl);
+
+  const slider = zoomCtl.querySelector('.map-zoom-slider');
+  const readout = zoomCtl.querySelector('.map-zoom-val');
+
+  // ── Mobile depth-gauge control ──────────────────────────────────────────
+  // Same _heatmapZoom, same tToScale/scaleToT — presentation-only fork.
+  const mobileCtl = document.createElement('div');
+  mobileCtl.className = 'map-zoom-mobile';
+  mobileCtl.innerHTML =
+    '<button type="button" class="mzm-btn" data-step="up" aria-label="Zoom in">+</button>' +
+    '<div class="mzm-caption">In</div>' +
+    '<div class="mzm-track">' +
+      '<div class="mzm-ticks">' + (() => {
+        const N = 13;
+        let out = '';
+        for (let i = 0; i < N; i++) {
+          const t = i / (N - 1);
+          const label = [1, 2, 4, 8].find(v => Math.abs(tToScale(t) - v) < 0.05);
+          out += `<div class="mzm-tick${label ? ' is-major' : ''}" ` +
+                 `style="bottom:${(t * 100).toFixed(2)}%">` +
+                 (label ? `<span>${label}×</span>` : '') + '</div>';
+        }
+        return out;
+      })() + '</div>' +
+      '<input type="range" class="mzm-slider" id="mzm-slider" ' +
+             'min="0" max="1000" value="0" step="1" orient="vertical" ' +
+             'aria-label="Map zoom level">' +
+      '<div class="mzm-indicator" id="mzm-indicator">' +
+        '<span class="mzm-tri">▶</span><span class="mzm-val">1.0×</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="mzm-caption">Out</div>' +
+    '<button type="button" class="mzm-btn" data-step="down" aria-label="Zoom out">−</button>';
+  mapDiv.appendChild(mobileCtl);
+
+  const mSlider = mobileCtl.querySelector('.mzm-slider');
+  const mIndicator = mobileCtl.querySelector('.mzm-indicator');
+  const mVal = mobileCtl.querySelector('.mzm-val');
+
+  // Single source of truth: this only ever REFLECTS the zoom state. It is
+  // called from the zoom event below, so pinch, wheel, both sliders, the
+  // desktop presets and the mobile +/- all converge here. Assigning
+  // slider.value programmatically does not fire `input`, so there is no
+  // feedback loop back into the zoom from either control.
+  reflectZoom = (scale) => {
+    readout.textContent = scale.toFixed(1) + '×';
+    slider.value = String(Math.round(scaleToT(scale) * 1000));
+    zoomCtl.querySelectorAll('.map-zoom-preset').forEach(b =>
+      b.classList.toggle('active', Math.abs(Number(b.dataset.scale) - scale) < 0.05));
+
+    const t = scaleToT(scale);
+    mSlider.value = String(Math.round(t * 1000));
+    mIndicator.style.bottom = (t * 100).toFixed(2) + '%';
+    mVal.textContent = scale.toFixed(1) + '×';
+  };
+
+  // No transition while dragging — a 220ms tween on every input event fights
+  // the finger and feels like lag.
+  slider.addEventListener('input', () => {
+    svg.call(_heatmapZoom.scaleTo, tToScale(Number(slider.value) / 1000));
+  });
+  zoomCtl.querySelectorAll('.map-zoom-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      svg.transition().duration(240)
+         .call(_heatmapZoom.scaleTo, Number(btn.dataset.scale));
+    });
+  });
+
+  mSlider.addEventListener('input', () => {
+    svg.call(_heatmapZoom.scaleTo, tToScale(Number(mSlider.value) / 1000));
+  });
+  // +/- step by a fixed multiplicative factor from the CURRENT scale — an
+  // increment model, matching the reference's +/- semantics. Deliberately
+  // different from the desktop control's jump-to-preset chips. √2 so two taps
+  // roughly double the zoom; d3's scaleExtent([1,8]) clamps the ends.
+  mobileCtl.querySelectorAll('.mzm-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cur = d3.zoomTransform(svg.node()).k;
+      const next = btn.dataset.step === 'up' ? cur * Math.SQRT2 : cur / Math.SQRT2;
+      svg.transition().duration(200).call(_heatmapZoom.scaleTo, next);
+    });
+  });
+
+  reflectZoom(1);
 
   // Tooltip
   let tooltip = document.getElementById('heatmap-tooltip');
