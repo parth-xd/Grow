@@ -76,8 +76,25 @@ def _save():
         db = get_db()
         with db.Session() as session:
             saved_count = 0
+            # Preload every row this save touches in ONE query, then look up in
+            # Python. This was `.filter_by(trade_id=...).first()` INSIDE the
+            # loop — one round-trip per journal entry, every save. _save() is
+            # reached from both create_pre_trade_report() and
+            # close_trade_report(), so it ran on every entry AND every exit;
+            # since the auto-close path now syncs the journal, that put it on
+            # the 5-second trade loop. 23 trades meant 23 queries where one
+            # suffices, and it grew with the journal.
+            _ids = [t["trade_id"] for t in _journal if t.get("trade_id")]
+            _existing_by_id = {}
+            if _ids:
+                _existing_by_id = {
+                    r.trade_id: r
+                    for r in session.query(TradeJournalEntry)
+                                    .filter(TradeJournalEntry.trade_id.in_(_ids))
+                                    .all()
+                }
             for trade in _journal:
-                existing = session.query(TradeJournalEntry).filter_by(trade_id=trade["trade_id"]).first()
+                existing = _existing_by_id.get(trade["trade_id"])
                 if existing:
                     # Keep the DB row aligned with the latest in-memory trade state.
                     existing.status = trade.get("status", "OPEN")
@@ -98,6 +115,10 @@ def _save():
                     existing.peak_pnl = trade.get("peak_pnl")
                     existing.actual_profit_pct = trade.get("actual_profit_pct")
                     existing.breakeven_price = trade.get("breakeven_price")
+                    # Backfills attribution onto rows written before the column
+                    # existed, as soon as the JSON record carries it.
+                    if trade.get("model_source"):
+                        existing.model_source = trade.get("model_source")
                     existing.pre_trade_json = json.dumps(trade.get("pre_trade")) if trade.get("pre_trade") else existing.pre_trade_json
                     existing.post_trade_json = json.dumps(trade.get("post_trade")) if trade.get("post_trade") else None
                     saved_count += 1
@@ -110,6 +131,7 @@ def _save():
                         side=trade.get("side", ""),
                         quantity=trade.get("quantity", 0),
                         trigger=trade.get("trigger", "auto"),
+                        model_source=trade.get("model_source"),
                         entry_time=datetime.fromisoformat(trade["entry_time"]) if trade.get("entry_time") else datetime.now(),
                         entry_price=trade.get("entry_price", 0),
                         exit_price=trade.get("exit_price"),
@@ -145,6 +167,7 @@ def create_pre_trade_report(
     is_paper: bool = False,
     trade_id: Optional[str] = None,
     entry_time: Optional[str] = None,
+    model_source: Optional[str] = None,
 ) -> dict:
     """
     Generate a comprehensive pre-trade report capturing the full reasoning
@@ -216,6 +239,11 @@ def create_pre_trade_report(
         "quantity": quantity,
         "trigger": trigger,
         "is_paper": is_paper,
+        # Which model generated this signal. Falls back to the prediction dict
+        # (get_prediction_xgb tags itself), then to GradientBoosting — the only
+        # cash model that existed before XGBoost was added, so an untagged
+        # trade is attributable to it rather than genuinely unknown.
+        "model_source": model_source or (prediction or {}).get("model_source") or "GradientBoosting",
 
         # ── Timing ────────────────────────────────
         "entry_time": entry_time or now.isoformat(),

@@ -309,11 +309,11 @@ def _get_groww_quote_fundamentals(groww_api, symbol):
     """Extract fundamental data from Groww quote API."""
     data = {}
     try:
-        if groww_api is None:
-            logger.warning("Groww API instance is None for symbol %s", symbol)
-            return data
-            
-        quote = groww_api.get_quote(exchange="NSE", trading_symbol=symbol, segment="CASH")
+        # FYERS via bot.fetch_quote (normalised to the same key names this
+        # code already read from Groww). groww_api is still accepted as a
+        # parameter for call-site compatibility but is no longer used here.
+        import bot
+        quote = bot.fetch_quote(symbol)
         if quote:
             data["ltp"] = quote.get("ltp", 0)
             data["open"] = quote.get("open", 0)
@@ -321,17 +321,18 @@ def _get_groww_quote_fundamentals(groww_api, symbol):
             data["low"] = quote.get("low", 0)
             data["prev_close"] = quote.get("prev_close", 0)
             data["volume"] = quote.get("volume", 0)
-            data["avg_volume"] = quote.get("avg_traded_volume", 0)
-            data["upper_circuit"] = quote.get("upper_circuit", 0)
-            data["lower_circuit"] = quote.get("lower_circuit", 0)
-            
-            # Volume spike detection
-            if data["avg_volume"] and data["volume"]:
-                data["volume_ratio"] = round(data["volume"] / data["avg_volume"], 2) if data["avg_volume"] > 0 else 1.0
-            else:
-                data["volume_ratio"] = 1.0
+            # FYERS extras Groww never provided — genuinely useful here.
+            data["change"] = quote.get("change", 0)
+            data["change_pct"] = quote.get("change_pct", 0)
+
+            # avg_traded_volume / upper_circuit / lower_circuit have no FYERS
+            # equivalent (see bot._FYERS_QUOTE_MISSING_FIELDS). Volume-spike
+            # detection needs avg volume, so it reports the neutral 1.0 rather
+            # than dividing by a fabricated zero and inventing a spike.
+            data["avg_volume"] = 0
+            data["volume_ratio"] = 1.0
     except Exception as e:
-        logger.warning("Groww quote fundamentals failed for %s: %s", symbol, e)
+        logger.warning("FYERS quote fundamentals failed for %s: %s", symbol, e)
     return data
 
 
@@ -495,26 +496,30 @@ def _fetch_competitor_prices(groww_api, symbol):
     """Fetch LTP of competitors for comparison."""
     peers = _get_competitors(symbol)
     peer_data = []
-    
-    if groww_api is None:
-        logger.warning("Groww API is None when fetching competitors for %s", symbol)
-        return peer_data
-    
+
+    # FYERS via bot.fetch_quote. groww_api is retained as a parameter for
+    # call-site compatibility but no longer used.
+    import bot
+
     for peer in peers[:5]:  # Max 5 competitors
         try:
-            quote = groww_api.get_quote(exchange="NSE", trading_symbol=peer, segment="CASH")
+            quote = bot.fetch_quote(peer)
             if quote:
                 ltp = quote.get("ltp", 0)
-                prev = quote.get("prev_close", 0)
-                change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0
+                # FYERS returns change % directly; fall back to computing it
+                # from prev_close only if the field is absent.
+                change_pct = quote.get("change_pct")
+                if change_pct is None:
+                    prev = quote.get("prev_close", 0)
+                    change_pct = round((ltp - prev) / prev * 100, 2) if prev else 0
                 peer_data.append({
                     "symbol": peer,
                     "ltp": ltp,
-                    "change_pct": change_pct,
+                    "change_pct": round(float(change_pct), 2),
                 })
         except Exception:
             pass
-    
+
     return peer_data
 
 

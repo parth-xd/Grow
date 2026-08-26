@@ -52,14 +52,62 @@ class PaperTradeTracker:
         return []
     
     def _save_trades(self):
+        """
+        Persist under an exclusive lock, MERGING rather than blind-overwriting.
+
+        This class loads the whole file at __init__ and previously wrote its
+        whole in-memory list back, so any field another writer had added in the
+        meantime was silently dropped. trailing_stop.py owns `peak_pnl` and
+        this class does not even know the key exists — so every save deleted
+        it, and the next trailing pass saw `peak_pnl` missing and reset it to
+        the CURRENT P&L. That is exactly the fingerprint on MARUTI: stored
+        peak_pnl -0.5553% (the final exit P&L) while highest_price_reached
+        13826 proved the true peak was +1.016%. With peak_pnl corrupted
+        negative, the profit-protection checks never armed.
+
+        Locking the read-modify-write and merging per trade_id means a writer
+        can only ever add or update its own fields, never erase another's.
+        """
+        import fcntl
+        lock_path = self.filename + ".lock"
+        try:
+            with open(lock_path, "w") as lf:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+                try:
+                    disk = []
+                    if os.path.exists(self.filename):
+                        with open(self.filename, "r") as f:
+                            disk = json.load(f) or []
+                    by_id = {t.get("id"): t for t in disk if isinstance(t, dict)}
+                    for t in self.trades:
+                        tid = t.get("id")
+                        if tid in by_id:
+                            merged = dict(by_id[tid])   # start from disk
+                            merged.update(t)            # our updates win
+                            by_id[tid] = merged
+                        else:
+                            by_id[tid] = t
+                    out = list(by_id.values())
+                    with open(self.filename, "w") as f:
+                        json.dump(out, f, indent=2, default=str)
+                    self.trades = out
+                    return
+                finally:
+                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        except Exception as e:
+            logger.warning("locked save failed (%s) — falling back to plain write", e)
+        self._save_trades_unlocked()
+
+    def _save_trades_unlocked(self):
         """Save trades to file"""
         with open(self.filename, 'w') as f:
             json.dump(self.trades, f, indent=2, default=str)
     
-    def record_entry(self, symbol, signal, confidence, entry_price, quantity=1, prediction=None, exit_reason=None):
+    def record_entry(self, symbol, signal, confidence, entry_price, quantity=1, prediction=None,
+                     exit_reason=None, model_source=None):
         """
         Record a new trade entry with trailing stop setup.
-        
+
         Args:
             symbol: Trading symbol
             signal: BUY or SELL
@@ -68,6 +116,13 @@ class PaperTradeTracker:
             quantity: Number of shares
             prediction: Dict with ML/news/market signals from bot.py
             exit_reason: Why trade is being entered
+            model_source: Which model produced this signal —
+                'GradientBoosting' or 'XGBoost'. Recorded on every trade so
+                the two cash models' live performance can be compared
+                directly. Falls back to prediction['model_source'] when the
+                caller doesn't pass it explicitly, and finally to
+                'GradientBoosting' (the only model that existed before the
+                XGB addition, so unattributed trades are attributable to it).
         """
         
         # Calculate cost coverage price (0.06% for entry+exit charges)
@@ -79,18 +134,33 @@ class PaperTradeTracker:
         trade_id = f"{symbol}-{signal[0]}-{now.strftime('%Y%m%d%H%M%S%f')}"
         
         stop_loss = entry_price * (1 - STOP_LOSS_PCT / 100) if signal == 'BUY' else entry_price * (1 + STOP_LOSS_PCT / 100)
+        # RULE 1: hard ceiling of MAX_CASH_SL_PCT (1%) on the initial stop, and
+        # breakeven priced for THIS quantity.
+        import trailing_strategy as _tstrat
+        _be_seed = _tstrat.build_trade(entry_price, quantity, signal,
+                                       stop_loss=stop_loss, symbol=symbol)
+        stop_loss = _be_seed['stop_loss']
         projected_exit = entry_price * (1 + TARGET_PCT / 100) if signal == 'BUY' else entry_price * (1 - TARGET_PCT / 100)
+
+        if model_source is None:
+            model_source = (prediction or {}).get('model_source') or 'GradientBoosting'
 
         trade = {
             'id': trade_id,
             'symbol': symbol,
             'signal': signal,
             'side': signal,
+            'model_source': model_source,
             'confidence': float(confidence),
             'entry_price': float(entry_price),
             'quantity': quantity,
             'entry_time': now.isoformat(),
             'stop_loss': round(float(stop_loss), 2),
+            # Stamped at ENTRY so the trailing logic uses the figure this
+            # position was actually sized against (breakeven is size-dependent:
+            # fixed brokerage/DP do not scale with quantity).
+            'breakeven_pct': _be_seed['breakeven_pct'],
+            'breakeven_price': _be_seed['breakeven_price'],
             'projected_exit': round(float(projected_exit), 2),
             'entry_profit_target': TARGET_PCT if signal == 'BUY' else -TARGET_PCT,
             
@@ -124,7 +194,33 @@ class PaperTradeTracker:
             'status': 'OPEN',  # OPEN, CLOSED, HIT_TARGET, HIT_SL
             'post_trade': None,
         }
-        
+
+        # BREAKEVEN, COMPUTED AT ENTRY.
+        #
+        # This is the price at which the trade stops losing money, and it is
+        # specific to THIS position: fixed charges (brokerage, DP) do not scale
+        # with quantity, so 2 shares and 10 shares of the same stock have very
+        # different breakevens (1.029% vs 0.383% on a Rs3,900 name).
+        #
+        # Computed here, at the moment quantity and price are both known,
+        # rather than lazily on the first trailing-stop check. Two reasons:
+        # the figure is a property of the trade and belongs on the record, and
+        # computing it later means the first few checks run without it — the
+        # window in which a small position can erode straight back through
+        # cost with nothing armed.
+        #
+        # Never fatal: a missing breakeven degrades the trailing arm threshold,
+        # it must not block recording a trade that has already been placed.
+        try:
+            from trailing_stop import calculate_breakeven_price, breakeven_pct_for
+            trade['breakeven_price'] = round(
+                calculate_breakeven_price(entry_price, signal, quantity=quantity), 2)
+            trade['breakeven_pct'] = round(breakeven_pct_for(entry_price, quantity), 4)
+        except Exception as e:
+            logger.warning("Could not compute breakeven at entry for %s: %s", symbol, e)
+            trade['breakeven_price'] = None
+            trade['breakeven_pct'] = None
+
         self.trades.append(trade)
         self._save_trades()
         return trade
@@ -166,7 +262,11 @@ class PaperTradeTracker:
                     trade['status'] = 'CLOSED'  # Trailing stop triggered
                 elif exit_reason == "target_hit":
                     trade['status'] = 'HIT_TARGET'
-                elif exit_reason == "stop_loss_hit" or exit_price <= (trade['entry_price'] * 0.98):
+                # Was a hardcoded * 0.98 (2%), which went stale the moment RULE 1
+                # capped the initial stop at 1%. Reads the stop actually armed on
+                # THIS trade instead of assuming a percentage.
+                elif exit_reason == "stop_loss_hit" or exit_price <= trade.get(
+                        'stop_loss', trade['entry_price'] * 0.99):
                     trade['status'] = 'HIT_SL'
                 else:
                     trade['status'] = 'CLOSED'
@@ -230,49 +330,33 @@ class PaperTradeTracker:
     
     def update_trailing_stop(self, trade_id, current_price):
         """
-        Update trailing stop for an open trade based on current price.
+        DELEGATES to trailing_strategy — no longer computes its own stop.
 
-        The trailing stop only ever moves in the profit-protecting direction:
-        - BUY:  stop ratchets UP   (uses max so it never drops back down)
-        - SELL: stop ratchets DOWN (uses min so it never rises back up)
+        This used to write a `trailing_stop` price from a flat 1.5%-of-price
+        buffer with no breakeven floor and no cap against the profit actually
+        made. On MARUTI that produced 13826 * 0.985 = 13618.61 — 68.39 below
+        entry and 120.01 below breakeven — so the "profit-protecting" stop
+        could only ever realise a loss. Meanwhile trailing_stop.py was running
+        a second, different calculation. Two writers, two answers, one file.
 
-        Buffer: 1.5% of current price (was incorrectly ₹1.50 absolute, which was
-        0.04% on a ₹3900 stock — smaller than a rounding error, so stops fired
-        on ordinary bid-ask noise).
+        The signature and return value are unchanged so every existing caller
+        keeps working; only the authority behind the number has moved.
         """
-        # SAFETY: buffer as a percentage of price, not absolute.  Otherwise a ₹50
-        # stock and a ₹3900 stock have completely different stop behavior.  On LT
-        # at ₹3900, 1.5 rupees was 0.04% (30 ticks) and stops were firing on every
-        # bid-ask bounce, closing every winning trade prematurely.
-        TRAILING_BUFFER_PCT = 0.015  # 1.5% of current price
-        
+        import trailing_strategy
         for trade in self.trades:
             if trade['id'] == trade_id and trade.get('status') == 'OPEN':
-                entry_price = trade.get('entry_price', 0)
-                signal = trade.get('signal', 'BUY')
-                
-                if signal == 'BUY':
-                    pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
-                    if pnl_pct > 1.5:  # Only start trailing after +1.5% profit
-                        buffer = current_price * TRAILING_BUFFER_PCT
-                        new_stop = round(current_price - buffer, 2)
-                        old_stop = trade.get('trailing_stop')
-                        # Only move the stop UP, never down
-                        trade['trailing_stop'] = max(new_stop, old_stop) if old_stop is not None else new_stop
-                        trade['highest_price_reached'] = max(trade.get('highest_price_reached', entry_price), current_price)
-                else:  # SELL
-                    pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price else 0
-                    if pnl_pct > 1.5:  # Only start trailing after +1.5% profit
-                        buffer = current_price * TRAILING_BUFFER_PCT
-                        new_stop = round(current_price + buffer, 2)
-                        old_stop = trade.get('trailing_stop')
-                        # Only move the stop DOWN, never up
-                        trade['trailing_stop'] = min(new_stop, old_stop) if old_stop is not None else new_stop
-                        trade['lowest_price_reached'] = min(trade.get('lowest_price_reached', entry_price), current_price)
-                
+                if not trade.get('breakeven_pct') or not trade.get('breakeven_price'):
+                    seed = trailing_strategy.build_trade(
+                        trade.get('entry_price'), trade.get('quantity') or 1,
+                        trade.get('signal', 'BUY'), stop_loss=trade.get('stop_loss'),
+                        symbol=trade.get('symbol', ''))
+                    trade.setdefault('breakeven_pct', seed['breakeven_pct'])
+                    trade.setdefault('breakeven_price', seed['breakeven_price'])
+                    trade['stop_loss'] = seed['stop_loss']
+                res = trailing_strategy.evaluate(trade, current_price, confidence_fn=None)
+                trade.update(res["state"])
                 self._save_trades()
                 return 'trailing_updated'
-        
         return None
     
     def get_open_positions(self, symbol=None):
@@ -284,50 +368,24 @@ class PaperTradeTracker:
 
 
 def get_live_price(symbol):
-    """Get the current live price for a symbol from Groww API"""
+    """
+    Get the current live price for a symbol (FYERS, via bot.fetch_live_price).
+
+    The Groww 5-minute-candle fallback that used to live here has been
+    removed: it constructed its own GrowwAPI client directly, which made it
+    a second, hidden market-data path that would have kept quietly serving
+    Groww prices into paper-trade fills after the migration. Returns None on
+    failure — every caller already handles a None price.
+    """
     try:
-        # Try using bot's fetch_live_price which uses get_ltp (Last Traded Price)
         from bot import fetch_live_price as bot_fetch_live_price
         price = bot_fetch_live_price(symbol)
         if price and price > 0:
             return float(price)
+        print(f"[get_live_price] No FYERS price available for {symbol}")
     except Exception as e:
-        print(f"[get_live_price] Bot LTP fetch failed for {symbol}: {e}")
-    
-    # Fallback: try 5-minute candles (Groww API doesn't support 1-minute)
-    try:
-        import os
-        from growwapi import GrowwAPI
-        
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            print("[get_live_price] No GROWW_ACCESS_TOKEN found")
-            return None
-        
-        groww = GrowwAPI(token)
-        
-        # Get the latest 5-minute candle(s) to get a more recent price
-        end_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        start_time = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        resp = groww.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange='NSE',
-            segment='EQ',
-            start_time=start_time,
-            end_time=end_time,
-            interval_in_minutes=5,  # Use 5-minute (Groww doesn't support 1-minute)
-        )
-        
-        candles = resp.get("candles", [])
-        if candles:
-            # Return the close price of the most recent candle
-            return float(candles[-1][4])  # index 4 is close price
-        else:
-            print(f"[get_live_price] No candles returned for {symbol}")
-    except Exception as e:
-        print(f"[get_live_price] Candle fetch failed for {symbol}: {e}")
-    
+        print(f"[get_live_price] FYERS LTP fetch failed for {symbol}: {e}")
+
     return None
 
 

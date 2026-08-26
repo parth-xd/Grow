@@ -85,18 +85,35 @@ def _persist_articles(symbol: str, articles: list):
     finally:
         session.close()
 
-def _load_db_articles(symbol: str, max_days: int = 7) -> list:
-    """Load recent articles from DB for this symbol."""
+def _load_db_articles(symbol: str, max_days: int = 7, as_of=None) -> list:
+    """
+    Load recent articles from DB for this symbol.
+
+    as_of: point-in-time ceiling for replay. Two distinct bounds are needed and
+    they are NOT interchangeable:
+
+      • published_at >= as_of - max_days  — the same recency window live use has
+      • fetched_at   <= as_of             — what the system actually KNEW then
+
+    Gating on published_at alone is the subtle mistake: articles are ingested
+    well after publication (measured median lag ~24h on this DB), so a
+    published-only filter admits articles that existed in the world but had not
+    yet been collected — future knowledge, dressed up as a valid timestamp.
+    """
     session = _get_news_db_session()
     if not session:
         return []
     try:
         from db_manager import NewsArticle
-        cutoff = datetime.utcnow() - timedelta(days=max_days)
-        rows = session.query(NewsArticle).filter(
+        anchor = as_of or datetime.utcnow()
+        cutoff = anchor - timedelta(days=max_days)
+        q = session.query(NewsArticle).filter(
             NewsArticle.symbol == symbol,
             NewsArticle.published_at >= cutoff,
-        ).order_by(NewsArticle.published_at.desc()).all()
+        )
+        if as_of is not None:
+            q = q.filter(NewsArticle.fetched_at <= as_of)
+        rows = q.order_by(NewsArticle.published_at.desc()).all()
         items = []
         for r in rows:
             items.append(NewsItem(
@@ -705,22 +722,35 @@ def _get_symbol_names():
     return _FALLBACK_SYMBOL_NAMES
 
 
-def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentiment:
+def get_news_sentiment(symbol: str, force_refresh: bool = False, as_of=None) -> NewsSentiment:
     """
     Fetch and analyze news sentiment for a stock symbol.
     Articles are persisted in DB — only new ones are fetched from external sources.
     Results cached in memory for 10 minutes.
+
+    as_of: replay mode. Reads ONLY what the DB had already fetched by that
+    instant — no live sources, no persistence, no cache. Live behaviour
+    (as_of=None) is untouched.
     """
     now = time.time()
     _cfg = _news_settings()
-    if not force_refresh and symbol in _cache:
+    # The cache is keyed by symbol alone, so a replay result must never be
+    # written to it or read from it — doing so would serve a 2026-05-13 view
+    # to the live trader.
+    if as_of is None and not force_refresh and symbol in _cache:
         ts, cached = _cache[symbol]
         if now - ts < _news_cache_ttl(_cfg):
             return cached
 
     # 1. Load articles already stored in DB (recent 7 days)
-    db_articles = _load_db_articles(symbol, max_days=7)
+    db_articles = _load_db_articles(symbol, max_days=7, as_of=as_of)
     known_hashes = {_title_hash(a.title) for a in db_articles}
+
+    if as_of is not None:
+        # Replay: fetching live sources here would inject today's headlines
+        # into a historical decision, and persisting them would corrupt the
+        # very fetched_at ordering this mode depends on.
+        return _score_articles(symbol, list(db_articles), now_dt=as_of)
 
     # 2. Fetch fresh articles from external sources
     company = _get_symbol_names().get(symbol, symbol)
@@ -774,7 +804,24 @@ def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentimen
         if _is_recent(a.published, max_days=7):
             all_articles.append(a)
 
-    # 6. Sort by date — newest first
+    result = _score_articles(symbol, all_articles)
+    _cache[symbol] = (now, result)
+    return result
+
+
+def _score_articles(symbol: str, all_articles: list, now_dt=None) -> NewsSentiment:
+    """
+    Sort + recency-weight a set of articles into a NewsSentiment.
+
+    Lifted verbatim out of get_news_sentiment so the live path and the
+    point-in-time replay path share ONE scorer. If replay reimplemented this,
+    the two would drift and every backtest would silently be grading a
+    different formula than the one that trades.
+
+    now_dt: the instant recency is measured from. Live passes None (=> now);
+    replay passes the as_of, because weighting a May article by its age today
+    would flatten every weight to near-equal and erase the recency signal.
+    """
     def _sort_key(article):
         dt = _parse_published_date(article.published)
         if dt:
@@ -782,39 +829,41 @@ def get_news_sentiment(symbol: str, force_refresh: bool = False) -> NewsSentimen
                 return dt.replace(tzinfo=None)
             return dt
         return datetime.min
-    all_articles.sort(key=_sort_key, reverse=True)
+    all_articles = sorted(all_articles, key=_sort_key, reverse=True)
 
-    # 7. Recency-weighted sentiment
     result = NewsSentiment(symbol=symbol, articles=all_articles)
+    if not all_articles:
+        return result
 
-    if all_articles:
-        now_dt = datetime.now()
-        weighted_sum = 0.0
-        weight_total = 0.0
-        for a in all_articles:
-            dt = _parse_published_date(a.published)
-            if dt:
-                age_hours = max((now_dt - dt.replace(tzinfo=None)).total_seconds() / 3600, 1)
-            else:
-                age_hours = 72
-            w = 1.0 / (age_hours ** 0.5)
-            weighted_sum += a.sentiment_score * w
-            weight_total += w
+    now_dt = now_dt or datetime.now()
+    if getattr(now_dt, "tzinfo", None):
+        now_dt = now_dt.replace(tzinfo=None)
 
-        result.avg_score = weighted_sum / weight_total if weight_total > 0 else 0
-        result.bullish_count = sum(1 for a in all_articles if a.sentiment == "BULLISH")
-        result.bearish_count = sum(1 for a in all_articles if a.sentiment == "BEARISH")
-        result.neutral_count = sum(1 for a in all_articles if a.sentiment == "NEUTRAL")
-        result.signal = _classify_sentiment(result.avg_score)
-
-        if len(all_articles) >= 3:
-            agreement = max(result.bullish_count, result.bearish_count, result.neutral_count) / len(all_articles)
-            coverage = min(len(all_articles) / 10, 1.0)
-            result.confidence = agreement * coverage * min(abs(result.avg_score) * 3, 1.0)
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for a in all_articles:
+        dt = _parse_published_date(a.published)
+        if dt:
+            age_hours = max((now_dt - dt.replace(tzinfo=None)).total_seconds() / 3600, 1)
         else:
-            result.confidence = 0.2 * abs(result.avg_score)
+            age_hours = 72
+        w = 1.0 / (age_hours ** 0.5)
+        weighted_sum += a.sentiment_score * w
+        weight_total += w
 
-    _cache[symbol] = (now, result)
+    result.avg_score = weighted_sum / weight_total if weight_total > 0 else 0
+    result.bullish_count = sum(1 for a in all_articles if a.sentiment == "BULLISH")
+    result.bearish_count = sum(1 for a in all_articles if a.sentiment == "BEARISH")
+    result.neutral_count = sum(1 for a in all_articles if a.sentiment == "NEUTRAL")
+    result.signal = _classify_sentiment(result.avg_score)
+
+    if len(all_articles) >= 3:
+        agreement = max(result.bullish_count, result.bearish_count, result.neutral_count) / len(all_articles)
+        coverage = min(len(all_articles) / 10, 1.0)
+        result.confidence = agreement * coverage * min(abs(result.avg_score) * 3, 1.0)
+    else:
+        result.confidence = 0.2 * abs(result.avg_score)
+
     return result
 
 

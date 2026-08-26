@@ -41,12 +41,60 @@ def _get_stock_directory():
     return _FALLBACK_DIRECTORY
 
 
+def _search_nse_instruments(query_upper, query_lower, seen, limit):
+    """
+    Search the master ticker table (the complete NSE directory) — search-only,
+    not the active-tracking `stocks` table. Only active tickers are offered;
+    an inactive/delisted ticker can still be reached by typing its exact
+    symbol, since /api/watchlist/add never validates against this list.
+    """
+    if len(seen) >= limit:
+        return []
+    try:
+        from db_manager import get_db, MasterTicker
+        db = get_db()
+        session = db.Session()
+        try:
+            rows = (
+                session.query(MasterTicker.nse_ticker, MasterTicker.company_name)
+                .filter(MasterTicker.is_active.is_(True))
+                .filter(MasterTicker.nse_ticker.startswith(query_upper))
+                .limit(limit)
+                .all()
+            )
+            extra = []
+            for symbol, name in rows:
+                if symbol not in seen:
+                    extra.append({"symbol": symbol, "name": name, "match_type": "symbol"})
+                    seen.add(symbol)
+
+            if len(seen) < limit:
+                rows = (
+                    session.query(MasterTicker.nse_ticker, MasterTicker.company_name)
+                    .filter(MasterTicker.is_active.is_(True))
+                    .filter(MasterTicker.company_name.ilike(f"%{query_lower}%"))
+                    .limit(limit)
+                    .all()
+                )
+                for symbol, name in rows:
+                    if symbol not in seen:
+                        extra.append({"symbol": symbol, "name": name, "match_type": "name"})
+                        seen.add(symbol)
+            return extra
+        finally:
+            session.close()
+    except Exception:
+        logger.debug("Master ticker table search unavailable", exc_info=True)
+        return []
+
+
 def search_stocks(query):
     if not query or len(query.strip()) < 1:
         return []
 
     directory = _get_stock_directory()
     query_upper = query.upper().strip()
+    query_lower = query.lower()
     results = []
     seen = set()
 
@@ -56,11 +104,13 @@ def search_stocks(query):
                 results.append({"symbol": symbol, "name": name, "match_type": "symbol"})
                 seen.add(symbol)
 
-    query_lower = query.lower()
     for symbol, name in directory.items():
         if symbol not in seen and query_lower in name.lower():
             results.append({"symbol": symbol, "name": name, "match_type": "name"})
             seen.add(symbol)
+
+    if len(results) < 20:
+        results.extend(_search_nse_instruments(query_upper, query_lower, seen, 20 - len(results)))
 
     return results[:20]
 

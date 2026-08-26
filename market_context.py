@@ -79,61 +79,68 @@ _DB_SYMBOL_MAP = {
 }
 
 
-def _fetch_candle_data_from_db(symbol, days=7):
-    """Fetch candle data directly from the DB (fast, no API call)."""
+def _fetch_candle_data_from_db(symbol, days=7, as_of=None):
+    """
+    Fetch candle data directly from the DB (fast, no API call).
+
+    Source: fyers_candles via get_fyers_candles_as_5min(), which returns
+    5-minute bars with naive-IST timestamps. The `days * 75` row cap below is
+    unchanged and still correct: 75 five-minute bars per 375-minute session.
+    """
     try:
         from db_manager import CandleDatabase
-        from sqlalchemy import text
         db_sym = _DB_SYMBOL_MAP.get(symbol, symbol)
         db = CandleDatabase()
-        with db.engine.connect() as conn:
-            rows = conn.execute(text(
-                "SELECT timestamp, open, high, low, close, volume "
-                "FROM candles WHERE symbol=:sym ORDER BY timestamp DESC LIMIT :lim"
-            ), {"sym": db_sym, "lim": days * 75}).fetchall()
-        if not rows:
+        # Query a slightly wider window than needed so the row cap, not the
+        # date bound, is what trims the result (weekends/holidays mean N
+        # calendar days yields fewer than N sessions).
+        df = db.get_fyers_candles_as_5min(db_sym, days=max(days * 2, 7), as_of=as_of)
+        if df.empty:
+            # Not DEBUG: this symbol has been asked for and found nothing in
+            # fyers_candles at all — most likely NIFTY/BANKNIFTY/FINNIFTY,
+            # which aren't backfilled yet (indices, not part of the equity
+            # watchlist). analyze_market_context() silently falls back to a
+            # live API call when this is empty, and market/sector trend carry
+            # 60% of context_score's weight — worth knowing this fired rather
+            # than discovering it only as an unexplained live-API-call uptick.
+            logger.warning("No fyers_candles data for %s (mapped from %s) — falling back to live API", db_sym, symbol)
             return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df = df.tail(days * 75)
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df.sort_values("timestamp").reset_index(drop=True)
+        return df[["timestamp", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
     except Exception as e:
         logger.debug("DB candle fetch failed for %s: %s", symbol, e)
         return pd.DataFrame()
 
 
 def _fetch_candle_data(groww_api, symbol, days, interval_min):
-    """Fetch candle data, returns DataFrame or empty. Falls back to daily candles if API rejects interval."""
+    """
+    Fetch candle data, returns DataFrame or empty.
+
+    FYERS only — the Groww get_historical_candle_data path this used to take
+    is gone. `groww_api` is kept in the signature for call-site
+    compatibility (analyze_market_context passes it) but is unused.
+
+    Note this is the *live-API* sibling of _fetch_candle_data_from_db(); it
+    now reads the same fyers_candles data via the shared adapter, so the two
+    no longer disagree about provider. Indices resolve through the same
+    master_ticker_table mapping as everything else, so NIFTY/BANKNIFTY work
+    here once they're backfilled.
+    """
     try:
-        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        start_time = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        resp = groww_api.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange=DEFAULT_EXCHANGE,
-            segment=DEFAULT_SEGMENT,
-            start_time=start_time,
-            end_time=end_time,
-            interval_in_minutes=interval_min,
-        )
-        candles = resp.get("candles", [])
-        if not candles and interval_min < 1440:
-            # Fallback: try daily candles if intraday was rejected
-            resp = groww_api.get_historical_candle_data(
-                trading_symbol=symbol,
-                exchange=DEFAULT_EXCHANGE,
-                segment=DEFAULT_SEGMENT,
-                start_time=start_time,
-                end_time=end_time,
-                interval_in_minutes=1440,
-            )
-            candles = resp.get("candles", [])
-        if not candles:
+        from db_manager import CandleDatabase
+        db_sym = _DB_SYMBOL_MAP.get(symbol, symbol)
+        db = CandleDatabase()
+        if interval_min >= 1440:
+            df = db.get_fyers_daily(db_sym, days=days)
+        else:
+            df = db.get_fyers_candles_as_5min(db_sym, days=days)
+        if df.empty:
+            logger.warning("No fyers_candles data for %s (mapped from %s)", db_sym, symbol)
             return pd.DataFrame()
-        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
-        df["datetime"] = pd.to_datetime(df["timestamp"], unit="s")
         return df.sort_values("datetime").reset_index(drop=True)
     except Exception as e:
         logger.warning("Failed to fetch %s: %s", symbol, e)
@@ -180,11 +187,19 @@ def _compute_trend_score(close: pd.Series) -> float:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def analyze_market_context(groww_api, symbol: str) -> dict:
+def analyze_market_context(groww_api, symbol: str, as_of=None) -> dict:
     """
     Build a comprehensive market context for a symbol.
     Returns a dict with scores and signals the predictor can use.
+
+    as_of: point-in-time ceiling for replay. When set, every DB read is
+    bounded at that instant AND the live-API fallbacks are skipped entirely —
+    a fallback that reaches the broker would return TODAY's candles and hand
+    a backtest the future through the back door. In replay the daily series
+    also comes from fyers_candles rather than the live API, which is the only
+    reason multi-timeframe alignment is reconstructable at all.
     """
+    replay = as_of is not None
     result = {
         "symbol": symbol,
         "market_trend": 0.0,       # -1 to +1
@@ -199,8 +214,8 @@ def analyze_market_context(groww_api, symbol: str) -> dict:
 
     # 1. Market-wide trend (Nifty 50) — DB first, API fallback
     try:
-        nifty = _fetch_candle_data_from_db(MARKET_INDEX, days=7)
-        if nifty.empty:
+        nifty = _fetch_candle_data_from_db(MARKET_INDEX, days=7, as_of=as_of)
+        if nifty.empty and not replay:
             nifty = _fetch_candle_data(groww_api, MARKET_INDEX, days=7, interval_min=CANDLE_INTERVAL_MINUTES)
         if not nifty.empty and len(nifty) > 20:
             result["market_trend"] = _compute_trend_score(nifty["close"])
@@ -216,8 +231,8 @@ def analyze_market_context(groww_api, symbol: str) -> dict:
     sector_idx = SECTOR_INDEX_SYMBOLS.get(sector)
     if sector_idx:
         try:
-            sec_data = _fetch_candle_data_from_db(sector_idx, days=7)
-            if sec_data.empty:
+            sec_data = _fetch_candle_data_from_db(sector_idx, days=7, as_of=as_of)
+            if sec_data.empty and not replay:
                 sec_data = _fetch_candle_data(groww_api, sector_idx, days=7, interval_min=CANDLE_INTERVAL_MINUTES)
             if not sec_data.empty and len(sec_data) > 20:
                 result["sector_trend"] = _compute_trend_score(sec_data["close"])
@@ -230,9 +245,15 @@ def analyze_market_context(groww_api, symbol: str) -> dict:
 
     # 3. Multi-timeframe confirmation — DB for intraday, API for daily
     try:
-        daily = _fetch_candle_data(groww_api, symbol, days=60, interval_min=1440)  # daily candles
-        intra = _fetch_candle_data_from_db(symbol, days=5)
-        if intra.empty:
+        if replay:
+            # Daily bars from fyers_candles, bounded — the live-API sibling
+            # has no as_of concept and would return today's series.
+            from db_manager import CandleDatabase
+            daily = CandleDatabase().get_fyers_daily(symbol, days=60, as_of=as_of)
+        else:
+            daily = _fetch_candle_data(groww_api, symbol, days=60, interval_min=1440)  # daily candles
+        intra = _fetch_candle_data_from_db(symbol, days=5, as_of=as_of)
+        if intra.empty and not replay:
             intra = _fetch_candle_data(groww_api, symbol, days=5, interval_min=CANDLE_INTERVAL_MINUTES)
 
         if not daily.empty and len(daily) > 20 and not intra.empty and len(intra) > 20:
@@ -246,8 +267,8 @@ def analyze_market_context(groww_api, symbol: str) -> dict:
 
     # 4. Volatility regime — DB first
     try:
-        stock = _fetch_candle_data_from_db(symbol, days=7)
-        if stock.empty:
+        stock = _fetch_candle_data_from_db(symbol, days=7, as_of=as_of)
+        if stock.empty and not replay:
             stock = _fetch_candle_data(groww_api, symbol, days=7, interval_min=CANDLE_INTERVAL_MINUTES)
         if not stock.empty and len(stock) > 20:
             returns = stock["close"].pct_change().dropna()

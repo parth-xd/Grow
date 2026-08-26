@@ -145,25 +145,59 @@ wait_for_port() {
 if [ "$STOP_MODE" = true ]; then
   log_section "Stopping All Services"
   
+  # PID file first (graceful, targets the processes we started), then ALWAYS
+  # sweep the ports.
+  #
+  # The port sweep used to live in the `else` branch — reached only when the
+  # PID file was missing. So a STALE PID file (process already gone, or a
+  # different process now holding the port) meant: kill a dead PID, delete
+  # the file, print "All services stopped", and leave the real listener
+  # running. That happened for real — a 2-hour-old instance kept port 8000
+  # while every subsequent start died with "Address already in use", so the
+  # dashboard silently kept talking to stale code through several restarts.
+  #
+  # The port is the authoritative fact about whether the app is running; the
+  # PID file is only a hint. Check the authoritative thing every time.
   if [ -f "$PID_FILE" ]; then
-    # Read PIDs from file
     FLASK_PID=$(grep "FLASK_PID=" "$PID_FILE" | cut -d= -f2)
     NEXTJS_PID=$(grep "NEXTJS_PID=" "$PID_FILE" | cut -d= -f2)
     GRAPHIFY_PID=$(grep "GRAPHIFY_PID=" "$PID_FILE" | cut -d= -f2)
-    
+
     [ -n "$FLASK_PID" ] && kill_process "$FLASK_PID" "Flask Backend"
     [ -n "$NEXTJS_PID" ] && kill_process "$NEXTJS_PID" "Next.js Frontend"
     [ -n "$GRAPHIFY_PID" ] && kill_process "$GRAPHIFY_PID" "Graphify"
-    
+
     rm -f "$PID_FILE"
-    log_info "All services stopped"
   else
-    log_warn "No PID file found. Trying to kill by port..."
-    kill_port 8000
-    kill_port 3000
-    log_info "Ports cleared"
+    log_warn "No PID file found — falling back to port sweep only"
   fi
-  
+
+  # Unconditional: catches orphans the PID file never knew about.
+  for port in "$FLASK_PORT" "$NEXTJS_PORT"; do
+    remaining=$(lsof -ti:"$port" 2>/dev/null || true)
+    if [ -n "$remaining" ]; then
+      log_warn "Port $port still held by PID(s): $remaining — killing"
+      kill_port "$port"
+    fi
+  done
+
+  # Verify, don't assume. Reporting "stopped" while a listener survives is
+  # exactly the failure this whole block exists to prevent.
+  still_up=""
+  for port in "$FLASK_PORT" "$NEXTJS_PORT"; do
+    if [ -n "$(lsof -ti:"$port" 2>/dev/null || true)" ]; then
+      still_up="$still_up $port"
+    fi
+  done
+
+  if [ -n "$still_up" ]; then
+    log_error "FAILED to free port(s):$still_up — something is still listening"
+    lsof -nP -iTCP:"$FLASK_PORT" -sTCP:LISTEN 2>/dev/null || true
+    echo ""
+    exit 1
+  fi
+
+  log_info "All services stopped (ports $FLASK_PORT, $NEXTJS_PORT free)"
   echo ""
   exit 0
 fi

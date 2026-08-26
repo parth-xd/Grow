@@ -1,4 +1,5 @@
 .env
+.env.bak*
 .venv/
 .vscode/
 
@@ -17,9 +18,13 @@ nohup.out
 manual_holdings.json
 watchlist_notes.json
 paper_trades.json
+paper_trades.json.bak*
 trade_journal.json
+trade_journal.json.bak*
+*.json.lock
 daily_snapshots.json
 real_trading_config.json
+training_progress.json
 
 # Local archives and temp outputs
 archive/*.log

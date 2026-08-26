@@ -259,6 +259,12 @@ def _normalize_tracker_trade(tracker_trade: Dict[str, Any], matched_entry: Optio
         "total_charges": _as_float(post_trade.get("total_charges")) if post_trade else None,
         "pre_trade": pre_trade,
         "post_trade": post_trade or None,
+        # Which model placed this trade. This return is an explicit whitelist,
+        # so a field absent here is dropped no matter that both the tracker
+        # file and the DB row carry it — which is exactly how filled trades
+        # ended up looking unattributed in the dashboard.
+        "model_source": (tracker_trade.get("model_source")
+                         or (matched_entry.get("model_source") if matched_entry else None)),
         "trailing_stop": tracker_trade.get("trailing_stop"),
         "entry_value": round((entry_price or 0.0) * quantity, 2),
         "intraday_candles": tracker_trade.get("intraday_candles") or (matched_entry.get("intraday_candles") if matched_entry else None),

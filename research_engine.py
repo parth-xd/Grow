@@ -67,34 +67,29 @@ def _clamp(val, lo=0.0, hi=100.0):
 
 
 def _load_price_history(symbol, days=365):
-    """Load OHLCV from DB candles table.  Returns DataFrame or empty."""
-    session = _get_db_session()
-    if not session:
-        return pd.DataFrame()
+    """
+    Load OHLCV price history.  Returns DataFrame or empty.
+
+    Source: fyers_candles daily bars. A 365-day alpha-scoring window wants
+    daily cadence, and the legacy `candles` table held mostly daily rows over
+    a window this long anyway — reading resolution='D' explicitly makes that
+    intent unambiguous instead of depending on whatever the untagged legacy
+    table happened to contain.
+    """
     try:
-        from db_manager import Candle
-        cutoff = datetime.utcnow() - timedelta(days=days)
-        rows = (
-            session.query(Candle)
-            .filter(Candle.symbol == symbol, Candle.timestamp >= cutoff)
-            .order_by(Candle.timestamp)
-            .all()
-        )
-        if not rows:
+        from db_manager import CandleDatabase
+        df = CandleDatabase().get_fyers_daily(symbol, days=days)
+        if df.empty:
             return pd.DataFrame()
-        data = [{
-            "timestamp": r.timestamp, "open": r.open, "high": r.high,
-            "low": r.low, "close": r.close, "volume": r.volume,
-        } for r in rows]
-        df = pd.DataFrame(data)
+        df = df.rename(columns={"datetime": "timestamp"})[
+            ["timestamp", "open", "high", "low", "close", "volume"]
+        ]
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df
+        return df.reset_index(drop=True)
     except Exception as e:
         logger.warning("Price history load failed for %s: %s", symbol, e)
         return pd.DataFrame()
-    finally:
-        session.close()
 
 
 def _load_weekly_prices(symbol, years=5):

@@ -32,6 +32,29 @@ _pool = None              # thread pool (created on first start)
 MAX_WORKERS = 4           # concurrent task limit
 
 
+def _boot_warmup_active():
+    """
+    True while the FYERS boot warm-up is still running (see
+    fyers_boot_warmup.py). Bulk FYERS tasks check this and skip the tick.
+
+    Which tasks are gated is decided HERE, at the task level, rather than by
+    threading a priority flag through every FYERS call site or keeping a
+    separate registry that can rot. Adding a genuinely new bulk path means
+    adding a scheduler task, and whoever adds it has to decide explicitly
+    whether it belongs — the same discipline the fno_auto_trade_enabled gate
+    already uses.
+
+    Fails OPEN on any error: if this module is missing or broken, tasks run
+    exactly as they do today rather than silently pausing forever. The
+    dangerous direction here is "everything stays paused", not "a burst".
+    """
+    try:
+        import fyers_boot_warmup
+        return fyers_boot_warmup.is_active()
+    except Exception:
+        return False
+
+
 def _register(name, fn, interval_seconds, initial_delay=0):
     """Register a periodic task.  initial_delay = seconds after scheduler
     start before the first run (used to stagger startup bursts)."""
@@ -69,6 +92,13 @@ def get_task_registry():
 
 def _task_auto_analysis():
     """Run watchlist auto-analysis (predictions for all watchlist stocks)."""
+    # Bulk: fans out over the whole watchlist. Deferred during boot warm-up
+    # so it does not race the coordinator for FYERS tokens. Skipping a tick
+    # loses nothing — this recomputes from scratch each run, and
+    # _run_task_safe() stamps last_run on dispatch, so there is no catch-up
+    # pile-up when the pause lifts.
+    if _boot_warmup_active():
+        return
     import auto_analyzer
     auto_analyzer.auto_analyze_watchlist()
 
@@ -101,6 +131,18 @@ def _task_cache_refresh():
     published quarterly results and queues an immediate Tijori refresh so
     new-quarter numbers flow into analysis within hours instead of days.
     """
+    # Bulk FYERS consumer, despite the name. get_fundamental_analysis() calls
+    # bot.fetch_quote() for the symbol plus up to 5 competitors, over the whole
+    # stock_prices universe (~67 symbols) — up to ~400 quote requests when the
+    # 6h fundamentals cache is cold, which it always is after an overnight gap.
+    #
+    # Measured on the 2026-08-25 08:56 restart: this task (initial_delay=0, so
+    # the FIRST task to fire) ran straight into the boot warm-up and produced
+    # 65 blocked calls, compounding a token-auth failure into a 300s rate-limit
+    # cap. Gated here and given a non-zero initial_delay at registration.
+    if _boot_warmup_active():
+        return
+
     import fundamental_analysis as fa
 
     symbols = []
@@ -146,236 +188,135 @@ def _detect_new_quarter(symbol, fundamentals):
 
 
 def _task_update_watchlist_prices():
-    """Fetch and store latest close prices for all watchlist stocks in database.
-
-    Runs every hour.  During market hours (9:15–15:30 IST) it does a quick
-    live-price snapshot via Groww API.  After market close (16:00+) it does a
-    full backfill via yfinance for any stock with stale data (> 1 day behind).
     """
-    import os
-    from datetime import datetime, timedelta
+    DISABLED as of 2026-08-15 — migrated to FYERS. Was: Groww LTP snapshot
+    (market hours) + yfinance historical backfill (after hours) into
+    stock_prices. Left commented rather than deleted in case of rollback.
 
-    conn = None
-    try:
-        import psycopg2
-        from dotenv import load_dotenv
-        load_dotenv()
+    Known consequence, explicitly accepted: bot.analyze_long_term_trend()
+    reads stock_prices and feeds bot.get_prediction()'s long-term trend
+    score, which real live/paper trade decisions use. With this task
+    disabled, stock_prices stops getting fresher data — that signal is now
+    frozen at whatever's already stored, not actively wrong, but no longer
+    reflecting reality, until bot.py's prediction engine is separately
+    repointed to FYERS (not done as part of this change).
 
-        db_url = os.getenv("DB_URL")
-        if not db_url:
-            return
+    # import os
+    # from datetime import datetime, timedelta
+    #
+    # conn = None
+    # try:
+    #     import psycopg2
+    #     from dotenv import load_dotenv
+    #     load_dotenv()
+    #
+    #     db_url = os.getenv("DB_URL")
+    #     if not db_url:
+    #         return
+    #
+    #     conn = psycopg2.connect(db_url, connect_timeout=3)
+    #     cursor = conn.cursor()
+    #
+    #     now = datetime.now()
+    #     today = now.date()
+    #     is_after_hours = now.hour >= 16 or os.environ.get("_FORCE_BACKFILL") == "1"
+    #
+    #     # Get ALL unique symbols in stock_prices (not just WATCHLIST config)
+    #     cursor.execute("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol")
+    #     all_symbols = [r[0] for r in cursor.fetchall()]
+    #
+    #     # Also include WATCHLIST config symbols that might not be in DB yet
+    #     try:
+    #         from config import WATCHLIST
+    #         for s in WATCHLIST:
+    #             if s not in all_symbols:
+    #                 all_symbols.append(s)
+    #     except ImportError:
+    #         pass
+    #
+    #     if not all_symbols:
+    #         cursor.close()
+    #         return
+    #
+    #     updated = 0
+    #     backfilled = 0
+    #
+    #     # ── Phase 1: Quick live-price update (Groww API) ─────────────────
+    #     try:
+    #         import bot
+    #         for symbol in all_symbols:
+    #             try:
+    #                 ltp = bot.fetch_live_price(symbol)
+    #                 if ltp and ltp > 0:
+    #                     cursor.execute("""
+    #                         INSERT INTO stock_prices (symbol, date, close)
+    #                         VALUES (%s, %s, %s)
+    #                         ON CONFLICT (symbol, date) DO UPDATE SET close = EXCLUDED.close
+    #                     """, (symbol, today, ltp))
+    #                     updated += 1
+    #             except Exception:
+    #                 pass
+    #         conn.commit()
+    #     except ImportError:
+    #         pass
+    #
+    #     # ── Phase 2: After-hours yfinance backfill for stale stocks ──────
+    #     if is_after_hours:
+    #         try:
+    #             import yfinance as yf
+    #
+    #             # Find stocks with stale data (latest date > 1 trading day behind)
+    #             cursor.execute("""
+    #                 SELECT symbol, MAX(date) as latest
+    #                 FROM stock_prices
+    #                 GROUP BY symbol
+    #                 HAVING MAX(date) < %s
+    #             """, (today - timedelta(days=1),))
+    #             stale_stocks = cursor.fetchall()
+    #
+    #             for symbol, latest_date in stale_stocks:
+    #                 try:
+    #                     # Fetch missing days from yfinance
+    #                     start = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d")
+    #                     nse_ticker = f"{symbol}.NS"
+    #                     data = yf.download(nse_ticker, start=start, interval="1d", progress=False)
+    #
+    #                     if data is not None and not data.empty:
+    #                         close_col = data["Close"]
+    #                         if hasattr(close_col, "columns"):
+    #                             close_col = close_col.iloc[:, 0]
+    #
+    #                         for dt_idx, price in close_col.dropna().items():
+    #                             dt = dt_idx.date() if hasattr(dt_idx, "date") else dt_idx
+    #                             p = float(price)
+    #                             if p > 0:
+    #                                 cursor.execute("""
+    #                                     INSERT INTO stock_prices (symbol, date, close)
+    #                                     VALUES (%s, %s, %s)
+    #                                     ON CONFLICT (symbol, date) DO NOTHING
+    #                                 """, (symbol, dt, round(p, 2)))
+    #                         backfilled += 1
+    #                 except Exception as e:
+    #                     logger.debug("yfinance backfill failed for %s: %s", symbol, e)
+    #
+    #             conn.commit()
+    #         except ImportError:
+    #             logger.debug("yfinance not available for backfill")
+    #
+    #     if updated > 0 or backfilled > 0:
+    #         logger.info("✓ Watchlist prices: %d live-updated, %d backfilled via yfinance", updated, backfilled)
+    #
+    #     cursor.close()
+    # except Exception as e:
+    #     logger.warning("Watchlist price update failed: %s", e)
+    # finally:
+    #     if conn is not None:
+    #         try:
+    #             conn.close()
+    #         except Exception:
+    #             pass
+    return
 
-        conn = psycopg2.connect(db_url, connect_timeout=3)
-        cursor = conn.cursor()
-
-        now = datetime.now()
-        today = now.date()
-        is_after_hours = now.hour >= 16 or os.environ.get("_FORCE_BACKFILL") == "1"
-
-        # Get ALL unique symbols in stock_prices (not just WATCHLIST config)
-        cursor.execute("SELECT DISTINCT symbol FROM stock_prices ORDER BY symbol")
-        all_symbols = [r[0] for r in cursor.fetchall()]
-
-        # Also include WATCHLIST config symbols that might not be in DB yet
-        try:
-            from config import WATCHLIST
-            for s in WATCHLIST:
-                if s not in all_symbols:
-                    all_symbols.append(s)
-        except ImportError:
-            pass
-
-        if not all_symbols:
-            cursor.close()
-            return
-
-        updated = 0
-        backfilled = 0
-
-        # ── Phase 1: Quick live-price update (Groww API) ─────────────────
-        try:
-            import bot
-            for symbol in all_symbols:
-                try:
-                    ltp = bot.fetch_live_price(symbol)
-                    if ltp and ltp > 0:
-                        cursor.execute("""
-                            INSERT INTO stock_prices (symbol, date, close)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT (symbol, date) DO UPDATE SET close = EXCLUDED.close
-                        """, (symbol, today, ltp))
-                        updated += 1
-                except Exception:
-                    pass
-            conn.commit()
-        except ImportError:
-            pass
-
-        # ── Phase 2: After-hours yfinance backfill for stale stocks ──────
-        if is_after_hours:
-            try:
-                import yfinance as yf
-
-                # Find stocks with stale data (latest date > 1 trading day behind)
-                cursor.execute("""
-                    SELECT symbol, MAX(date) as latest
-                    FROM stock_prices
-                    GROUP BY symbol
-                    HAVING MAX(date) < %s
-                """, (today - timedelta(days=1),))
-                stale_stocks = cursor.fetchall()
-
-                for symbol, latest_date in stale_stocks:
-                    try:
-                        # Fetch missing days from yfinance
-                        start = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d")
-                        nse_ticker = f"{symbol}.NS"
-                        data = yf.download(nse_ticker, start=start, interval="1d", progress=False)
-
-                        if data is not None and not data.empty:
-                            close_col = data["Close"]
-                            if hasattr(close_col, "columns"):
-                                close_col = close_col.iloc[:, 0]
-
-                            for dt_idx, price in close_col.dropna().items():
-                                dt = dt_idx.date() if hasattr(dt_idx, "date") else dt_idx
-                                p = float(price)
-                                if p > 0:
-                                    cursor.execute("""
-                                        INSERT INTO stock_prices (symbol, date, close)
-                                        VALUES (%s, %s, %s)
-                                        ON CONFLICT (symbol, date) DO NOTHING
-                                    """, (symbol, dt, round(p, 2)))
-                            backfilled += 1
-                    except Exception as e:
-                        logger.debug("yfinance backfill failed for %s: %s", symbol, e)
-
-                conn.commit()
-            except ImportError:
-                logger.debug("yfinance not available for backfill")
-
-        if updated > 0 or backfilled > 0:
-            logger.info("✓ Watchlist prices: %d live-updated, %d backfilled via yfinance", updated, backfilled)
-
-        cursor.close()
-    except Exception as e:
-        logger.warning("Watchlist price update failed: %s", e)
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _task_collect_5min_candles():
-    """Collect latest 5-minute candles for all trading instruments from Groww API.
-    
-    NOTE: Groww only provides 5-min intraday data for ~13 liquid symbols:
-    TCS, INFY, RELIANCE, SBIN, WIPRO, HDFCBANK, ICICIBANK, ITC, LT, BHARTIARTL, ASIANPAINT, SUZLON, GEMAROMA
-    
-    Other symbols only have daily candles (collected separately).
-    """
-    from db_manager import CandleDatabase, Candle, log_candle_collection_event
-    from datetime import datetime, timedelta
-    from sqlalchemy import text
-    import time
-
-    db = CandleDatabase()
-
-    try:
-        from fno_trader import _get_groww
-    except Exception as e:
-        logger.warning("Failed to import Groww API: %s", e)
-        return
-
-    now = datetime.now()
-    
-    # For TODAY's data: start from market open (9:15 AM) or last 2 hours, whichever includes more
-    # This ensures we collect all intraday candles from today's market session
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    two_hours_ago = now - timedelta(hours=2)
-    
-    # Use whichever is more recent (market open or last 2 hours)
-    start_time = max(market_open, two_hours_ago) if now.hour >= 9 else two_hours_ago
-    start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
-    end_time = now.strftime("%Y-%m-%d %H:%M:%S")
-
-    collected_count = 0
-    failed_count = 0
-
-    # Symbols that Groww actively provides 5-min intraday data for
-    # (These are the only ones that consistently return candles in real-time)
-    ACTIVE_5MIN_SYMBOLS = [
-        "TCS", "INFY", "RELIANCE", "SBIN", "WIPRO", "HDFCBANK", "ICICIBANK", 
-        "ITC", "LT", "BHARTIARTL", "ASIANPAINT", "SUZLON", "GEMAROMA"
-    ]
-    
-    # Always try indices for market context
-    indices = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-    symbols = ACTIVE_5MIN_SYMBOLS + indices
-
-    # Upsert SQL — skip existing, insert new (ON CONFLICT DO NOTHING is fast)
-    upsert_sql = text(
-        "INSERT INTO candles (symbol, timestamp, open, high, low, close, volume) "
-        "VALUES (:symbol, :timestamp, :open, :high, :low, :close, :volume) "
-        "ON CONFLICT (symbol, timestamp) DO NOTHING"
-    )
-
-    for idx, symbol in enumerate(symbols):
-        # Create fresh Groww API client for each symbol to avoid connection issues
-        try:
-            groww = _get_groww()
-            if not groww:
-                failed_count += 1
-                continue
-        except Exception as e:
-            logger.debug("Failed to get Groww API for %s: %s", symbol, e)
-            failed_count += 1
-            continue
-
-        # Add small delay between calls to avoid rate limiting
-        if idx > 0:
-            time.sleep(0.3)
-
-        try:
-            resp = groww.get_historical_candle_data(
-                trading_symbol=symbol, exchange="NSE", segment="CASH",
-                start_time=start_time_str, end_time=end_time, interval_in_minutes=5,
-            )
-            candles = resp.get("candles", []) if resp else []
-            if not candles:
-                continue
-
-            # Batch all candles for this symbol in one transaction
-            batch = []
-            for c in candles:
-                ts = c.get("timestamp")
-                if not ts:
-                    continue
-                batch.append({
-                    "symbol": symbol, "timestamp": ts,
-                    "open": float(c.get("open", 0)), "high": float(c.get("high", 0)),
-                    "low": float(c.get("low", 0)), "close": float(c.get("close", 0)),
-                    "volume": int(c.get("volume", 0)),
-                })
-
-            if batch:
-                with db.engine.begin() as conn:
-                    conn.execute(upsert_sql, batch)
-                collected_count += len(batch)
-
-        except Exception as e:
-            failed_count += 1
-            logger.debug("Failed to collect candles for %s: %s", symbol, e)
-
-    if collected_count > 0:
-        logger.info("📊 Collected %d candles (%d symbols, %d failed)",
-                     collected_count, len(symbols), failed_count)
-        try:
-            log_candle_collection_event(collected_count, 0)
-        except Exception:
-            pass
 
 
 def _task_retrain_xgb_daily():
@@ -389,11 +330,21 @@ def _task_retrain_xgb_daily():
         logger.warning("XGBoost not available for retraining")
         return
     
+    import training_progress
     try:
         logger.info("🧠 Starting daily XGBoost retraining...")
-        
+
+        # Per-instrument progress so the panel can show a real ETA rather
+        # than only elapsed time. Total is the instrument count; the
+        # generator advances one unit per instrument it finishes.
+        import fno_backtester as _fb
+        _instruments = list(_fb.BACKTEST_INSTRUMENTS)
+        training_progress.start("fno_xgb", len(_instruments), label="F&O · XGBoost")
+
         # Generate training data from all candles in DB
-        X, y_long, y_short = _generate_xgb_training_data()
+        X, y_long, y_short = _generate_xgb_training_data(
+            progress_cb=lambda sym: training_progress.advance("fno_xgb", current=sym)
+        )
         
         if len(X) < 100:
             logger.warning("Insufficient training data for XGBoost retraining: %d samples", len(X))
@@ -443,7 +394,52 @@ def _task_retrain_xgb_daily():
         # Update global cache
         import fno_backtester
         fno_backtester._xgb_models = {"long": long_model, "short": short_model}
+
+        # PERSIST TO DISK. Setting the module global alone only survives for
+        # this process's lifetime — so every daily retrain since April trained
+        # for ~30 minutes and then discarded its work on exit, while
+        # models/xgb_backtester.joblib stayed frozen at the April build. That
+        # is why the live F&O model read 137 days stale despite a daily task.
+        #
+        # Same payload shape _get_xgb_models() writes and expects to load,
+        # including n_features — the loader rejects a file whose feature count
+        # doesn't match the current code, so omitting it would make the saved
+        # model silently unloadable.
+        # Stamp the timestamp BEFORE the dump that writes it.
+        #
+        # This assignment used to sit after the joblib.dump below, so the dump
+        # persisted whatever _xgb_model_timestamp already held. In a process
+        # where _get_xgb_models() had never run, that is its module-level
+        # initial value: None. The nightly retrain therefore wrote a model with
+        # "trained_at": None, and the loader's `.strftime()` on that None threw
+        # AttributeError, was swallowed, and sent every subsequent backtest into
+        # a fresh 30-40 minute retrain. Observed exactly once per day, matching
+        # this task's schedule: file mtime 2026-08-25 11:14:10 == this task's
+        # own "Saved retrained XGB models" log line to the second.
         fno_backtester._xgb_model_timestamp = datetime.now()
+
+        try:
+            import joblib
+            os.makedirs(os.path.dirname(fno_backtester._XGB_MODEL_PATH), exist_ok=True)
+            # Atomic replace, same reasoning as _get_xgb_models(): a truncated
+            # model still loads and silently returns garbage signals.
+            _tmp = f"{fno_backtester._XGB_MODEL_PATH}.tmp.{os.getpid()}"
+            joblib.dump({
+                "long": long_model,
+                "short": short_model,
+                "n_features": len(FEATURE_NAMES),
+                "trained_at": fno_backtester._xgb_model_timestamp,
+                "n_samples": len(X),
+            }, _tmp)
+            os.replace(_tmp, fno_backtester._XGB_MODEL_PATH)
+            logger.info("Saved retrained XGB models to %s", fno_backtester._XGB_MODEL_PATH)
+        except Exception as e:
+            logger.error("XGB retrain succeeded but SAVING FAILED (%s) — models live "
+                         "in memory only and will be lost on restart", e)
+            try:
+                os.remove(_tmp)
+            except Exception:
+                pass
         
         # Calculate win rates for logging
         long_win_rate = (lp / len(y_long) * 100) if len(y_long) > 0 else 0
@@ -468,17 +464,94 @@ def _task_retrain_xgb_daily():
         
     except Exception as e:
         logger.error("XGBoost retraining failed: %s", e)
+    finally:
+        # Always clears the "running" record, so a failed retrain shows as
+        # finished rather than an ETA that never completes.
+        try:
+            training_progress.finish("fno_xgb")
+        except Exception:
+            pass
 
 
 def _task_ml_retrain():
-    """Retrain ML models for all watchlist stocks."""
-    from config import WATCHLIST
+    """
+    Retrain ML models for all watchlist stocks.
+
+    Uses bot.get_active_watchlist() (the real DB watchlist) rather than
+    config.WATCHLIST — that static 10-symbol seed list meant only 10 of ~70
+    models were ever retrained, leaving the rest months stale on disk while
+    the dashboard happily served their predictions.
+    """
     import bot
-    for symbol in WATCHLIST:
-        try:
-            bot.train_model(symbol)
-        except Exception as e:
-            logger.debug("ML retrain failed for %s: %s", symbol, e)
+    import training_progress
+
+    symbols = bot.get_active_watchlist()
+    ok = failed = 0
+    # Reported to /api/data-health so the Data Coverage panel can show a
+    # real ETA instead of only a file count.
+    training_progress.start("cash_gbc", len(symbols), label="Cash · GradientBoosting")
+    try:
+        for symbol in symbols:
+            try:
+                res = bot.train_model(symbol)
+                if (res or {}).get("success"):
+                    ok += 1
+                else:
+                    failed += 1
+                    logger.debug("ML retrain unsuccessful for %s: %s", symbol, (res or {}).get("message"))
+            except Exception as e:
+                failed += 1
+                logger.debug("ML retrain failed for %s: %s", symbol, e)
+            finally:
+                training_progress.advance("cash_gbc", current=symbol)
+    finally:
+        training_progress.finish("cash_gbc")
+    logger.info("ML retrain complete: %d trained, %d failed (of %d)", ok, failed, len(symbols))
+
+
+def _task_xgb_cash_retrain():
+    """
+    Retrain the cash XGBoost models daily.
+
+    Sibling of _task_ml_retrain (GradientBoosting), deliberately identical in
+    shape: same active watchlist, same per-symbol call, same progress
+    reporting. The difference is only which model gets fitted —
+    bot.train_xgb_model() reads 5-minute bars resampled from native FYERS
+    1-minute data and reuses predictor.build_features/create_labels
+    unchanged, so no strategy, threshold or labelling behaviour differs
+    between the two.
+
+    Without this the cash XGB models were trained exactly once, by hand, and
+    would have drifted stale indefinitely — the same end state as the F&O
+    model, reached by a different route (F&O trained daily but never saved;
+    these saved fine but never retrained).
+
+    Saving is handled inside train_xgb_model(), which persists only after a
+    successful fit and writes atomically.
+    """
+    import bot
+    import training_progress
+
+    symbols = bot.get_active_watchlist()
+    ok = failed = 0
+    training_progress.start("cash_xgb", len(symbols), label="Cash · XGBoost")
+    try:
+        for symbol in symbols:
+            try:
+                res = bot.train_xgb_model(symbol)
+                if (res or {}).get("success"):
+                    ok += 1
+                else:
+                    failed += 1
+                    logger.debug("XGB retrain unsuccessful for %s: %s", symbol, (res or {}).get("message"))
+            except Exception as e:
+                failed += 1
+                logger.debug("XGB retrain failed for %s: %s", symbol, e)
+            finally:
+                training_progress.advance("cash_xgb", current=symbol)
+    finally:
+        training_progress.finish("cash_xgb")
+    logger.info("Cash XGB retrain complete: %d trained, %d failed (of %d)", ok, failed, len(symbols))
 
 
 def _task_cost_rate_update():
@@ -577,6 +650,45 @@ def _task_token_refresh():
         logger.warning("Token refresh check failed: %s", e)
 
 
+def _task_self_healing():
+    """
+    Detect and repair recurring FYERS data faults (missing symbol backfill,
+    stale intraday data) and alert on the ones that can't be auto-fixed
+    (expired token — FYERS disabled unattended refresh for SEBI compliance).
+
+    Backfill is locked while the market is open; during trading hours this
+    reports faults but defers the repairs to after close. Runs hourly.
+    """
+    # Bulk: check_missing_symbols() calls backfill_symbol() (64 FYERS calls
+    # per symbol) and check_stale_intraday() calls ensure_recent(ttl=0),
+    # forcing a fetch regardless of freshness. Both would fight the boot
+    # coordinator for the same token bucket. Hourly task — deferring one
+    # tick costs nothing.
+    if _boot_warmup_active():
+        return
+    try:
+        import self_healing
+        self_healing.run_all()
+    except Exception as e:
+        logger.warning("Self-healing run failed: %s", e)
+
+
+def _task_fyers_token_refresh():
+    """
+    Keep the FYERS access token alive. FYERS access tokens expire at a fixed
+    06:00 IST daily; the refresh token behind them lasts ~15 days, so this
+    renews unattended and only needs a real interactive login roughly
+    fortnightly. Requires FYER_PIN in .env — logs an ERROR if it's missing
+    rather than failing silently, since a dead FYERS token now means no
+    market data at all (there is no Groww fallback any more).
+    """
+    try:
+        import fyers_auth
+        fyers_auth.refresh_if_needed()
+    except Exception as e:
+        logger.warning("FYERS token refresh check failed: %s", e)
+
+
 def _task_world_news():
     """Collect world/macro/sector news from RSS feeds and Google News."""
     try:
@@ -601,177 +713,6 @@ def _task_deep_analysis():
         logger.warning("Deep analysis task failed: %s", e)
 
 
-def _task_sync_historical_candles():
-    """
-    Sync ALL historical candles end-of-day (after 3:30 PM IST).
-    - Skips during market hours (9:15 AM - 3:30 PM IST)
-    - Runs ONCE daily before close (late afternoon safe window)
-    - Does full backfill: fetches any missing dates since last stored candle
-    - Feeds data to daily aggregation
-    """
-    try:
-        from db_manager import get_db, get_all_stocks
-        from config import DEFAULT_EXCHANGE, DB_URL
-        from datetime import datetime, timedelta
-        from fno_trader import _is_market_open
-        import psycopg2
-        import bot
-        
-        # Only sync if market is closed OR very close to close (3:25 PM+)
-        now = datetime.utcnow()
-        ist_now = now + timedelta(hours=5, minutes=30)  # IST = UTC + 5:30
-        ist_hour = ist_now.hour
-        ist_minute = ist_now.minute
-        ist_time_minutes = ist_hour * 60 + ist_minute
-        
-        market_close_time = 15 * 60 + 30  # 3:30 PM = 15:30
-        
-        # Skip during market hours (9:15 AM to 3:30 PM IST, weekdays only)
-        if ist_now.weekday() < 5:  # Monday-Friday
-            if ist_time_minutes < market_close_time:
-                logger.debug("Market still open, skipping candle sync")
-                return
-        
-        db = get_db()
-        if not db:
-            logger.debug("Database not available for candle sync")
-            return
-        
-        stocks = get_all_stocks(db)
-        if not stocks:
-            logger.debug("No stocks found in database")
-            return
-        
-        synced_count = 0
-        failed_count = 0
-        symbols = [s.symbol for s in stocks if s.is_active]
-        
-        logger.info("📊 End-of-day candle backfill starting for %d stocks...", len(symbols))
-        
-        # Aggressive backfill: fetch last 365 days worth of data for any symbol with gaps
-        for symbol in symbols:
-            try:
-                # Check if symbol has any candles
-                conn = psycopg2.connect(DB_URL)
-                cursor = conn.cursor()
-                cursor.execute("SELECT MAX(timestamp) FROM candles WHERE symbol = %s", (symbol,))
-                latest = cursor.fetchone()[0]
-                cursor.close()
-                conn.close()
-                
-                # Sync from API (will fetch only missing data)
-                new_candles = bot.sync_candles_from_api(symbol, days=365)
-                if new_candles > 0:
-                    synced_count += new_candles
-                    logger.debug(f"  ✓ {symbol}: {new_candles} new candles")
-            except Exception as e:
-                failed_count += 1
-                logger.debug("Failed to sync %s: %s", symbol, e)
-        
-        logger.info("✅ End-of-day sync complete: %d candles synced (%d failed)", synced_count, failed_count)
-        
-        # Auto-trigger daily aggregation after sync
-        logger.info("🔄 Triggering daily price aggregation...")
-        _task_aggregate_candles_to_daily()
-    
-    except Exception as e:
-        logger.warning("Historical candle sync task failed: %s", e)
-
-
-def _task_aggregate_candles_to_daily():
-    """
-    Aggregate ALL 5-minute candles into daily OHLCV prices for watchlist display.
-    Called after end-of-day sync to ensure all data is fresh.
-    """
-    try:
-        from db_manager import get_db, get_all_stocks
-        from config import DB_URL
-        import psycopg2
-        from datetime import datetime, timedelta
-        
-        db = get_db()
-        if not db:
-            logger.debug("Database not available for aggregation")
-            return
-        
-        stocks = get_all_stocks(db)
-        if not stocks:
-            logger.debug("No stocks found")
-            return
-        
-        symbols = [s.symbol for s in stocks if s.is_active]
-        
-        # Aggregate ALL candles to daily prices (full backfill for any gaps)
-        aggregated = 0
-        
-        for symbol in symbols:
-            # Fresh connection for each symbol
-            conn = psycopg2.connect(DB_URL)
-            cursor = conn.cursor()
-            
-            try:
-                # Get all unique dates with candles, aggregate each
-                cursor.execute("""
-                    SELECT 
-                        DATE(timestamp) as trade_date,
-                        MIN(open) as open_price,
-                        MAX(high) as high_price,
-                        MIN(low) as low_price,
-                        (array_agg(close ORDER BY timestamp DESC))[1] as close_price,
-                        SUM(CAST(volume AS BIGINT)) as total_volume
-                    FROM candles
-                    WHERE symbol = %s
-                    GROUP BY DATE(timestamp)
-                    ORDER BY DATE(timestamp)
-                """, (symbol,))
-                
-                rows = cursor.fetchall()
-                if not rows:
-                    cursor.close()
-                    conn.close()
-                    continue
-                
-                # Insert/update all dates (upsert)
-                insert_count = 0
-                for row in rows:
-                    trade_date, open_p, high_p, low_p, close_p, vol = row
-                    insert_query = """
-                        INSERT INTO stock_prices (symbol, date, open, high, low, close, volume)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (symbol, date) DO UPDATE SET
-                            open = EXCLUDED.open,
-                            high = EXCLUDED.high,
-                            low = EXCLUDED.low,
-                            close = EXCLUDED.close,
-                            volume = EXCLUDED.volume
-                    """
-                    cursor.execute(insert_query, (
-                        symbol,
-                        trade_date,
-                        float(open_p) if open_p else None,
-                        float(high_p) if high_p else None,
-                        float(low_p) if low_p else None,
-                        float(close_p) if close_p else None,
-                        int(vol) if vol else 0,
-                    ))
-                    insert_count += 1
-                
-                conn.commit()
-                aggregated += insert_count
-                logger.debug(f"  ✓ {symbol}: aggregated {insert_count} daily prices")
-            
-            except Exception as e:
-                logger.debug("Failed to aggregate %s: %s", symbol, e)
-            
-            finally:
-                cursor.close()
-                conn.close()
-        
-        if aggregated > 0:
-            logger.info("✅ Aggregated %d daily prices for watchlist", aggregated)
-    
-    except Exception as e:
-        logger.warning("Candle aggregation task failed: %s", e)
 
 
 def _task_market_intelligence():
@@ -818,7 +759,12 @@ def _task_cash_auto_trade():
         # Ensure portfolio is reviewed (auto-set for paper mode)
         if bot.is_paper_mode() and not bot.is_portfolio_reviewed():
             bot.mark_portfolio_reviewed()
-        result = bot.auto_trade()
+        # NOT gated wholesale: this task both manages open positions
+        # (trailing stops — money already at risk, must never pause) and
+        # scans the full ~73-symbol watchlist for new entries (the single
+        # biggest source of the restart burst). Only the second half is
+        # deferred; see bot.auto_trade(skip_new_entries=...).
+        result = bot.auto_trade(skip_new_entries=_boot_warmup_active())
         actions = result.get("actions", []) if result else []
         trades = [a for a in actions if a.get("action") in ("BUY", "SELL")]
         if trades:
@@ -884,6 +830,34 @@ def _task_auto_close_trades():
         logger.warning(f"Auto-close trades failed: {e}")
 
 
+
+def _task_fyers_daily_topup():
+    """
+    Keep the fyers_candles DAILY tier current.
+
+    Nothing did this before: ensure_recent() refreshes '5S' only, and
+    backfill_symbol() is a first-time whole-history job (64 API calls/symbol).
+    The 'D' tier therefore drifted to 2026-08-14 while 5S stayed at 2026-08-21.
+
+    topup_daily() reads each symbol's newest stored daily bar and fetches only
+    forward from it — 1 API call per symbol in steady state (measured: 66 calls,
+    2,591 bars, 51s for the whole watchlist) versus 4,672 calls for a full
+    backfill. Idempotent: storage is ON CONFLICT DO NOTHING.
+    """
+    # Bulk: up to one FYERS call per watchlist symbol. Deferred during boot
+    # warm-up; it is an hourly end-of-day task, so a skipped tick is a no-op.
+    if _boot_warmup_active():
+        return
+    from fno_trader import _is_market_open
+    market_open, _ = _is_market_open()
+    if market_open:
+        return                     # end-of-day only; bars are not final intraday
+    try:
+        import fyers_historical_backfill
+        fyers_historical_backfill.topup_daily()
+    except Exception as e:
+        logger.warning("FYERS daily top-up failed: %s", e)
+
 def _task_record_pnl():
     """Record unrealised P&L snapshot every 5 seconds during market hours."""
     try:
@@ -891,12 +865,19 @@ def _task_record_pnl():
         import os
         from db_manager import get_db, PnLSnapshot
         
-        # TEST: Temporarily disabled market hours check to test P&L recording
-        # from fno_trader import _is_market_open
-        # market_open, _ = _is_market_open()
-        # if not market_open:
-        #     return
-        
+        # Market-hours guard, restored. This was commented out as a temporary
+        # test ("TEST: Temporarily disabled market hours check to test P&L
+        # recording") and left that way, which made this the only path
+        # reaching FYERS live 24/7: the task POSTs to /api/live-prices every
+        # 5s, and _get_latest_symbol_price() tries a live FYERS quote FIRST
+        # for every symbol before falling back to intraday_db/daily_db.
+        # Matches the identical gate _task_auto_close_trades already uses.
+        from fno_trader import _is_market_open
+        market_open, _ = _is_market_open()
+        if not market_open:
+            return
+
+
         trades_json_path = os.path.join('/Users/parthsharma/Desktop/Grow', 'paper_trades.json')
         if not os.path.exists(trades_json_path):
             return
@@ -1010,7 +991,7 @@ def _task_paper_eod_summary():
             return
         if get_config("paper_trading", "false").lower() != "true":
             return
-        from datetime import timezone, timedelta
+        from datetime import timezone, timedelta, time as dtime
         ist = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(ist)
         # Only send between 15:30-16:00 IST
@@ -1030,12 +1011,25 @@ def _send_paper_eod_summary():
     ist = timezone(timedelta(hours=5, minutes=30))
     today = datetime.now(ist).date()
 
+    # PaperTrade.created_at is stored NAIVE UTC (Column default=datetime.utcnow)
+    # while `today` above is an IST calendar date. Comparing them directly —
+    # func.date(created_at) >= today — silently mixed two clocks 5h30m apart.
+    # Market hours (09:15-15:30 IST = 03:45-10:00 UTC) happen to land on the
+    # same calendar date, so this produced correct results in practice, but any
+    # write between 00:00 and 05:30 IST fell on the previous UTC date and was
+    # dropped from the EOD summary without trace.
+    #
+    # Convert the IST day boundary INTO UTC and compare like with like. Also
+    # switches from func.date() to a plain range comparison, which is
+    # sargable — func.date() on the column defeats any index on created_at.
+    day_start_utc = datetime.combine(today, dtime.min).replace(
+        tzinfo=ist).astimezone(timezone.utc).replace(tzinfo=None)
+
     try:
         db = get_db()
         with db.Session() as session:
-            from sqlalchemy import func
             trades = session.query(PaperTrade).filter(
-                func.date(PaperTrade.created_at) >= today
+                PaperTrade.created_at >= day_start_utc
             ).order_by(PaperTrade.created_at).all()
 
             if not trades:
@@ -1254,12 +1248,26 @@ def start_scheduler():
     # Register tasks — staggered initial_delay to avoid API rate-limit storm
     # Tier 1: Instant (0s) — lightweight / critical for dashboard
     _register("token_refresh",   _task_token_refresh, 3600, initial_delay=0)
-    _register("cache_refresh",    _task_cache_refresh,  3600, initial_delay=0)
+    _register("fyers_token_refresh", _task_fyers_token_refresh, 3600, initial_delay=1)
+    _register("self_healing", _task_self_healing, 3600, initial_delay=90)
+    # initial_delay 0 -> 240: this is a bulk FYERS consumer (fundamentals
+    # quotes for ~67 symbols x up to 6 quotes each on a cold cache). At 0 it
+    # was the first task to fire on every restart, racing the boot warm-up.
+    # 240s clears the warm-up's 150s timeout with margin.
+    _register("cache_refresh",    _task_cache_refresh,  3600, initial_delay=240)
     _register("update_watchlist_prices", _task_update_watchlist_prices, 3600, initial_delay=10)
 
     # Tier 2: 5s — market data needed for predictions
-    _register("collect_5min_candles", _task_collect_5min_candles, 300, initial_delay=5)
-    _register("sync_historical_candles", _task_sync_historical_candles, 3600, initial_delay=12)  # End-of-day sync (after 3:30 PM IST)
+    # Measured 51s for 73 symbols; runs hourly but no-ops while the market is
+    # open and when a symbol is already current, so the real cost is one pass
+    # after close. Offset clear of the retrains (T+150 / T+1800 / T+3000).
+    # collect_5min_candles / sync_historical_candles / aggregate_candles_to_daily
+    # were REMOVED here. All three were Groww-era and wrote to the legacy
+    # `candles` table, which has had 0 rows since the FYERS migration — the
+    # 5-minute collector had been inserting into a table nothing reads, every
+    # 300s. fyers_daily_topup below is their replacement, and it targets
+    # fyers_candles.
+    _register("fyers_daily_topup", _task_fyers_daily_topup, 3600, initial_delay=200)  # End-of-day sync (after 3:30 PM IST)
     _register("record_pnl", _task_record_pnl, 5, initial_delay=8)  # Record P&L every 5 seconds
 
     # Tier 3: 15s — analysis that feeds the dashboard
@@ -1292,8 +1300,31 @@ def start_scheduler():
     _register("deep_analysis",   _task_deep_analysis, 1800, initial_delay=120)
     _register("market_intelligence", _task_market_intelligence, 21600, initial_delay=130)
     _register("research_engine",     _task_research_engine, 14400, initial_delay=140)
-    _register("ml_retrain",       _task_ml_retrain,    86400, initial_delay=150)
-    _register("retrain_xgb_daily", _task_retrain_xgb_daily, 86400, initial_delay=160)
+    # ── Model retraining: STAGGERED, not concurrent ──────────────────────
+    # Measured durations: GBC ~25 min (73 symbols), cash XGB ~4 min (65 x ~3s),
+    # F&O XGB ~31 min (597k samples). These previously started 10 SECONDS
+    # apart, so two ~30-minute jobs ran on top of each other, each holding
+    # large frames in memory while the 5-second trade tasks kept firing.
+    #
+    # Offsets give each job its measured runtime plus margin before the next
+    # begins:
+    #   GBC       +150s   .. ~+1650s
+    #   cash XGB  +1800s  .. ~+2100s   (30 min: after GBC finishes)
+    #   F&O XGB   +2400s  .. ~+4300s   (40 min: after cash XGB finishes)
+    # All three still run once every 86400s, so the daily cadence and the
+    # relative spacing both hold on every subsequent day.
+    # Offsets derived from MEASURED runtimes, not guessed (operational rule 5).
+    #   ml_retrain       ~25 min  -> T+150  .. ~T+1650
+    #   xgb_cash_retrain ~10.3min -> T+1800 .. ~T+2420   (73 symbols x ~8.5s,
+    #                                full-history 5-minute bars, ~168.8k/symbol)
+    #   retrain_xgb_daily ~31 min -> T+3000 .. ~T+4860
+    # retrain_xgb_daily was T+2400, which the cash XGB retrain now overruns by
+    # ~20s after moving from 365-day 1-minute to full-history 5-minute data.
+    # Pushed to T+3000 for a ~580s buffer rather than letting two multi-minute
+    # trainers stack on top of the 5-second trade tasks.
+    _register("ml_retrain",        _task_ml_retrain,        86400, initial_delay=150)
+    _register("xgb_cash_retrain",  _task_xgb_cash_retrain,  86400, initial_delay=1800)
+    _register("retrain_xgb_daily", _task_retrain_xgb_daily, 86400, initial_delay=3000)
     _register("auto_metadata",       _task_auto_metadata, 604800, initial_delay=170)
     # Tijori supply-chain/fundamentals: check every 6h, refreshes only symbols
     # whose data is older than tijori.refresh_interval_days (config-driven)

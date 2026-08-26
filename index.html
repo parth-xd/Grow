@@ -47,6 +47,17 @@
     --r-sm: 8px;
     --r-md: 12px;
     --r-pill: 980px;
+    /* Corner shape. `corner-shape` draws a superellipse instead of a circular
+       arc — the continuous curve Apple uses, where the corner blends into the
+       edge rather than meeting it at a tangent. Verified supported in this
+       browser (CSS.supports('corner-shape','squircle') === true).
+
+       Purely additive: it has no effect without a border-radius, and browsers
+       that don't know the property ignore the declaration and keep the plain
+       rounded corner. So there is no fallback to write and nothing to feature-
+       detect at runtime. Radii are deliberately left at their current values —
+       this changes corner SHAPE only, not size. */
+    --corner-lg: squircle;
     --shadow-sm: 0 1px 3px rgba(0,0,0,.04), 0 1px 2px rgba(0,0,0,.06);
     --shadow-md: 0 4px 14px rgba(0,0,0,.06), 0 2px 6px rgba(0,0,0,.04);
     --shadow-lg: 0 12px 40px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.04);
@@ -58,8 +69,35 @@
        relationship between them was previously enforced only by a comment. */
     --nav-h: 61px;
   }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* NOTE ON SCOPE: scroll-behavior only governs PROGRAMMATIC scrolling —
+     anchor jumps, scrollTo(), scrollIntoView(). Finger/wheel scrolling is
+     native and no CSS changes its feel. So this makes tab jumps and
+     scroll-to-row animate; it does not and cannot smooth manual scrolling.
+
+     On html alone it never reached the inner scrollers (tables, the trades
+     list, modals), so a scrollIntoView inside one of those still snapped. */
   html { scroll-behavior: smooth; }
+  body, .table, [style*="overflow-y:auto"], [style*="overflow-y: auto"],
+  [style*="overflow:auto"], [style*="overflow: auto"],
+  .paper-positions-scroll, .modal, .tab-panel {
+    scroll-behavior: smooth;
+  }
+  /* iOS momentum on every scroller, not just the ones that named it. */
+  .table, .paper-positions-scroll,
+  [style*="overflow-y:auto"], [style*="overflow-y: auto"] {
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Animated scrolling is a common motion-sickness trigger, and it is exactly
+     what this setting controls — so it must honour the OS preference. */
+  @media (prefers-reduced-motion: reduce) {
+    html, body, .table, .paper-positions-scroll, .modal, .tab-panel,
+    [style*="overflow-y:auto"], [style*="overflow-y: auto"],
+    [style*="overflow:auto"], [style*="overflow: auto"] {
+      scroll-behavior: auto;
+    }
+  }
 
   /* Kill iOS's double-tap-to-zoom.
      Safari waits ~300ms after a tap to see if a second one is coming and
@@ -395,8 +433,8 @@
        too. */
     header {
       background: rgba(251,251,253,.72);
-      -webkit-backdrop-filter: saturate(180%) blur(20px);
-      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(150%) blur(8px);
+      backdrop-filter: saturate(150%) blur(8px);
       border-bottom: .5px solid rgba(0,0,0,.1);
       padding: 14px 32px;
       align-items: center;
@@ -405,7 +443,73 @@
   }
 
   /* ── Header (frosted glass) ──────────────── */
-  header { display: flex; position: sticky; top: 0; z-index: 100; }
+  /* Header is sticky, so content scrolls UNDER it. A solid fill made that a
+     hard cut; a translucent pane with a backdrop blur lets the page read as
+     continuing behind the bar instead of stopping at it. saturate() keeps
+     colour from going flat and grey once it is blurred.
+     The fallback matters: without backdrop-filter support the bar would be
+     see-through with text scrolling through it, so @supports gives those
+     browsers an opaque background instead. */
+  /* fixed, not sticky.
+     sticky pins to the nearest scrolling ancestor, so it only holds while
+     that ancestor is the thing scrolling — inside any overflow container it
+     silently scrolls away. fixed pins to the viewport unconditionally.
+     The cost is that it leaves the document flow, so the content below must
+     be pushed down by exactly its height. That height changes when the pills
+     wrap, so it is measured at runtime into --header-h rather than guessed
+     (see the ResizeObserver below). */
+  header {
+    display: flex; position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    /* More transparent than the .92 a later rule was landing on — at that
+       opacity the blur was doing nothing visible and the bar read as solid.
+       .55 lets the content underneath actually show through as it scrolls. */
+    background: rgba(255,255,255,.38);
+    -webkit-backdrop-filter: saturate(150%) blur(9px);
+    backdrop-filter: saturate(150%) blur(9px);
+    border-bottom: .5px solid rgba(0,0,0,.08);
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    header { background: var(--bg); }
+  }
+  /* Reserves the space the fixed header no longer occupies. The fallback in
+     the var() covers the first paint, before JS has measured. */
+  body { padding-top: var(--header-h, 95px); }
+  /* Anything that scrolls itself to a position must clear the fixed bar,
+     otherwise the target lands underneath it. */
+  :target, [id] { scroll-margin-top: calc(var(--header-h, 95px) + 8px); }
+
+  /* The three header pills — Scan Watchlist, Auto-Trade, and the data-gaps
+     chip — share one vocabulary: translucent ground, BLACK label. Colour was
+     doing double duty as both "this is interactive" and "this is a status",
+     so a blue button sat beside a green pill beside an amber one and none of
+     them led. Black text against a light translucent pill reads as one
+     control family; status still shows, but on the dot rather than the word.
+     Deliberately scoped to .header-actions so the tinted primary buttons in
+     the page body are untouched. */
+  .header-actions .btn-primary,
+  .header-actions .status-pill,
+  .header-actions .at-toggle {
+    color: var(--text) !important;
+    background: rgba(0,0,0,.05) !important;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border: .5px solid rgba(0,0,0,.06) !important;
+    box-shadow: none !important;
+    font-weight: 600;
+  }
+  .header-actions .btn-primary:hover { background: rgba(0,0,0,.09) !important; }
+
+  /* Sized down. These three are status/utility, not the page's subject, and
+     at body scale they were taking two header rows on a phone. The mobile
+     block's 44px min-height still applies to the two that are buttons, so
+     the touch targets are unchanged — only the type and side padding shrink. */
+  .header-actions .btn-primary,
+  .header-actions .status-pill,
+  .header-actions .at-toggle {
+    font-size: 11px !important;
+    padding: 5px 11px !important;
+    letter-spacing: 0;
+  }
   header h1 { font-size: 21px; font-weight: 600; letter-spacing: -.02em; }
   header h1 span { color: var(--text); }
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -499,26 +603,233 @@
   .btn { padding: 8px 16px; border-radius: var(--r-sm); border: none; background: var(--surface); color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--transition); box-shadow: none; border: .5px solid var(--border); letter-spacing: -.01em; }
   .btn:hover { background: rgba(0,113,227,.06); transform: scale(1.01); }
   .btn:active { transform: scale(.97); }
-  .btn-primary { background: var(--accent); color: #fff; border: none; box-shadow: 0 2px 8px rgba(0,113,227,.2); }
-  /* Scan Watchlist specifically — not .btn-primary globally, which is also
-     used inside cards (Add Stock, Scan News+X, Deep Analysis) where a sharp
-     rectangle sits fine among other rectangular controls. In the header it
-     sits directly beside Auto-Trade and the Data chip, which are both fully-
-     rounded pills — the 8px-radius rectangle plus a solid shadow read as a
-     different, louder control family in that one row. Rounded to match its
-     neighbours' silhouette and the shadow dropped to match their flatter
-     weight. Background/text now mirror the exact tint the Auto-Trade pill
-     uses (rgba accent at .12 opacity + var(--accent) text, see
-     updateCashAutoTradeUI's `rgba(0,200,83,.12)` / `var(--green)` pair) —
-     the solid fill read heavier than its pill neighbours even after the
-     shape fix. Scoped by ancestor rather than a new class so the other Scan
-     Watchlist button (in the Watchlist card body) is untouched. */
-  .header-actions .btn-primary {
-    border-radius: var(--r-pill); box-shadow: none;
-    background: rgba(0,113,227,.12); color: var(--accent);
+  /* The tinted pill IS the primary button now, everywhere.
+     This treatment used to be scoped to .header-actions so only Scan
+     Watchlist got it, on the reasoning that a solid fill sat fine among the
+     rectangular controls inside cards. In practice the solid blue read as a
+     row of competing shouts — "+ Add Stock", "Deep Analysis", "Scan News+X"
+     each demanding the same attention as the data they sit above. The tint
+     carries the same accent and the same affordance at a fraction of the
+     visual weight, so the numbers stay the loudest thing on screen.
+     Background/text mirror the Auto-Trade pill exactly (accent at .12
+     opacity + var(--accent) text). */
+  .btn-primary {
+    background: rgba(0,113,227,.12);
+    color: var(--accent);
+    border: none;
+    border-radius: var(--r-pill);
+    box-shadow: none;
+    font-weight: 600;
   }
-  .header-actions .btn-primary:hover { background: rgba(0,113,227,.18); box-shadow: none; }
-  .btn-primary:hover { background: #0077ED; transform: scale(1.01); box-shadow: 0 4px 12px rgba(0,113,227,.3); }
+  .btn-primary:hover { background: rgba(0,113,227,.18); box-shadow: none; }
+  /* Square, so a single glyph sits centred rather than marooned in a button
+     shaped for a word. 40px keeps it a comfortable touch target while
+     matching the height of the search field it sits beside. */
+  .btn-icon {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* ── Watchlist Management card ──────────────────────────────────────── */
+  /* The Deep Analysis block used to be a sibling with margin-bottom:14px.
+     Moving it inside the card dropped that margin, so the card's bottom edge
+     landed exactly on the stat grid below it — measured gap: 0px, which read
+     as the two cards colliding. Restored as padding on the card's last child
+     rather than a margin, so it cannot collapse through the card edge. */
+  #predictions .card > div:last-child { margin-bottom: 0; }
+  #predictions .card #wl-deep-btn { margin-bottom: 2px; }
+  #watchlist-summary { margin-top: 14px; }
+
+  /* Smaller type through this card: it is a search box and one button, and
+     was set at body scale while the numbers below it — the actual content —
+     were the same size or smaller. */
+  #predictions .card .card-title { font-size: 11px; }
+  #predictions .card > div:nth-child(2) { font-size: 12px; line-height: 1.4; }
+  /* Padding only — the font-size stays at the 16px the mobile block forces.
+     iOS Safari zooms the viewport whenever a focused field is under 16px,
+     so shrinking this to match the surrounding type would make tapping the
+     search box zoom the whole page. Height comes from padding instead. */
+  #watchlist-symbol-input { padding: 8px 12px !important; }
+  #wl-deep-btn { font-size: 12px; padding: 7px 14px; }
+
+  /* ── Watchlist row ──────────────────────────────────────────────────── */
+  /* Symbol left, actions hard right, one line. The candle count and date
+     range that used to sit under the symbol are gone — the range string
+     ("7239 candles (Wed, 25 Jun 1997 … to Fri, 14 Aug 2026 …)") was the
+     single biggest cause of two-line wrapping on a phone. */
+  .wl-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+  .wl-sym { font-size: 15px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .wl-acts { display: flex; gap: 6px; flex-shrink: 0; }
+  .wl-view { padding: 5px 10px; font-size: 11px; }
+
+  /* The row is one symbol and two buttons; the card's default 16px padding
+     plus 44px touch targets made that ~100px tall, so six stocks filled a
+     phone screen. Trimmed to the buttons' own height — they remain the
+     touch targets and keep their 36px, which is what the padding was
+     protecting. */
+  #watchlist-list .card,
+  .card:has(> .wl-head) { padding: 6px 10px !important; }
+  /* 36px is below the 44px HIG target, and that is a deliberate trade here:
+     these two sit side by side in a long list where row height is the whole
+     problem, they are widely separated from each other, and Remove cannot
+     fire on a stray tap anyway — it needs a 300ms hold. */
+  .wl-view, .wl-remove { min-height: 34px !important; font-size: 11px; padding: 4px 9px; }
+  .wl-acts { gap: 5px; }
+
+  /* Remove is destructive, so it must not blend in with the softened primary
+     pills — but a solid red block repeated down a list reads as an alert
+     rather than an affordance. Outlined keeps it unmistakably red and
+     unmistakably separate, while letting the symbol lead. The hold-fill
+     sweeps this same red, so the state change stays legible. */
+  .btn-red.wl-remove {
+    background: rgba(255,59,48,.10);
+    color: var(--red);
+    border: none;
+    box-shadow: none;
+    font-weight: 600;
+  }
+  .btn-red.wl-remove .wl-remove-fill { background: rgba(255,59,48,.55); }
+  .wl-remove.is-holding .wl-remove-label { color: #fff; }
+
+  /* Hold-to-delete.
+     Deliberately NOT the optimistic-UI pattern in standard #4. That standard
+     is for reversible actions — removing a stock discards years of stored
+     candle history, so instant-on-tap is the wrong default here and a stray
+     thumb on a phone should not be able to trigger it. The 300ms is friction
+     by design; the fill animation is what makes it read as "keep holding"
+     rather than "the app is slow". */
+  .wl-remove {
+    position: relative;
+    overflow: hidden;
+    padding: 5px 10px;
+    font-size: 11px;
+    isolation: isolate;
+    touch-action: none;           /* don't let the hold start a scroll */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .wl-remove-fill {
+    position: absolute;
+    inset: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: rgba(0,0,0,.28);
+    z-index: -1;
+    pointer-events: none;
+  }
+  /* Driven by a class rather than :active so a released hold can rewind.
+     Duration comes from --hold-ms so the fill always finishes exactly when
+     the action fires — 300ms for Remove, 600ms for Close All Open. */
+  .wl-remove.is-holding .wl-remove-fill {
+    transform: scaleX(1);
+    transition: transform var(--hold-ms, .3s) linear;
+  }
+
+  /* ── Segmented filter bar ───────────────────────────────────────────── */
+  /* ONE thumb slides between segments rather than five backgrounds fading in
+     and out. That is what makes a segmented control feel physical: the
+     selection is a single object that moves, so the eye tracks it from old
+     position to new instead of re-finding it. The thumb is a pseudo-element
+     positioned by --seg-i (the active index, set in loadJournal), which keeps
+     the animation entirely in CSS — no per-frame JS. */
+  .seg-bar {
+    position: relative;
+    display: flex;
+    background: rgba(0,0,0,.05);
+    border-radius: 9px;
+    padding: 2px;
+    gap: 0;
+    margin-bottom: 8px;
+    isolation: isolate;
+    --seg-i: 0;
+    --seg-n: 5;
+  }
+  .seg-bar::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    top: 2px; bottom: 2px; left: 2px;
+    width: calc((100% - 4px) / var(--seg-n));
+    transform: translateX(calc(var(--seg-i) * 100%));
+    background: var(--surface);
+    border-radius: 7px;
+    box-shadow: 0 1px 2.5px rgba(0,0,0,.10), 0 0 0 .5px rgba(0,0,0,.03);
+    /* Slight overshoot — the thumb settles rather than stopping dead. */
+    transition: transform .34s cubic-bezier(.34, 1.4, .48, 1);
+  }
+  .seg {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 2px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    /* Label colour catches up slightly faster than the thumb arrives, so the
+       destination reads as "already selected" as it lands. */
+    transition: color .2s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .seg:hover { color: var(--text); }
+  .seg:active { transform: scale(.96); transition: transform .1s ease; }
+  /* aria-selected drives the label weight; the thumb is positional. Keeping
+     the state on aria means the visual and the announced state cannot drift. */
+  .seg[aria-selected="true"] { color: var(--text); }
+  .seg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .seg-bar::before { transition: none; }
+    .seg:active { transform: none; }
+  }
+
+  /* Close All spans the full width directly under the bar, matching its
+     silhouette — same radius, same edges — so the two read as one stacked
+     unit rather than a control with a stray button beside it. */
+  .journal-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .journal-meta #journal-count { order: 2; text-align: center; }
+  .close-all-hold {
+    order: 1;
+    width: 100%;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,59,48,.09) !important;
+    color: var(--red) !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    padding: 6px 12px;
+    min-height: 32px !important;
+    border-radius: 9px;
+  }
+  .close-all-hold:hover { background: rgba(255,59,48,.14) !important; }
+  .wl-remove-label { position: relative; }
+  .wl-remove.is-armed { opacity: .55; pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .wl-remove.is-holding .wl-remove-fill { transition: none; }
+  }
+
   .btn-green { background: var(--green); color: #fff; border: none; box-shadow: 0 2px 8px rgba(52,199,89,.2); }
   .btn-green:hover { background: #2db84a; transform: scale(1.01); box-shadow: 0 4px 12px rgba(52,199,89,.3); }
   .btn-red { background: var(--red); color: #fff; border: none; box-shadow: 0 2px 8px rgba(255,59,48,.2); }
@@ -584,6 +895,34 @@
   .grid-2 { grid-template-columns: 1fr 1fr; }
   @media (max-width: 1024px) { .container { padding: 24px 16px; } }
   @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } .container { padding: 20px 14px; } }
+
+  /* ── Squircle corners ────────────────────────
+     One grouped rule rather than editing ~17 individual declarations: easier
+     to review, and trivially revertible by deleting this block.
+
+     Declared UNSCOPED on purpose. `.card` is defined twice — desktop inside
+     @media (min-width: 769px) at radius var(--radius)/16px, and mobile at
+     14px — so scoping this to either block would silently skip the other.
+     corner-shape is independent of the radius value, so one declaration
+     covers both.
+
+     Skeletons are included so the loading state has the same silhouette as
+     the content it stands in for; a round-cornered skeleton resolving into a
+     squircle card is a visible pop.
+
+     .pin-key is deliberately EXCLUDED — the lock screen is not part of
+     dashboard theming and is left alone. Pills (--r-pill/980px) and circular
+     avatars (50%) are also excluded: a superellipse only reads as a squircle
+     on a corner with a real straight edge to blend into, and applying it to a
+     fully-rounded shape just distorts it. */
+  .card,
+  .journal-entry, .pa-stock, .unlock-banner, .heatmap-wrap,
+  .set-preview, .bt-fno, .bt-fno .bt-card, .bt-fno .bt-chart-wrap,
+  .journal-stat, .journal-box, .pa-stat,
+  .ac-drop, .heatmap-tooltip, .sc-tooltip,
+  .skel-card, .skel-stat {
+    corner-shape: var(--corner-lg);
+  }
 
   /* ── Cards ──────────────────────────────── */
   .card { background: var(--surface); transition: var(--transition); }
@@ -752,6 +1091,12 @@
   .bt-fno .bt-btn-multi { background: var(--bt-surface); border: 1px solid var(--bt-border); color: var(--bt-text); }
   .bt-fno .bt-btn-multi:hover { border-color: var(--bt-accent); }
   .bt-fno .bt-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  /* Model selector. Reads as one segmented control: the active model is
+     filled, the others outlined — so which of the three you are looking at
+     is unambiguous, since the panels below otherwise look similar. */
+  .bt-fno .bt-seg-btn { background: transparent; border: 1px solid var(--bt-border); color: var(--bt-muted); }
+  .bt-fno .bt-seg-btn:hover { border-color: var(--bt-accent); color: var(--bt-text); }
+  .bt-fno .bt-seg-btn.active { background: linear-gradient(135deg, #6366f1, #8b5cf6); border-color: transparent; color: #fff; }
   .bt-fno .bt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
   @media (max-width: 768px) { .bt-fno .bt-grid { grid-template-columns: 1fr; } }
   .bt-fno .bt-card { background: var(--bt-surface); border: 1px solid var(--bt-border); border-radius: 14px; padding: 20px; transition: .2s; }
@@ -787,11 +1132,17 @@
   .bt-fno .bt-loading .bt-spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid rgba(99,102,241,.2); border-top-color: var(--bt-accent); border-radius: 50%; animation: spin .8s linear infinite; margin-bottom: 12px; }
 
   /* ── Journal ────────────────────────────── */
-  .journal-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .journal-stat { background: var(--surface); border: .5px solid var(--border); border-radius: 14px; padding: 16px; text-align: center; box-shadow: var(--shadow-sm); transition: var(--transition); }
+  /* Eight readouts — Total/Open/Closed/Win Rate/P&L and three accuracies —
+     each of which is one short number. At minmax(140px) with 16px padding
+     and a 24px value they filled the screen before a single trade was
+     visible. The numbers are the content; the boxes around them were the
+     bulk, so the padding and the track minimum come down and the values with
+     them, just not as far. */
+  .journal-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .journal-stat { background: var(--surface); border: .5px solid var(--border); border-radius: 12px; padding: 10px 8px; text-align: center; box-shadow: var(--shadow-sm); transition: var(--transition); }
   .journal-stat:hover { box-shadow: var(--shadow-md); }
-  .journal-stat .val { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
-  .journal-stat .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-top: 4px; font-weight: 600; }
+  .journal-stat .val { font-size: 18px; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; white-space: nowrap; }
+  .journal-stat .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-top: 2px; font-weight: 600; line-height: 1.2; }
   .journal-entry { background: var(--surface); border: .5px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; box-shadow: var(--shadow-sm); transition: var(--transition); }
   .journal-entry:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
   .journal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; cursor: pointer; transition: var(--transition); }
@@ -1230,7 +1581,14 @@
     body { padding-bottom: env(safe-area-inset-bottom); }
 
     /* ── 5. Stat cards: 4-across is unreadable at 375px → 2x2 ───────────── */
-    .grid-4 { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+    /* display:grid is required here, not just the columns. Several blocks
+       (Paper Trader's two stat rows among them) carry `class="grid-4"`
+       WITHOUT the `grid` class that supplies display:grid, so they computed
+       as display:block and the grid-template-columns below did nothing —
+       four full-width cards stacked vertically, which on a phone pushed the
+       actual positions below two screens of chrome. Scoped to this media
+       query so desktop keeps whatever it renders today. */
+    .grid-4 { display: grid; grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
 
     /* ── 5b. Spacing and hierarchy ───────────────────────────────────────
        An earlier pass cut padding uniformly (28px -> 14px) to win back screen
@@ -1257,7 +1615,7 @@
        shadow, fewer edges competing for attention. */
     body { background: #f2f2f7; }
     .card {
-      padding: 16px !important;
+      padding: 12px !important;
       border-radius: 14px;
       border: none !important;
       box-shadow: none !important;
@@ -1328,8 +1686,11 @@
          screen, which is a lot of permanent furniture above a data-dense
          dashboard. Combined with the shorter auto-trade label, this brings
          the controls back toward two rows instead of three. */
-      padding-top: calc(8px + env(safe-area-inset-top));
-      padding-bottom: 8px;
+      /* 8px -> 5px. With Scan Watchlist and the auto-trade switch both gone
+         the bar holds only the title and two small controls, so the vertical
+         padding was reserving space for a row that no longer exists. */
+      padding-top: calc(5px + env(safe-area-inset-top));
+      padding-bottom: 5px;
       /* The title and the action row are siblings in one flex row, so making
          the actions scroll horizontally left them starting immediately after
          the wordmark — "Parth S. Trading" with a blue button pressed against
@@ -1338,9 +1699,15 @@
       flex-direction: column;
       align-items: stretch;
       gap: 10px;
-      background: rgba(242,242,247,.92);
-      backdrop-filter: saturate(180%) blur(20px);
-      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      /* Was .92 — effectively opaque, which made the backdrop-filter
+         above it pointless. .55 lets content actually show through as
+         it scrolls beneath the fixed bar. */
+      background: rgba(242,242,247,.38);
+      /* 20px was so strong that content under the bar became an
+         unreadable smear. 8px still separates the layers while letting
+         you actually see what is scrolling underneath. */
+      backdrop-filter: saturate(150%) blur(8px);
+      -webkit-backdrop-filter: saturate(150%) blur(8px);
       border-bottom: .5px solid rgba(0,0,0,.08);
     }
     header h1 {
@@ -1429,18 +1796,26 @@
        nothing to hint at — the fade would only have covered content.) */
 
     /* ── 5d. Search-plus-buttons rows ────────────────────────────────────
-       "Search by name or symbol…" sits in a nowrap flex row beside + Add
-       Stock, Sync from Groww and Refresh. Those three need ~260px of natural
-       text width, so on a 351px line the input was left with about 43px — a
-       stub too narrow to read a single word in — while the buttons wrapped
-       their own labels onto two lines each.
+       "Search by name or symbol…" sits in a nowrap flex row beside its
+       buttons. This row once held three text buttons needing ~260px of
+       natural width between them, which left the input about 43px on a
+       351px line — a stub too narrow to read a word in — while the buttons
+       wrapped their own labels onto two lines each.
 
-       Giving the field its own row fixes both at once: it gets full width and
-       the buttons stop wrapping. :has() targets the container by what it
-       holds, so this needs no new markup and no change to the inline styles.
-       On a browser without :has() nothing matches and the layout is simply
-       what it is today. */
-    .card div:has(> .ac-wrap) { flex-wrap: wrap; }
+       The row is now just the field and a 40px "+", so the pressure is gone,
+       but the wrap is kept: it costs nothing at one button and still holds
+       if anything is added back here later.
+
+       :has() targets the container by what it holds, so this needs no new
+       markup and no change to the inline styles. On a browser without :has()
+       nothing matches and the layout is simply what it is today. */
+    /* Was flex-wrap:wrap, from when this row held three text buttons and the
+       field was squeezed to a 43px stub. It is now the field plus a 40px "+",
+       which fits on one line — but only once the field is allowed to shrink:
+       a flex item defaults to min-width:auto and refuses to go below its
+       content, which is what pushed the button onto its own row. */
+    .card div:has(> .ac-wrap) { flex-wrap: nowrap; }
+    .card div:has(> .ac-wrap) > .ac-wrap { min-width: 0; }
     .ac-wrap { flex: 1 1 100% !important; }
 
     /* ── 5d-2. Watchlist Management: stop it eating a third of the screen ────
@@ -1492,13 +1867,37 @@
          hairline rule instead of a 1px one. Deliberately NOT reduced to
          home-indicator thickness (~5px) — it has to carry five labelled,
          thumb-reachable destinations, and a bar that thin cannot. */
-      padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
-      background: rgba(255,255,255,.92);
-      backdrop-filter: saturate(180%) blur(20px);
-      -webkit-backdrop-filter: saturate(180%) blur(20px);
-      border-top: .5px solid rgba(0,0,0,.07);
+      /* 4px -> 2px. The labels and icons keep their size; only the bar's
+         own padding comes off, so the five destinations stay exactly as
+         reachable while the bar gives ~4px back to content. */
+      padding: 2px 4px calc(2px + env(safe-area-inset-bottom));
+      /* Frosted glass, matched EXACTLY to the header rule (see `header` in
+         the unscoped block above — that is the one mobile gets; the .72/8px
+         variant is scoped to @media (min-width: 769px) and never applies
+         here). The bar previously ran .82 alpha with a 20px blur, which is
+         nearly opaque: content scrolled up and simply stopped at the bar
+         instead of showing through it, so the footer read as a solid slab
+         while the header read as glass. Same three values now, mirrored top
+         to bottom:
+             background   rgba(255,255,255,.38)   (was .82)
+             filter       saturate(150%) blur(9px) (was 180%/20px)
+             hairline     rgba(0,0,0,.08)          (was .07)
+         Only the border SIDE differs — border-top here vs border-bottom on
+         the header — because the divider faces the content either way. */
+      background: rgba(255,255,255,.38);
+      backdrop-filter: saturate(150%) blur(9px);
+      -webkit-backdrop-filter: saturate(150%) blur(9px);
+      border-top: .5px solid rgba(0,0,0,.08);
       border-bottom: none;
       overflow: visible;
+    }
+    /* Mirrors the header's fallback and is REQUIRED at this alpha. The bar
+       carried no @supports guard while it sat at .82, where it stayed mostly
+       opaque on its own. At .38 a browser without backdrop-filter would
+       render a see-through bar with page content scrolling straight through
+       the tab labels. Same rule the header already uses. */
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .tabs { background: var(--bg); }
     }
     /* Everything that isn't a primary destination lives in the More sheet */
     .tabs .tab { display: none; }
@@ -1817,8 +2216,67 @@
        inline style. Its two halves stack instead of being clipped —
        .journal-entry has overflow-x:hidden, so the right-hand half was
        simply invisible. */
-    .journal-header { flex-wrap: wrap; row-gap: 6px; }
+    /* nowrap, not wrap.
+       flex-wrap:wrap is exactly why the cards were inconsistent: a row whose
+       content exceeded 347px broke onto a second line, so HEROMOTOCO (a long
+       symbol plus a 4-figure price) rendered taller than LT. Height became a
+       function of content length, which reads as sloppy rather than as
+       information. Fixed height + nowrap + ellipsis makes every card the
+       same, and the symbol truncates instead of pushing a new row. */
+    .journal-header {
+      flex-wrap: nowrap !important;
+      row-gap: 0;
+      gap: 6px;
+      height: 44px;
+      padding: 0 12px !important;
+      align-items: center;
+    }
     .journal-header > * { min-width: 0; }
+    .journal-header .left {
+      display: flex; align-items: center; gap: 6px;
+      flex: 1 1 auto; min-width: 0; overflow: hidden;
+    }
+    .journal-header .right {
+      display: flex; align-items: center; gap: 7px;
+      flex: 0 0 auto; white-space: nowrap;
+    }
+    .journal-header .je-sym {
+      font-size: 13px; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .journal-header .je-qty {
+      font-size: 10px; color: var(--muted); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .journal-header .je-conf,
+    .journal-header .je-time { font-size: 10px; color: var(--muted); }
+    .journal-header .je-pnl  { font-size: 11px; font-weight: 600; }
+    .journal-header .je-arrow { font-size: 13px; color: var(--muted); }
+    /* The bar is gone from the markup, but belt-and-braces if it returns. */
+    .journal-header .conf-bar { display: none !important; }
+    .journal-entry { margin-bottom: 8px; }
+
+    /* Centre-focus pop.
+       IntersectionObserver toggles .is-focused on whichever card crosses a
+       narrow band at the middle of the viewport. Chosen over a scroll
+       listener because it fires only on threshold crossings — no per-frame
+       work while scrolling — and over CSS animation-timeline:view(), which
+       is Chrome-only and this runs on Safari.
+       Mobile only: on desktop several cards occupy the centre band at once,
+       so the effect would be noise rather than focus. */
+    .journal-entry {
+      transition: transform .28s cubic-bezier(.34,1.2,.5,1), box-shadow .28s ease;
+      transform-origin: center;
+      will-change: transform;
+    }
+    .journal-entry.is-focused {
+      transform: scale(1.025);
+      box-shadow: var(--shadow-md);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .journal-entry { transition: none; }
+      .journal-entry.is-focused { transform: none; }
+    }
 
     /* ── 17. Scan results: separate them from the stock list ─────────────
        The auto-analysis summary (Total Scanned / Buy / Sell / Hold) began at
@@ -1878,6 +2336,409 @@
   }
   @media (max-width: 768px) {
     .tabs .tab .tab-label-full { display: none; }
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     MOBILE: tables that cannot survive being a table at 375px
+     ══════════════════════════════════════════════════════════════════════
+     The generic mobile rule makes .table scroll sideways inside its own box,
+     which stops the page zooming out but still leaves the user dragging a
+     10-column grid through a phone-width window to read one position. For
+     the two worst offenders — open paper positions and peer comparison —
+     the table is rebuilt as cards instead.
+
+     Everything here is inside a max-width query, so desktop and tablet keep
+     the real tables untouched. No markup was removed to achieve this: the
+     same <td>s are re-laid-out via grid, so sorting, click handlers and the
+     row dataset all keep working. */
+  @media (max-width: 768px) {
+
+    /* ── Open paper positions → one card per position ──────────────────── */
+    #paper-positions-table {
+      display: block;
+      overflow-x: visible !important;
+      white-space: normal !important;
+    }
+    /* Column headers are meaningless once each cell carries its own label. */
+    #paper-positions-table thead { display: none; }
+    #paper-positions-table tbody { display: block; }
+
+    #paper-trades-body tr.trade-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px 10px;
+      padding: 13px 14px;
+      margin-bottom: 10px;
+      border-radius: 12px;
+      background: var(--surface) !important;
+      box-shadow: 0 1px 2px rgba(0,0,0,.05);
+    }
+    #paper-trades-body td {
+      display: block;
+      border: none !important;
+      padding: 0 !important;
+      white-space: normal;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    /* Row 1: symbol (+model badge) leads, status sits right.
+       Row 2: BUY/SELL leads, P&L sits right — the two things you look for
+       first when scanning open positions. */
+    #paper-trades-body td[data-cell="symbol"] { order: 1; grid-column: span 2; font-size: 15px; }
+    #paper-trades-body td[data-cell="status"] { order: 2; text-align: right; }
+    /* P&L gets two columns and BUY/SELL gets one: the P&L cell carries
+       "NET PROFIT: +₹110.93 (+1.38%)" plus a charges line, which wrapped to
+       three lines when squeezed into a third of the width, while "BUY" had a
+       two-column slot to itself. */
+    #paper-trades-body td[data-cell="signal"] { order: 3; grid-column: span 1; }
+    #paper-trades-body td[data-cell="pnl"]    { order: 4; grid-column: span 2; text-align: right; font-size: 13px; }
+
+    /* Remaining metrics flow three-across, each captioned by its own header
+       text via data-label — that is what replaces the removed <thead>. */
+    #paper-trades-body td[data-label]:not([data-cell]) { order: 5; }
+    #paper-trades-body td[data-label]:not([data-cell])::before {
+      content: attr(data-label);
+      display: block;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 1px;
+    }
+    /* The model badge is the whole point of running GBC and XGB side by side,
+       so it gets weight rather than being a whisper under the symbol. */
+    #paper-trades-body td[data-cell="symbol"] small {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: rgba(99,102,241,.12);
+      font-size: 10px !important;
+      font-weight: 700;
+      letter-spacing: .03em;
+    }
+    /* The 600px cap was sized for a desktop table and produces a scroll box
+       inside a scrolling page — on touch, the inner one swallows the gesture
+       and the page feels stuck. Let the cards extend and the page scroll. */
+    .paper-positions-scroll { max-height: none !important; overflow-y: visible !important; }
+
+    /* ── Stat tiles: stop them being so tall ────────────────────────────── */
+    /* Measured on Paper Trader and Portfolio Analysis: each tile ran ~130px
+       for one number. Three things stacked up — 14px padding, a 26px value,
+       and a two-line caption under it — and any value long enough to wrap
+       ("+₹242.04 (7 open)") added another line on top. Eight tiles then
+       filled the screen before the actual positions began.
+
+       Padding and type come down together, and the value is allowed to
+       shrink further before wrapping, so a tile is one line of number rather
+       than two. Touch targets are untouched: these are readouts, not
+       controls, so the 44px rule does not apply to them. */
+    .grid-4 .card { padding: 10px 11px !important; }
+    .grid-4 .card-value {
+      font-size: clamp(12px, 4.4vw, 19px) !important;
+      line-height: 1.2 !important;
+      margin: 0 !important;
+    }
+    .grid-4 .card-title { margin-bottom: 3px !important; font-size: 9px !important; }
+    /* The caption under each P&L tile ("Net realized + est. net unrealized")
+       cost two lines to restate the label. Kept, but small and tight. */
+    .grid-4 .card small {
+      font-size: 9px !important;
+      line-height: 1.25 !important;
+      margin-top: 2px !important;
+      display: block;
+    }
+
+    /* Portfolio Analysis holding rows: status pills were wrapping onto their
+       own line under the symbol, doubling each row's height. */
+    .holding-row, .position-row { row-gap: 4px !important; }
+    .holding-row [style*="border-radius"], .position-row [style*="border-radius"] {
+      white-space: nowrap;
+    }
+
+    /* ── Trade Journal stat tiles ──────────────────────────────────────── */
+    /* Four across at 375px rather than two. Eight one-number readouts in two
+       columns is four rows of chrome above the trades themselves; at four
+       across it is two compact rows. The values stay large enough to scan —
+       the space comes out of padding and the label, not the number. */
+    .journal-stats {
+      grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      gap: 6px !important;
+      margin-bottom: 12px !important;
+    }
+    .journal-stat { padding: 8px 4px !important; border-radius: 10px; }
+    .journal-stat .val { font-size: 15px !important; }
+    .journal-stat .lbl { font-size: 8px !important; letter-spacing: .02em !important; }
+
+    /* ── Alpha leaderboard → one card per stock ────────────────────────── */
+    .lb-table-wrap { display: none; }
+    /* grid-template-columns: minmax(0,1fr) is load-bearing, not decoration.
+       A grid item defaults to min-width:auto and refuses to shrink below its
+       content, so the nowrap company/sector line and the wide regime badge
+       ("BREAKDOWN IMMINENT") forced each card to 514px inside a 375px
+       column — measured. minmax(0,1fr) lets the track shrink, and the
+       overflow:hidden below is what finally lets the ellipsis engage. */
+    .lb-cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .lb-card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .lb-card-top, .lb-card-badges, .lb-dims { min-width: 0; max-width: 100%; }
+    .lb-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .lb-card-top { display: flex; align-items: baseline; gap: 8px; }
+    .lb-rank { font-size: 11px; font-weight: 700; color: var(--muted); min-width: 16px; }
+    .lb-sym { font-size: 14px; font-weight: 700; flex: 1; min-width: 0;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-alpha { font-size: 18px; font-weight: 800; }
+    .lb-card-sub {
+      font-size: 10px; color: var(--muted); margin-top: 1px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .lb-card-badges {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 7px;
+    }
+    .lb-conv { font-size: 10px; color: var(--muted); }
+    .lb-dims {
+      display: grid; grid-template-columns: repeat(5, 1fr);
+      gap: 4px; margin-top: 8px;
+      border-top: .5px solid var(--border); padding-top: 7px;
+    }
+    .lb-dim-label {
+      font-size: 8px; font-weight: 600; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .lb-dim-value { font-size: 13px; font-weight: 700; line-height: 1.2; }
+
+    /* ── Watchlist Management: black text, translucent grounds ─────────── */
+    /* Same vocabulary as the header pills — the card's own controls were the
+       last blue things on this screen. Search field and Deep Analysis both
+       sit on a translucent ground with black labels, and Deep Analysis spans
+       the card so the two read as one stacked pair rather than a full-width
+       field above an orphaned pill. */
+    #watchlist-symbol-input {
+      background: rgba(0,0,0,.04) !important;
+      border: .5px solid rgba(0,0,0,.06) !important;
+      color: var(--text) !important;
+      padding: 7px 11px !important;
+    }
+    #predictions .card .btn-icon {
+      background: rgba(0,0,0,.05) !important;
+      color: var(--text) !important;
+      border: .5px solid rgba(0,0,0,.06) !important;
+      width: 38px; min-width: 38px; min-height: 38px;
+    }
+    /* The + matches the field's height exactly rather than the 44px button
+       floor, so the two read as one control. */
+    #predictions .card div:has(> .ac-wrap) { align-items: stretch; }
+    #predictions .card .ac-wrap { display: flex; }
+    /* Deep Analysis and the data-coverage chip share one row, half each.
+       Both describe the watchlist's own data, so they sit with it rather than
+       in global chrome. minmax(0,1fr) so neither can be pushed past its half
+       by its own label. */
+    .wl-actions-row {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .wl-actions-row > * { width: 100%; min-width: 0; margin-top: 0 !important; }
+    /* Both controls take the SEARCH FIELD's shape, not the pill's. They sit
+       directly under it in the same card, and three different silhouettes in
+       one small card read as three unrelated things. 10px radius matches the
+       input exactly. */
+    .wl-actions-row .status-pill,
+    .wl-actions-row #wl-deep-btn {
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,.05) !important;
+      color: var(--text) !important;
+      border: .5px solid rgba(0,0,0,.06) !important;
+      font-size: 11px !important;
+      padding: 6px 10px !important;
+      min-height: 34px !important;
+      border-radius: 10px !important;
+    }
+
+    /* Card text black. The title was --muted grey, which on a card holding
+       only a field and two controls left nothing at full contrast. */
+    #predictions .card > .card-title { color: var(--text) !important; }
+    /* The chip is display:none until loadDataHealth() populates it; that
+       inline style must still win, so only override it once it is shown. */
+    .wl-actions-row .status-pill[style*="display: none"],
+    .wl-actions-row .status-pill[style*="display:none"] { display: none !important; }
+
+    #wl-deep-btn {
+      /* !important because the touch-target rule sets display:inline-flex on
+         every .btn, which shrink-wraps this to its label instead of letting
+         width:100% span the card. */
+      display: flex !important; width: 100%;
+      background: rgba(0,0,0,.05) !important;
+      color: var(--text) !important;
+      border: .5px solid rgba(0,0,0,.06) !important;
+      font-size: 12px; padding: 8px 12px; margin-top: 8px;
+    }
+
+    /* ── Peer comparison → one card per peer ───────────────────────────── */
+    .peer-cards { display: grid; gap: 8px; }
+    .peer-card {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 11px 13px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.05);
+    }
+    .peer-card.is-self { box-shadow: inset 0 0 0 1.5px rgba(0,113,227,.45); }
+    .peer-card-name {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      line-height: 1.25;
+    }
+    .peer-card-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px 8px;
+    }
+    .peer-metric-label {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .peer-metric-value { font-size: 13px; font-weight: 600; line-height: 1.25; }
+
+    /* ── Stock analytics: stop values breaking mid-number ───────────────── */
+    /* Observed at 375px: "₹4786.86" split across two lines as "₹4786." and
+       "86"; the score dropped below "STRONG AVOID"; and Risk/Reward wrapped
+       under its own label. A price broken across lines is not just untidy —
+       it is briefly unreadable as a number, which is the one thing this
+       screen exists to show.
+
+       The verdict row keeps recommendation+score together as one unit and
+       lets the row wrap BETWEEN units instead. */
+    .sa-verdict { flex-wrap: wrap; gap: 4px 10px; align-items: baseline !important; }
+    .sa-verdict-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .sa-rec { font-size: 16px !important; white-space: nowrap; }
+    .sa-score { margin-left: 0 !important; white-space: nowrap; }
+    .sa-rr { text-align: left !important; white-space: nowrap; }
+
+    /* Money must never break. Slightly smaller so it still fits on one line
+       at 375px rather than being nowrap-ed into an overflow. */
+    .sa-buy-price { font-size: 19px !important; white-space: nowrap; }
+    .sa-buy-head { flex-wrap: wrap; row-gap: 6px; }
+
+    /* Three-across survives at 375px once the cells are allowed to shrink —
+       grid items default to min-width:auto, which refuses to go below their
+       content and is what forced the third tier onto its own row. */
+    .sa-levels, .sa-buy-tiers { gap: 6px !important; }
+    .sa-levels > div, .sa-buy-tiers > div { min-width: 0; }
+    .sa-levels > div > div, .sa-buy-tiers > div > div { white-space: nowrap; }
+    .sa-levels > div > div:nth-child(2) { font-size: 12px !important; }
+  }
+
+  /* Desktop/tablet keep the peer TABLE and drop the card list, so neither
+     layout is ever built twice on screen. */
+  @media (min-width: 769px) {
+    .peer-cards { display: none; }
+    /* Desktop keeps the real leaderboard table. */
+    .lb-cards { display: none; }
+  }
+  .lb-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  @media (max-width: 768px) {
+    .peer-table-wrap { display: none; }
+  }
+
+  /* ── Research report on a phone ──────────────────────────────────────────
+     The report header was one flex row of nine items relying on flex-wrap.
+     Measured at 375px: it wrapped into four ragged visual rows whose items
+     sat at tops 58/62/74 — "same row" items misaligned by up to 16px, because
+     align-items:center centres each item against the tallest thing beside it
+     and the items have very different heights (38px score vs 11px meta text).
+     The flex:1 spacer then landed on the last row and took 117px of it, so
+     Refresh floated in the middle of a gap 14px above the Risk line it
+     appeared to belong to. The header alone was 390px — 48% of the viewport
+     before a single dimension bar.
+
+     Below 769px the same markup becomes an explicit grid instead: identity on
+     top, the two numbers side by side, badges and meta on their own wrapped
+     rows, Refresh full-width at the end. No element is repositioned by wrap
+     luck, so nothing can straddle a row boundary. Desktop is untouched. */
+  @media (max-width: 768px) {
+    .rr-head {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px 12px !important;
+    }
+    /* The spacer only exists to push Refresh right in the desktop flex row.
+       In the grid it would occupy a real cell, so it is removed here. */
+    .rr-spacer { display: none !important; }
+
+    /* Every cell is placed explicitly. Left to auto-flow, the four
+       badge/meta items each claimed a full-width row and the header grew to
+       451px — tidier than the 390px original but taller, which is the wrong
+       trade on the screen that has the least room. Pairing them two-up and
+       lifting Refresh into the identity row removes three rows. */
+    .rr-id { grid-column: 1; grid-row: 1; min-width: 0; }
+    .rr-company {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* Refresh rides in the top-right corner beside the symbol rather than
+       taking a row of its own at the end. */
+    .rr-refresh {
+      grid-column: 2; grid-row: 1;
+      justify-self: end; align-self: start;
+      min-height: 44px;   /* touch target, matches the rest of the app */
+      display: inline-flex; align-items: center;
+    }
+
+    /* Two numbers share one row: Alpha leads on the left, Conviction closes
+       on the right, both left/right aligned to the card edges so their
+       labels line up with the symbol above rather than drifting inward. */
+    .rr-stat { text-align: left !important; }
+    .rr-stat-alpha { grid-column: 1; grid-row: 2; }
+    .rr-stat-alpha .rr-stat-val { font-size: 30px !important; }
+    .rr-stat + .rr-stat { grid-column: 2; grid-row: 2; justify-self: end; text-align: right !important; }
+    .rr-stat-lbl { letter-spacing: .04em !important; }
+
+    /* Badges pair on row 3, the two meta readouts on row 4. justify-self
+       keeps each hugging its own side instead of stretching its cell. */
+    .rr-badge:nth-of-type(1) { grid-column: 1; grid-row: 3; justify-self: start; }
+    .rr-badge:nth-of-type(2) { grid-column: 2; grid-row: 3; justify-self: end; }
+    .rr-meta:nth-of-type(1)  { grid-column: 1; grid-row: 4; justify-self: start; }
+    .rr-meta:nth-of-type(2)  { grid-column: 2; grid-row: 4; justify-self: end; }
+
+    /* Catalysts: the fixed 70px type column plus the impact and timeframe
+       badges consumed 164-189px of 347px, leaving the catalyst itself — the
+       only part that is actually information — 104-129px and three lines of
+       wrap. On a phone the chrome moves to its own line above the text and
+       the catalyst gets the full width. */
+    .rr-cat {
+      display: grid !important;
+      grid-template-columns: auto auto 1fr;
+      gap: 4px 8px !important;
+      align-items: baseline;
+      padding-bottom: 8px;
+      border-bottom: .5px solid var(--border);
+    }
+    .rr-cat:last-child { border-bottom: 0; padding-bottom: 0; }
+    .rr-cat-type { width: auto !important; }
+    /* Both rows are explicit. Left to auto-placement the timeframe landed on
+       a third row of its own, because the full-width catalyst text had
+       already consumed row 2 and column 3 was next free below it. */
+    .rr-cat-impact { grid-column: 1; grid-row: 1; }
+    .rr-cat-type   { grid-column: 2; grid-row: 1; }
+    .rr-cat-time   { grid-column: 3; grid-row: 1; justify-self: end; }
+    .rr-cat-text   { grid-column: 1 / -1; grid-row: 2; }
   }
 
   /* No dark-mode block here on purpose. This app defines a single light :root
@@ -1945,12 +2806,16 @@ function ensureChronological(prices) {
 <body class="locked">
 
 <!-- Data coverage panel — opened from the header chip -->
-<div id="data-health-panel" style="display:none;position:fixed;top:58px;right:18px;width:420px;max-height:78vh;overflow:auto;z-index:150;background:var(--surface);border:.5px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);padding:16px">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+<!-- Flex column, not a single scrolling box: the header (and its Close
+     button) must stay put while only the content scrolls. Previously the
+     whole panel was overflow:auto, so Close scrolled off the top and you
+     had to scroll back up to dismiss the panel. -->
+<div id="data-health-panel" style="display:none;position:fixed;top:58px;right:18px;width:420px;max-height:78vh;overflow:hidden;z-index:150;background:var(--surface);border:.5px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);flex-direction:column">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex:0 0 auto;padding:16px 16px 10px;border-bottom:.5px solid var(--border);background:var(--surface);border-radius:14px 14px 0 0">
     <b style="font-size:13px">Data Coverage</b>
     <button class="btn" style="padding:2px 8px;font-size:11px" onclick="toggleDataHealthPanel()" aria-label="Close data coverage panel">Close</button>
   </div>
-  <div id="data-health-body"></div>
+  <div id="data-health-body" style="flex:1 1 auto;overflow-y:auto;padding:6px 16px 16px"></div>
 </div>
 
 <!-- ── Boot Loader (covers the dashboard from the very first paint until the
@@ -2086,23 +2951,6 @@ window.fetch = function(...args) {
   <div class="header-actions">
     <span id="connection-status" style="font-size:12px;color:var(--muted)"><span class="status-dot dot-red"></span>Disconnected</span>
     <button class="btn btn-secondary" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px" title="Re-authenticate with the Groww API and refresh the access token">Reconnect</button>
-    <button class="btn btn-primary" onclick="runScan()" style="font-size:12px" title="Run AI signal generation across every stock in your watchlist now">Scan Watchlist</button>
-    <!-- Was a <span onclick=…> styled to look like a pill: no role, no
-         tabindex, no keyboard access, and nothing telling a screen reader it
-         was a control or what state it was in — despite being the switch for
-         automated trading. A real <button role="switch"> gets Enter/Space
-         and focus for free; aria-checked carries the on/off state. The inner
-         label span exists because updateCashAutoTradeUI() writes the text,
-         and writing textContent on the button itself would delete the
-         track markup below. -->
-    <button id="cash-auto-trade-indicator" class="at-toggle" role="switch" aria-checked="false"
-            onclick="toggleCashAutoTrade()" title="Toggle cash equity auto-trade">
-      <span class="at-toggle-label">Cash Auto-Trade: OFF</span>
-      <span class="at-toggle-track" aria-hidden="true"><span class="at-toggle-thumb"></span></span>
-    </button>
-    <!-- Status, not an action: reports coverage rather than performing something,
-         so it takes the pill tier instead of looking like a third button. -->
-    <button class="status-pill" id="data-health-chip" onclick="toggleDataHealthPanel()" style="display:none" title="Data coverage across every dataset the dashboard depends on">Data</button>
     <button class="btn btn-secondary" onclick="openSettings()" style="font-size:12px">Settings</button>
     <!-- Destructive styling by class. The inline color:var(--red) that used to
          be here was rewritten to --text by the monochrome override, so Logout
@@ -2145,18 +2993,6 @@ window.fetch = function(...args) {
 
   <!-- ── Portfolio Analysis ──────────────── -->
   <div id="analysis" class="tab-panel">
-    <div class="card" style="margin-bottom:14px;border:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-        <div>
-          <div style="font-size:14px;font-weight:700;margin-bottom:4px">Cash Equity Auto-Trade</div>
-          <div style="font-size:12px;color:var(--muted)">When enabled, the bot will auto-trade your watchlist stocks every 5 min during market hours. Currently only works in <b>paper mode</b>. F&amp;O auto-trade is controlled separately in the F&amp;O tab.</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <span id="cash-at-status-badge" style="font-size:11px;padding:4px 10px;border-radius:8px;font-weight:600"></span>
-          <button class="btn" id="cash-at-toggle-btn" onclick="toggleCashAutoTrade()" style="font-size:12px" aria-label="Toggle cash equity auto-trading" title="Turn automatic cash-equity trading on or off"></button>
-        </div>
-      </div>
-    </div>
     <div style="margin-bottom:14px">
       <button class="btn btn-primary" onclick="runPortfolioAnalysis()" id="pa-run-btn">Analyze My Portfolio</button>
       <span id="pa-loading" style="margin-left:10px;display:none"><span class="loader"></span> Running full AI analysis on your portfolio...</span>
@@ -2174,16 +3010,35 @@ window.fetch = function(...args) {
     <div style="margin-bottom:16px">
       <div class="card">
         <div class="card-title">Watchlist Management</div>
-        <div style="color:var(--muted);font-size:13px;margin-bottom:12px">Add stocks to your watchlist to track 5-year price history and analysis. Prices auto-remove when deleted.</div>
         
         <div style="display:flex;gap:8px;margin-bottom:12px">
           <div class="ac-wrap" style="flex:1"><input type="text" id="watchlist-symbol-input" placeholder="Search by name or symbol (e.g., RELIANCE or Asian Paints)" style="width:100%;padding:10px 14px;border:.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:14px" autocomplete="off" /><div class="ac-drop" id="watchlist-symbol-input-ac"></div></div>
-          <button class="btn btn-primary" onclick="addToWatchlist()">+ Add Stock</button>
-          <button class="btn btn-secondary" onclick="syncHoldingsToWatchlist()" title="Import all stocks from your Groww portfolio into the watchlist">Sync from Groww</button>
-          <button class="btn btn-secondary" onclick="loadWatchlist()">Refresh</button>
+          <!-- Icon-only now, so it carries aria-label AND title: the glyph
+               alone tells a screen reader nothing, and "+" beside a search
+               field is only obvious once you already know what it does. -->
+          <button class="btn btn-primary btn-icon" onclick="addToWatchlist()"
+                  aria-label="Add stock to watchlist" title="Add stock to watchlist">+</button>
         </div>
         
         <div id="watchlist-status" style="font-size:12px;color:var(--muted)"></div>
+        <div style="margin-top:4px">
+      <!-- Two labels, same swap the tab bar already uses (.tab-label-full /
+           .tab-label-short): the full question earns its place on desktop
+           where it aids discovery, but at 80% of a phone's width it made a
+           secondary action look like the page's primary one. -->
+      <div class="wl-actions-row">
+      <button class="btn btn-primary" onclick="loadWatchlistDeepAnalysis()" id="wl-deep-btn"
+              style="font-weight:600;letter-spacing:-.01em"
+              title="Deep Analysis — why are these stocks moving?">
+        <span class="deep-label-full">Deep Analysis — Why Are These Stocks Moving?</span>
+        <span class="deep-label-short">Deep Analysis</span>
+      </button>
+      <!-- Moved out of the header: coverage describes the watchlist's own data,
+           so it belongs beside the watchlist rather than in global chrome. -->
+      <button class="status-pill" id="data-health-chip" onclick="toggleDataHealthPanel()" style="display:none" title="Data coverage across every dataset the dashboard depends on">Data</button>
+      </div>
+      <span id="wl-deep-loading" style="margin-left:10px;display:none"><span class="loader"></span> Connecting global events to watchlist stocks...</span>
+      <div id="wl-deep-results"></div>
       </div>
     </div>
     
@@ -2208,19 +3063,6 @@ window.fetch = function(...args) {
       </div>
     </div>
     
-    <div style="margin-bottom:14px">
-      <!-- Two labels, same swap the tab bar already uses (.tab-label-full /
-           .tab-label-short): the full question earns its place on desktop
-           where it aids discovery, but at 80% of a phone's width it made a
-           secondary action look like the page's primary one. -->
-      <button class="btn btn-primary" onclick="loadWatchlistDeepAnalysis()" id="wl-deep-btn"
-              style="font-weight:600;letter-spacing:-.01em"
-              title="Deep Analysis — why are these stocks moving?">
-        <span class="deep-label-full">Deep Analysis — Why Are These Stocks Moving?</span>
-        <span class="deep-label-short">Deep Analysis</span>
-      </button>
-      <span id="wl-deep-loading" style="margin-left:10px;display:none"><span class="loader"></span> Connecting global events to watchlist stocks...</span>
-      <div id="wl-deep-results"></div>
     </div>
     
     <div id="watchlist-loading">
@@ -2233,42 +3075,6 @@ window.fetch = function(...args) {
     </div>
     <div id="watchlist-stocks" style="display:none"></div>
 
-    <!-- Auto-Analysis Summary -->
-    <div id="auto-analysis-summary" style="display:none;margin-bottom:16px">
-      <div class="grid grid-4">
-        <div class="card"><div class="card-title">Total Scanned</div><div class="card-value" id="aa-total">--</div></div>
-        <div class="card"><div class="card-title">Buy Signals</div><div class="card-value" id="aa-buys" style="color:var(--green)">--</div></div>
-        <div class="card"><div class="card-title">Sell Signals</div><div class="card-value" id="aa-sells" style="color:var(--red)">--</div></div>
-        <div class="card"><div class="card-title">Hold</div><div class="card-value" id="aa-holds" style="color:var(--muted)">--</div></div>
-      </div>
-      <div id="aa-best-buy" style="display:none;margin-top:8px;padding:10px 14px;background:var(--bg);border:.5px solid var(--border);border-radius:var(--radius);font-size:13px">
-        Top Pick: <b id="aa-best-buy-symbol"></b> <span id="aa-best-buy-conf" style="color:var(--muted)"></span>
-      </div>
-    </div>
-
-    <!-- Predictions Table -->
-    <div style="margin-bottom:12px;display:flex;gap:8px">
-      <button class="btn btn-primary" onclick="runScan()">Scan Watchlist</button>
-      <button class="btn btn-secondary" onclick="runAutoAnalysis()">Run Auto Analysis</button>
-    </div>
-    <div id="predictions-loading" style="text-align:center;padding:20px;color:var(--muted)"></div>
-    <!-- Scan results. The wrapper exists so the mobile edge-fade has
-         something positioned to attach to (the table itself becomes the
-         scroll container via .table on mobile). The hint is mobile-only —
-         see the rule for #predictions-hint. -->
-    <div id="predictions-hint" style="display:none;font-size:11px;color:var(--muted);margin-bottom:6px">
-      Swipe the table sideways for price, breakeven, charges, RSI, trend and reason.
-    </div>
-    <div id="predictions-wrap">
-    <table id="predictions-table" class="table" style="display:none;width:100%">
-      <thead>
-        <tr>
-          <th>Symbol</th><th>Signal</th><th>Confidence</th><th>Price</th><th>Breakeven</th><th>Charges</th><th>RSI</th><th>Trend</th><th>Reason</th><th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="predictions-body"></tbody>
-    </table>
-    </div>
   </div>
 
   <!-- ── Research Engine ────────────────── -->
@@ -2633,24 +3439,103 @@ window.fetch = function(...args) {
   <!-- ── Trade Journal ────────────────────── -->
   <div id="journal" class="tab-panel">
     <div class="journal-stats" id="journal-stats"></div>
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <button class="btn" onclick="loadJournal('all')" id="jf-all" style="border-color:var(--accent);color:var(--accent)">All Trades</button>
-      <button class="btn" onclick="loadJournal('open')" id="jf-open">Open</button>
-      <button class="btn" onclick="loadJournal('closed')" id="jf-closed">Closed</button>
-      <span style="flex:1"></span>
-      <button class="btn btn-red" onclick="closeAllOpenTrades(event)" style="font-size:11px;padding:6px 10px">Close All Open</button>
-      <span id="journal-count" style="font-size:12px;color:var(--muted)"></span>
+    <!-- One segmented control replaces two wrapped rows of buttons. All five
+         already called loadJournal() with a single mutually-exclusive value,
+         so this matches the existing behaviour exactly — only the presentation
+         and the accessibility change. role=tablist + aria-selected because the
+         old buttons signalled their active state through inline border/text
+         colour alone, which a screen reader cannot perceive. -->
+    <div class="seg-bar" role="tablist" aria-label="Filter trades">
+      <button class="seg" role="tab" aria-selected="true"  onclick="loadJournal('all')"    id="jf-all">All</button>
+      <button class="seg" role="tab" aria-selected="false" onclick="loadJournal('open')"   id="jf-open">Open</button>
+      <button class="seg" role="tab" aria-selected="false" onclick="loadJournal('closed')" id="jf-closed">Closed</button>
+      <button class="seg" role="tab" aria-selected="false" onclick="loadJournal('actual')" id="jf-actual">Actual</button>
+      <button class="seg" role="tab" aria-selected="false" onclick="loadJournal('paper')"  id="jf-paper">Paper</button>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
-      <button class="btn" onclick="loadJournal('actual')" id="jf-actual">Actual Trades</button>
-      <button class="btn" onclick="loadJournal('paper')" id="jf-paper">Paper Trades</button>
+    <div class="journal-meta">
+      <span id="journal-count" style="font-size:12px;color:var(--muted)"></span>
+      <!-- DELIBERATELY NO onclick.
+           This closes EVERY open position at once, and it previously sat in
+           the filter row as the loudest control on the tab — one mis-tap away
+           from flattening the book. It now fires only after a deliberate
+           600ms hold (twice the watchlist Remove gate, because the blast
+           radius is every position rather than one row). A plain click is
+           inert by construction, not merely discouraged.
+           closeAllOpenTrades() itself is untouched. -->
+      <button class="btn btn-red wl-remove close-all-hold" id="jf-close-all"
+              aria-label="Close all open trades — press and hold"
+              title="Press and hold to close every open position">
+        <span class="wl-remove-fill" aria-hidden="true"></span>
+        <span class="wl-remove-label">Close All Open</span>
+      </button>
     </div>
     <div id="journal-list"><div style="text-align:center;padding:40px;color:var(--muted)">Loading trade journal...</div></div>
   </div>
 
   <!-- ── Backtesting (unique dark section) ──── -->
   <div id="fno-backtest" class="tab-panel">
-    <div class="bt-fno">
+
+    <!-- ── Model selector ───────────────────────────────────────────────
+         Three models now exist and each needs its own backtest: the two
+         cash models share one walk-forward harness (identical features,
+         labels, windows and confidence gate — only the estimator differs,
+         so their results are directly comparable), while F&O is a separate
+         system with its own instruments, leverage and exit mechanics and
+         so keeps the dedicated UI it already had. -->
+    <div class="bt-fno" style="margin-bottom:14px">
+      <div class="bt-header" style="margin-bottom:0">
+        <div>
+          <div class="bt-title">Backtester</div>
+          <div class="bt-subtitle">Compare how each model would have traded historically. Net return after real costs — not accuracy.</div>
+        </div>
+        <div class="bt-controls" role="group" aria-label="Choose which model to backtest">
+          <button class="bt-btn bt-seg-btn" id="btseg-gbc" onclick="btSelectSegment('gbc')"
+                  aria-pressed="false" title="Cash equity, sklearn GradientBoosting — the incumbent model that places live trades">Cash · GradientBoosting</button>
+          <button class="bt-btn bt-seg-btn" id="btseg-xgb" onclick="btSelectSegment('xgb')"
+                  aria-pressed="false" title="Cash equity, XGBoost — the new model, evaluation-only until it beats GradientBoosting">Cash · XGBoost</button>
+          <button class="bt-btn bt-seg-btn" id="btseg-fno" onclick="btSelectSegment('fno')"
+                  aria-pressed="true" title="F&amp;O swing backtester — separate instruments, leverage and exit rules">F&amp;O · XGBoost</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Cash segment (shared by both cash models) ─────────────────── -->
+    <div id="bt-cash-segment" class="bt-fno" style="display:none">
+      <div class="bt-header">
+        <div>
+          <div class="bt-title" id="btc-title">Cash Backtest</div>
+          <div class="bt-subtitle" id="btc-subtitle">Walk-forward validation: train on a rolling window, predict forward, roll.</div>
+        </div>
+        <div class="bt-controls">
+          <select id="btc-symbol" aria-label="Symbol to backtest" onchange="btcdLoadDates()">
+            <option value="">Loading symbols...</option>
+          </select>
+          <select id="btcd-date" aria-label="Session to replay" title="Replay the bot's decision on this trading day">
+            <option value="">Loading dates...</option>
+          </select>
+          <button class="bt-btn bt-btn-run" id="btcd-run-btn" onclick="btcdRun()" title="Replay one day: what the bot decided on this date, and whether it was right">Replay Day</button>
+          <button class="bt-btn bt-btn-multi" id="btc-run-btn" onclick="btcRun()" title="Strategy backtest over the full history — equity curve, Sharpe, win rate">Full Strategy Run</button>
+          <button class="bt-btn bt-btn-multi" onclick="btcCompare()" title="Run both cash models on this symbol and compare them side by side">Compare Both Models</button>
+        </div>
+      </div>
+
+      <div id="btc-loading" class="bt-loading" style="display:none">
+        <div class="bt-spinner"></div>
+        <div id="btc-loading-text">Running walk-forward backtest… this takes ~3 minutes.</div>
+      </div>
+
+      <div id="btcd-loading" class="bt-loading" style="display:none">
+        <div class="bt-spinner"></div>
+        <div id="btcd-loading-text">Replaying the session…</div>
+      </div>
+
+      <div id="btcd-result" style="display:none"></div>
+      <div id="btc-result" style="display:none"></div>
+      <div id="btc-compare" style="display:none"></div>
+    </div>
+
+    <!-- ── F&O segment (existing UI, unchanged) ──────────────────────── -->
+    <div id="bt-fno-segment" class="bt-fno">
       <div class="bt-header">
         <div>
           <div class="bt-title">Swing Backtester</div>
@@ -2842,8 +3727,8 @@ window.fetch = function(...args) {
       </div>
     </div>
     <div id="loss-analysis-results" style="display:none;margin-bottom:16px;background:#fef3c7;border:1px solid #fcd34d;border-radius:12px;padding:16px"></div>
-    <div style="max-height:600px;overflow-y:auto">
-      <table class="table"><thead><tr><th>Symbol</th><th>Signal</th><th>Qty</th><th>Entry Price</th><th>Position Value</th><th>Projected Exit</th><th>Stop Loss</th><th>Current Price</th><th>P&L</th><th>Status</th></tr></thead>
+    <div class="paper-positions-scroll" style="max-height:600px;overflow-y:auto">
+      <table class="table" id="paper-positions-table"><thead><tr><th>Symbol</th><th>Signal</th><th>Qty</th><th>Entry Price</th><th>Position Value</th><th>Projected Exit</th><th>Stop Loss</th><th>Current Price</th><th>P&L</th><th>Status</th></tr></thead>
       <tbody id="paper-trades-body"><tr><td colspan="10" style="color:var(--muted);text-align:center;padding:20px">Loading trades...</td></tr></tbody></table>
     </div>
 
@@ -2937,6 +3822,30 @@ window.fetch = function(...args) {
   </div>
 
   <div id="settings" class="tab-panel">
+    <!-- Moved here from Portfolio Analysis, and removed from the global
+         header. A switch that decides whether orders get placed belongs with
+         configuration, not on a screen you land on while reading positions. -->
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:14px;font-weight:700;margin-bottom:4px">Cash Equity Auto-Trade</div>
+          <div style="font-size:12px;color:var(--muted)">When enabled, the bot will auto-trade your watchlist stocks every 5 min during market hours. Currently only works in <b>paper mode</b>. F&amp;O auto-trade is controlled separately in the F&amp;O tab.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span id="cash-at-status-badge" style="font-size:11px;padding:4px 10px;border-radius:8px;font-weight:600"></span>
+          <button class="btn" id="cash-at-toggle-btn" onclick="toggleCashAutoTrade()" style="font-size:12px" aria-label="Toggle cash equity auto-trading" title="Turn automatic cash-equity trading on or off"></button>
+        </div>
+      </div>
+    </div>
+    <!-- Moved here from Portfolio Analysis. A switch that decides whether
+         orders get placed belongs with configuration, not on a screen you
+         land on while reading positions. This is now its ONLY home. -->
+    <div class="card" style="margin-bottom:14px;border:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:14px;font-weight:700;margin-bottom:4px">Cash Equity Auto-Trade</div>
+          <div style="font-size:12px;color:var(--muted)">When enabled, the bot will auto-trade your watchlist stocks every 5 min during market hours. Currently only works in <b>paper mode</b>. F&amp;O auto-trade is controlled separately in the F&amp;O tab.</div>
+        </div>
     <div class="set-wrap">
       <nav class="set-rail" id="set-rail" aria-label="Settings sections"></nav>
       <div style="min-width:0">
@@ -3253,11 +4162,74 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Backspace') pinDel();
 });
 
-// Auto-unlock if already authenticated this session
-if (sessionStorage.getItem('pin_ok') === '1') {
-  document.getElementById('pin-lock').classList.add('hidden');
-  document.body.classList.remove('locked');
-}
+// Auto-unlock if already authenticated this session.
+//
+// Requires BOTH keys. pin_ok alone only hides the lock screen; device_token
+// is what the server actually checks on every non-GET (app.py's
+// _block_cross_origin_mutations). Checking pin_ok alone produced a dashboard
+// that looked unlocked while every POST 401'd — GETs rendered fine, but
+// /api/live-prices and /api/portfolio-review failed on load — which is
+// indistinguishable from a broken backend from the user's side.
+//
+// The two can genuinely diverge: the token is per-server-process, so a
+// backend restart invalidates it while pin_ok survives in sessionStorage.
+// When they disagree, clear both and show the lock screen so re-entering the
+// PIN mints a fresh token, rather than leaving a half-authenticated session.
+// PRESENT is not the same as VALID. APP_DEVICE_TOKEN is minted per server
+// process, so any backend restart invalidates every token already sitting in
+// a browser's sessionStorage — while pin_ok survives untouched. Checking only
+// that the two keys EXIST let a stale token through: the lock screen hid, the
+// dashboard looked authenticated, and then the whole first burst of pollers
+// 401'd (live-prices, portfolio-review, update-trailing-stops,
+// auto-close/check). From the user's side that is indistinguishable from a
+// broken backend.
+//
+// So ask the server. /api/session/verify is a POST, so it runs the same token
+// check every real mutating call does, and has no side effects.
+(function verifySessionOnBoot() {
+  const lock = document.getElementById('pin-lock');
+  const relock = () => {
+    sessionStorage.removeItem('pin_ok');
+    sessionStorage.removeItem('device_token');
+    if (lock) lock.classList.remove('hidden');
+    document.body.classList.add('locked');
+  };
+
+  if (sessionStorage.getItem('pin_ok') !== '1' || !sessionStorage.getItem('device_token')) {
+    // Either never unlocked, or half-authenticated. Both mean: show the lock.
+    if (sessionStorage.getItem('pin_ok') === '1') relock();
+    return;
+  }
+
+  // Stay locked until the token is confirmed. Briefly showing the lock screen
+  // is the honest state; flashing an unlocked dashboard that then fails every
+  // request is not.
+  // location.origin, not the API constant: this runs during the lock-screen
+  // block near the top of the document, while `const API = location.origin`
+  // is not declared until much further down. `const` has a temporal dead
+  // zone, so touching it early throws a ReferenceError AT TOP LEVEL — which
+  // aborts the remainder of the script block and left later declarations
+  // (BACKFILL_BLOCKED_TABS, activateTab's dependencies) uninitialised. One
+  // early reference broke the whole page, so this deliberately depends on
+  // nothing declared below it.
+  fetch(location.origin + '/api/session/verify', {
+    method: 'POST',
+    headers: { 'X-Device-Token': sessionStorage.getItem('device_token') },
+  }).then(r => {
+    if (r.ok) {
+      if (lock) lock.classList.add('hidden');
+      document.body.classList.remove('locked');
+    } else {
+      relock();
+    }
+  }).catch(() => {
+    // No response at all — the backend is down or unreachable. Leave the
+    // session alone rather than destroying a valid token over a network blip;
+    // api()'s own 401 handler still covers a genuinely rejected token.
+    if (lock) lock.classList.add('hidden');
+    document.body.classList.remove('locked');
+  });
+})();
 
 // ── Lock-screen intro ────────────────────────────────────────────────────
 // Mara's sequence rebuilt without GSAP. Theirs is declarative — JS reads
@@ -3498,6 +4470,10 @@ function handleTabActivation(tabName) {
   } else if (tabName === 'intraday') {
     intradayLoadDashboard();
   } else if (tabName === 'fno-backtest') {
+    // Select a segment explicitly on open, otherwise the F&O panel shows
+    // (correct by default markup) with no button highlighted — the control
+    // and the content would disagree about which model you're looking at.
+    btSelectSegment(_btSegment || 'fno');
     fbtLoadDates();
   } else if (tabName === 'paper') {
     loadPaperTradingStatus();
@@ -3569,8 +4545,13 @@ function activateTab(tabName) {
 //  - paper: shows positions and P&L but NOT margin — the global margin figure
 //    is the LIVE account balance, and showing it on a simulated-trading tab
 //    invites reading a real number as a paper one.
+//  - analysis: same reasoning, extended. Portfolio Analysis reports on
+//    cash-equity paper positions, where a broker margin figure describes
+//    nothing on the screen and costs a card of vertical space on mobile.
+//    The card itself is NOT deleted — only dropped from this allowlist — so
+//    restoring it is putting 'margin' back on one line.
 const TAB_STATS = {
-  analysis:    ['margin', 'positions', 'pnl'],
+  analysis:    ['positions', 'pnl'],
   intraday:    ['margin', 'positions', 'pnl'],
   paper:       ['positions', 'pnl'],
   'pnl-chart': ['pnl'],
@@ -3578,6 +4559,16 @@ const TAB_STATS = {
 };
 
 function applyGlobalStatsVisibility(tabName) {
+  // Auto-trade belongs to the trading screens, not the Watchlist.
+  //
+  // The header renders on every tab, so the cash auto-trade switch appeared
+  // above a tracking list it has nothing to do with — and a switch that
+  // controls whether real orders get placed should not be sitting one stray
+  // tap away on a screen about which stocks you follow. Hidden on Watchlist
+  // and Research only; every trading screen keeps it exactly as before.
+  const at = document.getElementById('cash-auto-trade-indicator');
+  if (at) at.style.display = (tabName === 'predictions' || tabName === 'research') ? 'none' : '';
+
   const row = document.getElementById('global-stats-row');
   if (!row) return;
   const wanted = TAB_STATS[tabName] || [];
@@ -3985,6 +4976,7 @@ async function saveSchedulerSettings() {
 let _cfgSettings = [];
 
 const CFG_GROUPS = [
+ { prefix: 'paper.cap.', name: 'Paper Trading Capital (per model)' },
  { prefix: 'prediction.', name: ' Prediction Weights (Strategy)' },
  { prefix: 'cost.', name: ' Trading Costs (Equity)' },
  { prefix: 'fno.lot.', name: ' F&O Lot Sizes' },
@@ -4612,6 +5604,27 @@ async function api(path, opts) {
     const method = ((opts && opts.method) || 'GET').toUpperCase();
     const needsToken = !['GET', 'HEAD', 'OPTIONS'].includes(method);
     const token = needsToken ? sessionStorage.getItem('device_token') : null;
+
+    // No token yet? Don't send a request that CANNOT succeed.
+    //
+    // Previously this fell through and fired the request with no header, so
+    // the server 401'd it by definition. Pollers start on page load, before
+    // the PIN has been entered, so every load produced a burst of guaranteed
+    // 401s (live-prices, update-trailing-stops, auto-close/check,
+    // portfolio-review) that looked like a broken backend but was just an
+    // un-unlocked session racing the timers.
+    //
+    // Failing here instead is both quieter and more honest: callers get a
+    // labelled error, and the server never sees a request it was always
+    // going to reject. Deliberately does NOT clear pin_ok/device_token or
+    // re-lock — there is no stale session to invalidate, the user simply
+    // hasn't unlocked yet, and re-locking would fight the unlock flow.
+    if (needsToken && !token) {
+      const err = new Error('Locked — waiting for PIN');
+      err.locked = true;
+      throw err;
+    }
+
     const finalOpts = token
       ? { ...opts, headers: { ...(opts && opts.headers), 'X-Device-Token': token } }
       : opts;
@@ -4637,6 +5650,22 @@ async function api(path, opts) {
     // idempotency key. A thrown error with NO .status means we got no response
     // at all, so nothing whatsoever is known about the request's fate.
     if (!r.ok) {
+      // A 401 on a token-carrying request means this session's device_token
+      // is missing or not accepted. Without this the dashboard stays visibly
+      // "unlocked" while every mutating call fails — GETs render fine, so it
+      // reads as a broken backend rather than an unauthenticated session.
+      // Re-locking makes the next PIN entry re-fetch the token from
+      // /api/unlock. Only touches auth state and the lock screen's
+      // visibility — no styling.
+      if (r.status === 401 && needsToken) {
+        sessionStorage.removeItem('pin_ok');
+        sessionStorage.removeItem('device_token');
+        const lock = document.getElementById('pin-lock');
+        if (lock && lock.classList.contains('hidden')) {
+          lock.classList.remove('hidden');
+          document.body.classList.add('locked');
+        }
+      }
       const err = new Error(d.error || 'Request failed');
       err.status = r.status;
       throw err;
@@ -5336,25 +6365,89 @@ function escapeHtml(text) {
 }
 
 // ── Scan Watchlist ────────────────────────────────
+// ── Removed Watchlist scan/predictions UI ───────────────────────────────
+// The Auto-Analysis summary cards, the Scan/Run-Auto-Analysis buttons and the
+// predictions table were removed from the Watchlist tab. Several functions
+// still write to those elements — runScan(), loadAutoAnalysis(),
+// runAutoAnalysis(), renderPredictions() — and are still reachable from the
+// header Scan Watchlist button and the scheduler.
+//
+// _el() returns an inert stand-in when the element is gone, so those writes
+// become no-ops rather than "Cannot set properties of null". Deliberately NOT
+// stubbing the network calls: the scan still runs, still trains, still feeds
+// auto-trading. Only the display is gone.
+const _DEAD_UI_SINK = new Proxy({}, {
+  get: (t, k) => (k === 'style' || k === 'classList' || k === 'dataset') ? _DEAD_UI_SINK
+               : (typeof k === 'string' && ['appendChild','remove','setAttribute','addEventListener'].includes(k)) ? (() => {})
+               : '',
+  set: () => true,
+});
+function _el(id) { return document.getElementById(id) || _DEAD_UI_SINK; }
+
+// Keep --header-h equal to the fixed header's real height.
+//
+// The header is position:fixed, so it no longer reserves space and body's
+// padding-top has to stand in for it. That height is not constant: the pills
+// wrap to a second row at narrow widths and the connection label changes
+// text, so a hardcoded number leaves either a gap or content tucked under
+// the bar. ResizeObserver tracks it for free; the CSS fallback (95px) covers
+// the first paint before this runs.
+(function () {
+  const h = document.querySelector('header');
+  if (!h) return;
+  const sync = () => document.documentElement.style.setProperty(
+    '--header-h', Math.round(h.getBoundingClientRect().height) + 'px');
+  sync();
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(h);
+  window.addEventListener('orientationchange', () => setTimeout(sync, 150));
+})();
+
 async function runScan() {
-  document.getElementById('predictions-loading').innerHTML = '<span class="loader"></span> Scanning watchlist & running AI predictions...';
-  document.getElementById('predictions-table').style.display = 'none';
+  _el('predictions-loading').innerHTML = '<span class="loader"></span> Scanning watchlist & running AI predictions...';
+  _el('predictions-table').style.display = 'none';
   try {
     const d = await api('/api/scan');
     renderPredictions(d.predictions);
   } catch(e) {
-    document.getElementById('predictions-loading').textContent = 'Scan failed. Check your API token.';
+    _el('predictions-loading').textContent = 'Scan failed. Check your API token.';
   }
 }
 
 function renderPredictions(preds) {
-  const tbody = document.getElementById('predictions-body');
+  const tbody = _el('predictions-body');
   tbody.innerHTML = '';
   // Update source breakdown panel from first prediction with sources
   const withSources = preds.find(p => p.sources);
   if (withSources) updateSourceBreakdown(withSources);
 
+  // Stocks with no usable data sink to the bottom.
+  //
+  // get_prediction() returns early when training fails, omitting `indicators`
+  // and `costs` entirely, so every cell falls through to "--". Seven tickers
+  // are permanently in that state (delisted or merged: AKZONOBEL, JSWEN, LTI,
+  // NEROLAC, SPICEJET, TATAMOTORS, VODAFONEIDEA) and they sorted to the top
+  // alphabetically. Since each prediction emits TWO rows, that put ~11 rows
+  // of dashes above the first real signal — the table read as empty on a
+  // phone even though 73 predictions were present.
+  //
+  // Sorted rather than hidden, per standard #7: a stock that is silently
+  // dropped looks like one you never added. Order within each group is
+  // otherwise preserved.
+  const hasData = p => !!(p.indicators && Object.keys(p.indicators).length);
+  preds = [...preds].sort((a, b) => (hasData(b) ? 1 : 0) - (hasData(a) ? 1 : 0));
+
+  let firstEmpty = true;
   preds.forEach(p => {
+    // One divider before the no-data group, so the dashes read as "this
+    // stock has no history" rather than "this table is broken".
+    if (!hasData(p) && firstEmpty) {
+      firstEmpty = false;
+      const sep = document.createElement('tr');
+      sep.innerHTML = `<td colspan="10" style="padding:10px 8px;background:rgba(0,0,0,.03);
+        font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.03em">
+        NO PRICE HISTORY — delisted, merged, or never backfilled</td>`;
+      tbody.appendChild(sep);
+    }
     const ind = p.indicators || {};
     const c = p.costs || {};
     const cp = (ind.candle_patterns || []);
@@ -5397,8 +6490,8 @@ function renderPredictions(preds) {
     tbody.appendChild(tr);
     tbody.appendChild(detailRow);
   });
-  document.getElementById('predictions-loading').style.display = 'none';
-  document.getElementById('predictions-table').style.display = '';
+  _el('predictions-loading').style.display = 'none';
+  _el('predictions-table').style.display = '';
 }
 
 // ── Cash Auto-Trade Toggle ────────────────────────
@@ -5586,8 +6679,11 @@ async function loadWatchlist() {
           ? (s || '--')
           : d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
       };
+      // Years only: "Jun 1997 – Aug 2026" wrapped to two lines at 375px,
+      // making this tile taller than its siblings and breaking the 2x2 grid.
+      const _yr = d => String(d || '').match(/\d{4}/)?.[0] || '';
       document.getElementById('wl-date-range').textContent =
-        `${shortDate(firstStock.earliest_date)} – ${shortDate(firstStock.latest_date)}`;
+        `${_yr(firstStock.earliest_date)}–${_yr(firstStock.latest_date)}`;
     }
     
     summary.style.display = 'grid';
@@ -5598,16 +6694,14 @@ async function loadWatchlist() {
     for (const stock of data.stocks) {
       html += `
       <div class="card" id="wl-row-${stock.symbol}" style="padding:12px">
-        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px">
-          <div>
-            <div style="font-size:18px;font-weight:700">${stock.symbol}</div>
-            <div style="font-size:12px;color:var(--muted)">
-              ${stock.price_candles} candles (${stock.earliest_date} to ${stock.latest_date})
-            </div>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" aria-label="View full analysis for ${stock.symbol}" title="Fundamentals, supply chain, news and targets for ${stock.symbol}" onclick="toggleStockAnalysis('${stock.symbol}', this)">View Analysis</button>
-            <button class="btn btn-red" style="padding:4px 8px;font-size:11px" aria-label="Remove ${stock.symbol} from watchlist" title="Remove ${stock.symbol} and delete its stored price history" onclick="removeFromWatchlist('${stock.symbol}')">Remove</button>
+        <div class="wl-head">
+          <div class="wl-sym">${stock.symbol}</div>
+          <div class="wl-acts">
+            <button class="btn btn-secondary wl-view" aria-label="View full analysis for ${stock.symbol}" title="Fundamentals, supply chain, news and targets for ${stock.symbol}" onclick="toggleStockAnalysis('${stock.symbol}', this)">View Analysis</button>
+            <button class="btn btn-red wl-remove" data-symbol="${stock.symbol}" aria-label="Remove ${stock.symbol} from watchlist — press and hold" title="Press and hold to remove ${stock.symbol} and delete its stored price history">
+              <span class="wl-remove-fill" aria-hidden="true"></span>
+              <span class="wl-remove-label">Remove</span>
+            </button>
           </div>
         </div>
         <!-- Populated by analyzeWatchlistStock() before the chart renders —
@@ -5627,7 +6721,6 @@ async function loadWatchlist() {
     stocks.innerHTML = html;
     stocks.style.display = 'block';
     
-    document.getElementById('watchlist-status').textContent = `Tracking ${data.count} stocks`;
   } catch (e) {
     loading.textContent = ' Failed to load watchlist: ' + e.message;
     console.error(e);
@@ -5682,52 +6775,87 @@ async function addToWatchlist() {
   }
 }
 
-async function syncHoldingsToWatchlist() {
-  const status = document.getElementById('watchlist-status');
-  status.innerHTML = '<span class="loader" style="display:inline-block;width:12px;height:12px;margin-right:6px"></span> Syncing holdings from your Groww account...';
+// ── Hold-to-delete for watchlist Remove buttons ─────────────────────────
+//
+// Delegated from document, so it keeps working when loadWatchlist() replaces
+// the rows — per-button listeners would be lost on every re-render.
+//
+// The button has no onclick: a plain click does nothing at all. Removal fires
+// only after a completed 300ms hold, which is what stops a mis-tap on a phone
+// from discarding a stock's whole stored history.
+(function () {
+  const HOLD_MS = 300;
+  let timer = null, held = null;
 
-  try {
-    const result = await api('/api/watchlist/sync-holdings', { method: 'POST' });
-    if (result.error) {
-      toast(' ' + result.error);
-      status.textContent = ' ' + result.error;
-      return;
-    }
-
-    const newCount = result.newly_added ? result.newly_added.length : 0;
-    const existCount = result.already_tracked ? result.already_tracked.length : 0;
-
-    if (newCount === 0) {
-      toast(`All ${existCount} holdings already in watchlist`);
-      status.textContent = `All ${existCount} holdings already tracked`;
-    } else {
-      toast(`Adding ${newCount} new stocks: ${result.newly_added.join(', ')}`);
-      status.innerHTML = `<span class="loader" style="display:inline-block;width:12px;height:12px;margin-right:6px"></span> Fetching 5-year data for ${newCount} stocks: ${result.newly_added.join(', ')}...`;
-
-      // Poll until all new stocks appear
-      let attempts = 0;
-      const pollInterval = setInterval(async () => {
-        attempts++;
-        try {
-          const wl = await api('/api/watchlist');
-          const tracked = new Set((wl.stocks || []).map(s => s.symbol));
-          const stillMissing = result.newly_added.filter(s => !tracked.has(s));
-          if (stillMissing.length === 0 || attempts >= 30) {
-            clearInterval(pollInterval);
-            const done = newCount - stillMissing.length;
-            status.textContent = `Synced! ${done} stocks added, ${existCount} already tracked` + (stillMissing.length ? ` (${stillMissing.join(', ')} still loading)` : '');
-            loadWatchlist();
-          } else {
-            status.innerHTML = `<span class="loader" style="display:inline-block;width:12px;height:12px;margin-right:6px"></span> Loading price data... ${newCount - stillMissing.length}/${newCount} done (${stillMissing.join(', ')} pending)`;
-          }
-        } catch(e) {}
-      }, 5000);
-    }
-  } catch (e) {
-    toast(' Sync failed: ' + e.message);
-    status.textContent = ' Sync failed: ' + e.message;
+  function cancel() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (held) { held.classList.remove('is-holding'); held = null; }
   }
-}
+
+  function start(btn) {
+    if (btn.classList.contains('is-armed')) return;
+    cancel();
+    held = btn;
+    // Force a reflow so the transition runs from 0 even on a rapid re-press.
+    btn.classList.remove('is-holding');
+    void btn.offsetWidth;
+    btn.classList.add('is-holding');
+    // Close-All gets a longer gate: it closes EVERY open position, where
+    // Remove drops one watchlist row. The extra 300ms is the difference
+    // between "I meant this" and "my thumb landed there".
+    const isCloseAll = btn.classList.contains('close-all-hold');
+    const ms = isCloseAll ? 600 : HOLD_MS;
+    btn.style.setProperty('--hold-ms', ms + 'ms');
+    timer = setTimeout(() => {
+      btn.classList.remove('is-holding');
+      btn.classList.add('is-armed');       // block a second fire mid-request
+      timer = null; held = null;
+      if (isCloseAll) closeAllOpenTrades(new Event('hold'));
+      else removeFromWatchlist(btn.dataset.symbol);
+    }, ms);
+  }
+
+  document.addEventListener('pointerdown', e => {
+    const btn = e.target.closest && e.target.closest('.wl-remove');
+    if (!btn) return;
+    e.preventDefault();
+    // setPointerCapture routes every later event for this pointer to the
+    // button regardless of what is physically under the finger, so small
+    // movement during the hold cannot break the sequence.
+    try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+    start(btn);
+  });
+  // pointerup and pointercancel both mean "released early" — rewind.
+  document.addEventListener('pointerup', cancel);
+  document.addEventListener('pointercancel', cancel);
+  // NOTE: no pointerleave listener here, deliberately.
+  //
+  // There used to be `document.addEventListener('pointerleave', cancel, true)`
+  // and it broke the button completely. pointerleave does not bubble, but
+  // registered on document in the CAPTURE phase it still sees the event on
+  // the way down for every element the pointer exits — including the label
+  // span INSIDE the button. So the moment a finger shifted a pixel off that
+  // span, the hold cancelled and nothing was ever deleted. Verified: hold
+  // started, inner leave fired, is-holding dropped, no delete after 400ms.
+  //
+  // Pointer capture above makes it unnecessary anyway: the button keeps the
+  // pointer until release, and pointerup/pointercancel already cover every
+  // way a hold can legitimately end.
+
+  // Keyboard parity: hold Enter or Space. Without this the control is
+  // unreachable without a pointer, since there is no click handler at all.
+  document.addEventListener('keydown', e => {
+    const btn = document.activeElement;
+    if (!btn || !btn.classList || !btn.classList.contains('wl-remove')) return;
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.repeat) return;                 // key-repeat must not restart it
+    e.preventDefault();
+    start(btn);
+  });
+  document.addEventListener('keyup', e => {
+    if (e.key === 'Enter' || e.key === ' ') cancel();
+  });
+})();
 
 async function removeFromWatchlist(symbol) {
   if (!confirm(`Remove ${symbol} from watchlist and delete all price data?`)) return;
@@ -6339,12 +7467,12 @@ function buildStockAnalysisHTML(analysis, ns = 'wl') {
   return `
       <!-- Recommendation banner -->
       <div style="margin-top:12px;padding:14px;background:rgba(255,255,255,.06);border-radius:6px;border-left:4px solid ${recCol}">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <span style="font-size:18px;font-weight:800;color:${recCol}">${rec}</span>
-            <span style="font-size:11px;color:var(--muted);margin-left:8px">Score: ${scoreText}</span>
+        <div class="sa-verdict" style="display:flex;justify-content:space-between;align-items:center">
+          <div class="sa-verdict-main">
+            <span class="sa-rec" style="font-size:18px;font-weight:800;color:${recCol}">${rec}</span>
+            <span class="sa-score" style="font-size:11px;color:var(--muted);margin-left:8px">Score: ${scoreText}</span>
           </div>
-          <div style="text-align:right;font-size:11px">
+          <div class="sa-rr" style="text-align:right;font-size:11px">
             <span style="color:var(--muted)">Risk/Reward:</span> <b style="color:${rrColor}">${rrText}</b>
           </div>
         </div>
@@ -6352,7 +7480,7 @@ function buildStockAnalysisHTML(analysis, ns = 'wl') {
 
       <!-- Price levels -->
       <div style="margin-top:10px;padding:12px;background:rgba(255,255,255,.05);border-radius:4px">
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:11px;text-align:center">
+        <div class="sa-levels" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:11px;text-align:center">
           <div>
             <div style="color:var(--muted);font-size:9px;margin-bottom:4px">CURRENT</div>
             <div style="font-weight:700;font-size:14px;color:${returnColor}">${currentPrice}</div>
@@ -6373,13 +7501,13 @@ function buildStockAnalysisHTML(analysis, ns = 'wl') {
       ${bz.buy_price != null ? `
       <div style="margin-top:8px;padding:14px;background:linear-gradient(135deg,rgba(0,200,83,.06),rgba(0,200,83,.02));border-radius:6px;border:1px solid rgba(0,200,83,.15)">
         <div style="font-size:11px;color:var(--green);margin-bottom:10px;font-weight:700;letter-spacing:.5px">SUGGESTED BUY PRICE</div>
-        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
-          <span style="font-size:22px;font-weight:800;color:var(--green)">₹${Number(bz.buy_price).toFixed(2)}</span>
+        <div class="sa-buy-head" style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <span class="sa-buy-price" style="font-size:22px;font-weight:800;color:var(--green)">₹${Number(bz.buy_price).toFixed(2)}</span>
           <span style="font-size:11px;color:var(--muted)">${bz.discount_from_current != null && bz.discount_from_current > 0 ? bz.discount_from_current + '% below current' : 'at current level'}</span>
           <span style="font-size:11px;padding:2px 6px;background:rgba(0,200,83,.12);border-radius:8px;color:var(--green)">→ T1 upside: ${bz.upside_to_t1_from_buy != null ? '+' + bz.upside_to_t1_from_buy + '%' : '—'}</span>
         </div>
         <div style="font-size:11px;color:var(--text);margin-bottom:10px">${bz.buy_strategy || '(no strategy)'}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:10px">
+        <div class="sa-buy-tiers" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:10px">
           <div style="padding:6px;background:rgba(255,255,255,.04);border-radius:4px;text-align:center">
             <div style="color:var(--muted);font-size:8px;margin-bottom:2px">AGGRESSIVE</div>
             <div style="font-weight:600">${bz.aggressive != null ? '₹' + Number(bz.aggressive).toFixed(2) : '—'}</div>
@@ -6465,14 +7593,18 @@ function buildStockAnalysisHTML(analysis, ns = 'wl') {
 
 
 // ── Chart period selector ───────────────────────────────────────────────────
-// Only periods the stored data can actually honour are offered. stock_prices
-// blends ~weekly candles for the older 5 years (price_fetcher requests
-// interval_in_minutes=10080 because 1440 only reaches ~3 years) with daily
-// rows for the recent stretch, and holds no sub-daily data at all — intraday
-// lives in separate tables behind single-day endpoints. So 1D is not
-// available here, and 1W would plot about five points; neither is offered
-// rather than shipping a control that looks broken.
+// All entries are TIME RANGES in one control. 1D and 1W are marked intraday:
+// a one-day window drawn from daily candles would be a single point, so those
+// two fetch intraday bars from /api/prices/<symbol>?period=... (server-side
+// aggregation of the stored 5-second candles — 375 one-minute bars for 1D,
+// 125 fifteen-minute bars for 1W). 1M and longer slice the daily series
+// already held in memory, so they switch instantly with no request.
+//
+// Both are possible only because prices now come from fyers_candles: the old
+// stock_prices blend was mostly weekly candles with no intraday at all.
 const CHART_PERIODS = [
+  { key: '1D',  days: 1,   intraday: true },
+  { key: '1W',  days: 7,   intraday: true },
   { key: '1M',  days: 30 },
   { key: '3M',  days: 91 },
   { key: '6M',  days: 182 },
@@ -6509,16 +7641,46 @@ function renderChartPeriodSelector(symbol, canvas) {
   canvas.parentNode.insertBefore(bar, canvas);
 }
 
-function setChartPeriod(symbol, days, btn) {
+async function setChartPeriod(symbol, days, btn) {
   const state = _stockChartState[symbol];
   if (!state) return;
-  state.build(slicePricesByPeriod(state.all, days));
-  const bar = btn.parentNode;
-  bar.querySelectorAll('.chart-period').forEach(b => {
+  const period = CHART_PERIODS.find(p => p.days === days);
+
+  // Highlight immediately, before any await — the click must register even
+  // while an intraday fetch is still in flight.
+  btn.parentNode.querySelectorAll('.chart-period').forEach(b => {
     const on = b === btn;
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
+
+  if (!period || !period.intraday) {
+    state.build(slicePricesByPeriod(state.all, days), false);
+    return;
+  }
+
+  // Intraday: fetch once per period, then serve from cache on re-select.
+  let prices = state.intraday[period.key];
+  if (!prices) {
+    btn.disabled = true;
+    try {
+      const d = await api(`/api/prices/${symbol}?period=${period.key}`);
+      prices = ensureChronological(d.prices || []);
+      state.intraday[period.key] = prices;
+    } catch (e) {
+      toast(`Could not load ${period.key} chart: ${e.message}`);
+      return;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  if (!prices.length) {
+    // Seconds data only covers ~25 trading days and arrives with the
+    // per-symbol backfill; say so rather than drawing an empty chart.
+    toast(`No intraday data stored for ${symbol} yet`);
+    return;
+  }
+  state.build(prices, true);
 }
 
 // "View Analysis" had no way back — tapping it always called
@@ -6625,10 +7787,15 @@ async function analyzeWatchlistStock(symbol) {
       // The parameter is named `prices` because the tooltip callbacks below
       // already index into a variable of that name — they work unchanged on
       // whatever slice is passed in.
-      const buildChart = (prices) => {
+      const buildChart = (prices, isIntraday = false) => {
+        const deltaLabel = isIntraday ? 'Bar' : 'Day';
         const labels = prices.map(p => {
           const d = new Date(p.date);
-          return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
+          // Intraday points are minutes apart — a date label would repeat
+          // identically across every point of the session.
+          return isIntraday
+            ? d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+            : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
         });
         const closeData = prices.map(p => p.close);
 
@@ -6674,7 +7841,10 @@ async function analyzeWatchlistStock(symbol) {
                 title: function(ctx) {
                   const i = ctx[0].dataIndex;
                   const p = prices[i];
-                  return new Date(p.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+                  const d = new Date(p.date);
+                  return isIntraday
+                    ? d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+                    : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
                 },
                 label: function(ctx) {
                   const i = ctx.dataIndex;
@@ -6700,7 +7870,7 @@ async function analyzeWatchlistStock(symbol) {
                   if (i === 0) return '';
                   const chg = prices[i].close - prices[i - 1].close;
                   const chgPct = (chg / prices[i - 1].close * 100);
-                  return `Day Δ:  ${chg >= 0 ? '+' : ''}₹${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
+                  return `${deltaLabel} Δ:  ${chg >= 0 ? '+' : ''}₹${chg.toFixed(2)} (${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)`;
                 }
               }
             }
@@ -6728,9 +7898,12 @@ async function analyzeWatchlistStock(symbol) {
       };
 
       // Keep the full series and the redraw closure addressable by symbol so
-      // the period buttons can reslice without refetching.
-      _stockChartState[symbol] = { all: allPrices, build: buildChart };
-      buildChart(slicePricesByPeriod(allPrices, DEFAULT_CHART_PERIOD));
+      // the period/granularity buttons can reslice and re-aggregate without
+      // refetching.
+      _stockChartState[symbol] = {
+        all: allPrices, build: buildChart, intraday: {},
+      };
+      buildChart(slicePricesByPeriod(allPrices, DEFAULT_CHART_PERIOD), false);
       renderChartPeriodSelector(symbol, chartCanvas);
     }
 
@@ -6888,6 +8061,31 @@ function renderMarketIntelligence(container, data) {
       return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)"><td style="padding:3px 8px;font-size:9px;font-weight:600;color:var(--muted)">${label}${rankBadge}</td>${cells}</tr>`;
     }).join('');
 
+    // Mobile card view: the desktop layout is metrics-as-rows × peers-as-
+    // columns, so every extra peer widened the table past the viewport. Cards
+    // pivot it — one card per peer, its metrics three-across — which stays
+    // readable no matter how many peers come back.
+    const peerCards = `<div class="peer-cards">` + peers.peers.map(p => {
+      const cells = metrics.map(m => {
+        const val = p[m];
+        const ranking = (peers.ranking || {})[m];
+        let col = '';
+        if (p.is_target && ranking) {
+          if (ranking.rank === 1) col = 'color:var(--green)';
+          else if (ranking.rank === ranking.total) col = 'color:var(--red)';
+        }
+        const shown = val == null ? '—' : (m === 'market_cap' ? val.toLocaleString('en-IN') : val);
+        return `<div>
+            <div class="peer-metric-label">${metricLabels[m] || m}</div>
+            <div class="peer-metric-value" style="${col}">${shown}</div>
+          </div>`;
+      }).join('');
+      return `<div class="peer-card${p.is_target ? ' is-self' : ''}">
+          <div class="peer-card-name">${p.symbol}${p.is_target ? ' <span style="font-size:9px;font-weight:600;color:#bf5af2">THIS STOCK</span>' : ''}</div>
+          <div class="peer-card-grid">${cells}</div>
+        </div>`;
+    }).join('') + `</div>`;
+
     const peerInsights = (peers.insights || []).map(ins => {
       const col = ins.startsWith('Best') || ins.startsWith('Top') ? 'var(--green)' : ins.startsWith('Worst') ? 'var(--red)' : 'var(--muted)';
       return `<span style="display:inline-block;padding:3px 8px;border-radius:10px;background:rgba(255,255,255,.06);font-size:10px;color:${col};margin:2px">${ins}</span>`;
@@ -6896,12 +8094,13 @@ function renderMarketIntelligence(container, data) {
     html += `
     <div style="padding:12px;background:rgba(175,82,222,.06);border:1px solid rgba(175,82,222,.15);border-radius:6px;margin-bottom:10px">
       <div style="font-size:12px;font-weight:700;color:#bf5af2;margin-bottom:8px;letter-spacing:.5px"> PEER COMPARISON — ${peers.sector || ''}</div>
-      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <div class="peer-table-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch">
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="border-bottom:1px solid rgba(255,255,255,.1)"><th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted)">Metric</th>${peerHeaders}</tr></thead>
           <tbody>${peerRows}</tbody>
         </table>
       </div>
+      ${peerCards}
       ${peerInsights ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">${peerInsights}</div>` : ''}
     </div>`;
   }
@@ -7005,7 +8204,17 @@ const _HEALTH_COLORS = { ok: 'var(--green)', warn: 'var(--yellow)', critical: 'v
 
 async function loadDataHealth() {
   try {
-    _dataHealth = await api('/api/data-health');
+    // Fetched together so the token row and the coverage rows can't show
+    // state from two different moments.
+    const [health] = await Promise.all([
+      api('/api/data-health'),
+      loadFyersToken(),
+    ]);
+    _dataHealth = health;
+    // Speed up to 1s while training is live; back to 5s when it ends.
+    if (document.getElementById('data-health-panel').style.display !== 'none') {
+      _startHealthPoll(_dataHealth && _dataHealth.training_active ? 1000 : 5000);
+    }
   } catch (e) { return; }
   const chip = document.getElementById('data-health-chip');
   if (!chip || !_dataHealth) return;
@@ -7042,23 +8251,111 @@ async function loadDataHealth() {
   }
 }
 
+function _healthSubBar(s) {
+  const scol = _HEALTH_COLORS[s.status] || 'var(--muted)';
+  return `<div style="margin:7px 0 0 12px">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+      <span style="font-size:11px;color:var(--muted)">${s.label}</span>
+      <span style="font-size:11px;font-weight:700;color:${scol};white-space:nowrap">${s.pct}%</span>
+    </div>
+    <div style="height:4px;background:rgba(0,0,0,.07);border-radius:2px;margin:3px 0 2px">
+      <div style="height:100%;width:${Math.min(100, s.pct)}%;background:${scol};border-radius:2px"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+      <span style="font-size:10px;color:var(--muted)">${s.value} of ${s.total}</span>
+      ${s.eta ? `<span style="font-size:10px;color:var(--muted);white-space:nowrap">${s.eta}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+// FYERS token row. Sits at the top of Data Coverage because when this
+// expires nothing else in the panel can refresh — FYERS is the only
+// market-data source now, and its refresh-token API is disabled for SEBI
+// compliance, so renewal needs a human login. Clicking opens FYERS's login
+// in a new tab; the redirect lands on /fyers_callback which completes the
+// exchange server-side, so there's nothing to copy back.
+function _renderTokenRow(t) {
+  if (!t) return '';
+  const secs = t.seconds_remaining || 0;
+  const valid = !!t.valid;
+  const col = !valid ? 'var(--pnl-down)' : (secs < 3600 ? '#f59e0b' : 'var(--pnl-up)');
+
+  let left;
+  if (!valid) {
+    left = 'Expired';
+  } else {
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+    left = h > 0 ? `${h}h ${m}m left` : `${m}m left`;
+  }
+
+  return `<div style="padding:9px 0;border-bottom:1px solid rgba(0,0,0,.05)">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+      <span style="font-size:12px;font-weight:600">FYERS Token</span>
+      <span style="font-size:12px;font-weight:700;color:${col};white-space:nowrap">${left}</span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:3px">
+      ${valid ? `Expires ${t.expires_at_human || '—'}` : 'Market data unavailable until reconnected'}
+    </div>
+    <button type="button" onclick="connectFyers()"
+            aria-label="Reconnect FYERS account"
+            title="Opens FYERS login in a new tab; the token is captured automatically on redirect"
+            style="margin-top:7px;width:100%;min-height:32px;font-size:11px;font-weight:600;cursor:pointer;
+                   border:.5px solid var(--border);border-radius:8px;padding:6px 10px;
+                   background:${valid ? 'var(--surface)' : 'var(--pnl-down)'};
+                   color:${valid ? 'var(--text)' : '#fff'}">
+      ${valid ? 'Reconnect FYERS' : 'Reconnect now'}
+    </button>
+  </div>`;
+}
+
+function connectFyers() {
+  const t = _fyersToken;
+  if (!t || !t.login_url) { toast('Login URL unavailable'); return; }
+  window.open(t.login_url, '_blank', 'noopener');
+  // Poll for the callback completing so the row updates without a manual
+  // refresh. Gives up after ~2 min so a cancelled login doesn't poll forever.
+  let tries = 0;
+  const iv = setInterval(async () => {
+    tries++;
+    const before = _fyersToken && _fyersToken.expires_at;
+    await loadFyersToken();
+    const after = _fyersToken && _fyersToken.expires_at;
+    if (after && after !== before) {
+      clearInterval(iv);
+      toast('FYERS reconnected');
+      loadDataHealth();
+    } else if (tries > 40) {
+      clearInterval(iv);
+    }
+  }, 3000);
+}
+
+let _fyersToken = null;
+async function loadFyersToken() {
+  try { _fyersToken = await api('/api/fyers-token-status'); }
+  catch (e) { _fyersToken = null; }
+  return _fyersToken;
+}
+
 function renderDataHealth(d) {
   if (!d || !d.checks) return '<div style="font-size:12px;color:var(--muted)">Coverage data unavailable.</div>';
-  let h = '';
+  let h = _renderTokenRow(_fyersToken);
   d.checks.forEach(c => {
     const col = _HEALTH_COLORS[c.status] || 'var(--muted)';
-    const hasBar = c.total != null && c.pct != null;
+    const isGroup = Array.isArray(c.sub) && c.sub.length > 0;
+    const hasBar = !isGroup && c.total != null && c.pct != null;
     h += `<div style="padding:9px 0;border-bottom:1px solid rgba(0,0,0,.05)">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
         <span style="font-size:12px;font-weight:600">${c.label}</span>
-        <span style="font-size:12px;font-weight:700;color:${col};white-space:nowrap">${
-          hasBar ? c.pct + '%' : c.value + 'd'}</span>
+        ${hasBar ? `<span style="font-size:12px;font-weight:700;color:${col};white-space:nowrap">${
+          c.pct + '%'}</span>` : (isGroup ? '' : `<span style="font-size:12px;font-weight:700;color:${col};white-space:nowrap">${c.value}d</span>`)}
       </div>
       ${hasBar ? `<div style="height:5px;background:rgba(0,0,0,.07);border-radius:3px;margin:5px 0 4px">
         <div style="height:100%;width:${Math.min(100, c.pct)}%;background:var(--text);border-radius:3px"></div>
       </div>
       <div style="font-size:10px;color:var(--muted)">${c.value} of ${c.total}</div>` : ''}
-      ${c.detail ? `<div style="font-size:11px;color:${c.status === 'ok' ? 'var(--muted)' : col};margin-top:3px">${c.detail}</div>` : ''}
+      ${isGroup ? c.sub.map(_healthSubBar).join('') : ''}
+      ${c.detail ? `<div style="font-size:11px;color:${c.status === 'ok' ? 'var(--muted)' : col};margin-top:6px">${c.detail}</div>` : ''}
       ${c.hint && c.status !== 'ok' ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;font-style:italic">${c.hint}</div>` : ''}
     </div>`;
   });
@@ -7067,15 +8364,39 @@ function renderDataHealth(d) {
   return h;
 }
 
+let _dataHealthFastPoll = null;
+let _dataHealthPollMs = null;
+
+// Poll every second while a training job is live so the countdown ticks in
+// real time, and fall back to 5s when idle — a 1s poll running all the time
+// would be pointless load for numbers that only change when training runs.
+// Only re-creates the interval when the cadence actually changes.
+function _startHealthPoll(ms) {
+  if (_dataHealthPollMs === ms && _dataHealthFastPoll) return;
+  if (_dataHealthFastPoll) clearInterval(_dataHealthFastPoll);
+  _dataHealthPollMs = ms;
+  _dataHealthFastPoll = setInterval(loadDataHealth, ms);
+}
+
 function toggleDataHealthPanel() {
   const p = document.getElementById('data-health-panel');
   if (!p) return;
   const open = p.style.display !== 'none';
-  p.style.display = open ? 'none' : 'block';
+  // 'flex', not 'block': the panel is a flex column so its header stays
+  // fixed while only #data-health-body scrolls.
+  p.style.display = open ? 'none' : 'flex';
   if (!open) {
     document.getElementById('data-health-body').innerHTML =
       _dataHealth ? renderDataHealth(_dataHealth) : inlineLoader('Checking coverage…');
     if (!_dataHealth) loadDataHealth();
+    // While the panel is actually visible, refresh every 5s so a running
+    // backfill (e.g. FYERS Historical Backfill) visibly ticks up in real
+    // time. Stops the moment the panel closes — no point polling every 5s
+    // when nobody's looking at it.
+    if (!_dataHealthFastPoll) _startHealthPoll(5000);
+  } else if (_dataHealthFastPoll) {
+    clearInterval(_dataHealthFastPoll);
+    _dataHealthFastPoll = null;
   }
 }
 
@@ -7388,16 +8709,38 @@ function tijoriPeersTable(peers, selfName) {
     return n.toLocaleString('en-IN', { maximumFractionDigits: 1 });
   };
 
-  let t = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">
+  const shown = rows.slice(0, 8);
+
+  // DESKTOP: the real table, unchanged. Wrapped so the mobile query can hide
+  // it wholesale rather than trying to reshape a <table> into cards.
+  let t = `<div class="peer-table-wrap" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">
     <tr><th style="text-align:left;padding:3px 6px;color:var(--muted);font-weight:600">Company</th>
     ${usable.map(k => `<th style="text-align:right;padding:3px 6px;color:var(--muted);font-weight:600">${shortNames[k]}</th>`).join('')}</tr>`;
-  rows.slice(0, 8).forEach((r, i) => {
+  shown.forEach((r, i) => {
     const isSelf = i === 0;
     t += `<tr style="border-top:1px solid rgba(255,255,255,.05);${isSelf ? 'background:rgba(0,113,227,.07);font-weight:600' : ''}">
       <td style="padding:3px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px">${r.name || '—'}</td>
       ${usable.map(k => `<td style="text-align:right;padding:3px 6px">${fmt(k, r[k])}</td>`).join('')}</tr>`;
   });
   t += '</table></div>';
+
+  // MOBILE: one card per peer. Six metrics across three columns reads on a
+  // 375px screen; the same six as table columns forced both the headers and
+  // the values onto two and three lines each, and needed sideways scrolling
+  // to see any of them. Same data, same order, no truncation.
+  t += `<div class="peer-cards">` + shown.map((r, i) => {
+    const isSelf = i === 0;
+    const cells = usable.map(k => `
+      <div>
+        <div class="peer-metric-label">${shortNames[k]}</div>
+        <div class="peer-metric-value">${fmt(k, r[k])}</div>
+      </div>`).join('');
+    return `<div class="peer-card${isSelf ? ' is-self' : ''}">
+        <div class="peer-card-name">${r.name || '—'}${isSelf ? ' <span style="font-size:9px;font-weight:600;color:var(--accent)">THIS STOCK</span>' : ''}</div>
+        <div class="peer-card-grid">${cells}</div>
+      </div>`;
+  }).join('') + `</div>`;
+
   return t;
 }
 
@@ -8558,13 +9901,22 @@ async function loadJournal(filter) {
   filter = filter || _journalFilter;
   _journalFilter = filter;
   // Update filter buttons
-  ['all','open','closed','actual','paper'].forEach(f => {
+  // aria-selected drives BOTH the styling and what a screen reader announces,
+  // so the two cannot drift. Previously this set inline border/text colour,
+  // which looked selected but announced nothing.
+  const _segOrder = ['all','open','closed','actual','paper'];
+  _segOrder.forEach(f => {
     const btn = document.getElementById('jf-' + f);
-    if (btn) {
-      if (f === filter) { btn.style.borderColor = 'var(--accent)'; btn.style.color = 'var(--accent)'; }
-      else { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--text)'; }
-    }
+    if (btn) btn.setAttribute('aria-selected', f === filter ? 'true' : 'false');
   });
+  // Drives the sliding thumb. Index only — the movement itself is a CSS
+  // transition, so this stays one property write per filter change rather
+  // than an animation loop.
+  const _bar = document.querySelector('.seg-bar');
+  if (_bar) {
+    const i = _segOrder.indexOf(filter);
+    if (i >= 0) _bar.style.setProperty('--seg-i', i);
+  }
 
   try {
     let endpoint = '/api/journal';
@@ -8644,6 +9996,7 @@ function renderJournalEntries(entries) {
     const netPnL = post && post.net_pnl != null ? Number(post.net_pnl) : null;
     const pnlText = netPnL != null ? `<span style="color:${netPnL>=0?'var(--green)':'var(--red)'}">${formatMoney(netPnL, 2)}</span>` : '--';
     const entryTime = e.entry_time ? new Date(e.entry_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+    const entryTimeShort = e.entry_time ? new Date(e.entry_time).toLocaleTimeString('en-IN', {hour:'2-digit',minute:'2-digit',hour12:false}) : '';
     const entryPrice = e.entry_price != null ? formatMoney(e.entry_price, 2) : '--';
     const quantity = e.quantity != null ? formatCount(e.quantity) : '--';
     const symbol = e.symbol || '--';
@@ -8654,15 +10007,20 @@ function renderJournalEntries(entries) {
       <div class="journal-header" onclick="toggleJournalDetail('jd-${i}')">
         <div class="left">
           ${signalBadge(side)}
-          <b style="font-size:15px">${symbol}</b>
-          <span style="font-size:12px;color:var(--muted)">${quantity} @ ${entryPrice}</span>
+          <b class="je-sym">${symbol}</b>
+          <span class="je-qty">${quantity} @ ${entryPrice}</span>
           ${matchBadge}
         </div>
         <div class="right">
-          ${confBar(pre.confidence || 0)}
-          <span>${pnlText}</span>
-          <span style="color:var(--muted);font-size:11px">${entryTime || '--'}</span>
-          <span style="font-size:16px;color:var(--muted)" id="jd-${i}-arrow">▸</span>
+          <!-- Plain % instead of confBar(): the 60px bar was the widest
+               non-essential item in the row and the number beside it already
+               said the same thing. -->
+          <span class="je-conf">${Math.round((pre.confidence || 0) * 100)}%</span>
+          <span class="je-pnl">${pnlText}</span>
+          <!-- Time only. The full date lives in the detail panel below, and
+               "17 Aug, 10:39 am" was ~90px of a 347px row. -->
+          <span class="je-time">${entryTimeShort || '--'}</span>
+          <span class="je-arrow" id="jd-${i}-arrow">&#9656;</span>
         </div>
       </div>
       <div class="journal-detail" id="jd-${i}">
@@ -8730,6 +10088,38 @@ function renderJournalEntries(entries) {
       </div>
     </div>`;
   }).join('');
+
+  _observeJournalFocus();
+}
+
+// Highlights whichever trade card sits at the centre of the viewport.
+//
+// rootMargin shrinks the observation area to a sliver across the middle of
+// the screen, thinner than a single card, so exactly one card is focused. IntersectionObserver rather than a scroll listener
+// because it fires only on threshold crossings — no work per scroll frame.
+// CSS animation-timeline:view() would be neater but is Chrome-only, and this
+// runs on Safari.
+//
+// The observer is rebuilt on every render because loadJournal() replaces the
+// list wholesale; the previous one is disconnected first so observers do not
+// accumulate one per filter change.
+let _journalFocusObserver = null;
+function _observeJournalFocus() {
+  if (_journalFocusObserver) { _journalFocusObserver.disconnect(); _journalFocusObserver = null; }
+  if (!window.IntersectionObserver) return;                 // no-op fallback
+  if (window.matchMedia && window.matchMedia('(min-width: 769px)').matches) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  _journalFocusObserver = new IntersectionObserver(entries => {
+    entries.forEach(en => en.target.classList.toggle('is-focused', en.isIntersecting));
+  // -49.5% leaves a ~1% band (~8px on a 812px screen). Measured at -45%
+  // the band was ~81px, and since the compacted cards are ~52px tall
+  // THREE of them satisfied it at once — the point is to single out the
+  // one you are looking at, so the band must be thinner than one card.
+  }, { rootMargin: '-49.5% 0px -49.5% 0px', threshold: 0 });
+
+  document.querySelectorAll('#journal-list .journal-entry')
+    .forEach(el => _journalFocusObserver.observe(el));
 }
 
 function renderPostTrade(entry, post) {
@@ -9577,8 +10967,8 @@ async function loadAutoAnalysis() {
     if (data.predictions && data.predictions.length > 0) {
       renderAutoAnalysisSummary(data);
       renderPredictions(data.predictions);
-      document.getElementById('auto-analysis-summary').style.display = 'block';
-      document.getElementById('predictions-loading').style.display = 'none';
+      _el('auto-analysis-summary').style.display = 'block';
+      _el('predictions-loading').style.display = 'none';
     }
   } catch (e) {
     console.error('Load auto-analysis error:', e);
@@ -9606,14 +10996,14 @@ function renderAutoAnalysisSummary(data) {
 }
 
 async function runAutoAnalysis() {
-  document.getElementById('predictions-loading').innerHTML = '<span class="loader"></span> Running live market analysis...';
-  document.getElementById('predictions-table').style.display = 'none';
+  _el('predictions-loading').innerHTML = '<span class="loader"></span> Running live market analysis...';
+  _el('predictions-table').style.display = 'none';
   try {
     await api('/api/auto-analysis/run', { method: 'POST' });
     // Wait a moment for processing
     setTimeout(() => loadAutoAnalysis(), 500);
   } catch (e) {
-    document.getElementById('predictions-loading').textContent = 'Analysis failed. Check API connection.';
+    _el('predictions-loading').textContent = 'Analysis failed. Check API connection.';
   }
 }
 
@@ -9727,7 +11117,12 @@ function setupAutocomplete(inputId) {
           });
         });
       } catch(e) { dropdown.classList.remove('show'); }
-    }, 250);
+    // 120ms, down from 250. The listener already fired on every keystroke —
+    // the delay was the debounce, which at 250ms plus round-trip read as
+    // "nothing is happening" for a third of a second after you stopped
+    // typing. 120ms still collapses a fast burst of keystrokes into one
+    // request, so the endpoint sees no more traffic than before.
+    }, 120);
   });
 
   input.addEventListener('blur', () => {
@@ -10746,6 +12141,420 @@ try {
   document.getElementById('fbt-instrument').addEventListener('change', fbtInstrumentChanged);
 } catch(_) {}  // May not exist initially
 
+// ── Backtester segments ──────────────────────────────────────────────────
+// Three models, two harnesses: the cash models share one walk-forward
+// backtest (same features/labels/windows, only the estimator differs, so the
+// numbers are directly comparable), F&O keeps its own.
+const BT_CASH_STRATEGY = { gbc: 'ml_walkforward', xgb: 'ml_walkforward_xgb' };
+const BT_CASH_LABEL    = { gbc: 'GradientBoosting', xgb: 'XGBoost' };
+let _btSegment = 'fno';
+
+function btSelectSegment(seg) {
+  _btSegment = seg;
+  const isCash = seg === 'gbc' || seg === 'xgb';
+  document.getElementById('bt-cash-segment').style.display = isCash ? 'block' : 'none';
+  document.getElementById('bt-fno-segment').style.display  = isCash ? 'none'  : 'block';
+
+  ['gbc', 'xgb', 'fno'].forEach(s => {
+    const b = document.getElementById('btseg-' + s);
+    if (!b) return;
+    const on = s === seg;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+
+  if (isCash) {
+    document.getElementById('btc-title').textContent = 'Cash · ' + BT_CASH_LABEL[seg];
+    document.getElementById('btc-subtitle').textContent =
+      seg === 'gbc'
+        ? 'sklearn GradientBoosting, walk-forward. This is the model that currently places live cash trades.'
+        : 'XGBoost, walk-forward — identical features, labels and windows to GradientBoosting. Evaluation-only until it outperforms.';
+    // Dates depend on the symbol, so they can only load once symbols are in.
+    btcLoadSymbols().then(btcdLoadDates);
+    // Results from the other model would be misleading under this heading.
+    document.getElementById('btc-result').style.display = 'none';
+    document.getElementById('btc-compare').style.display = 'none';
+    document.getElementById('btcd-result').style.display = 'none';
+  }
+}
+
+async function btcLoadSymbols() {
+  const sel = document.getElementById('btc-symbol');
+  if (sel.dataset.loaded) return;
+  try {
+    const d = await api('/api/watchlist');
+    const syms = (d.stocks || d.watchlist || []).map(s => s.symbol || s).filter(Boolean).sort();
+    sel.innerHTML = syms.map(s => `<option value="${s}">${s}</option>`).join('')
+      || '<option value="">No symbols</option>';
+    sel.dataset.loaded = '1';
+  } catch (e) {
+    sel.innerHTML = '<option value="">Could not load symbols</option>';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CASH SINGLE-DAY REPLAY
+//
+// Deliberately a SEPARATE renderer from fbtRenderResult(). The F&O view is
+// working and was explicitly to be left alone, and two of its F&O-isms live
+// inside the renderer rather than the payload (it derives CE/PE from
+// analysis.direction, and its chart tooltip flips P&L sign on BEARISH
+// because a bearish F&O call is a long put). Neither is correct for
+// long-only cash, and neither can be fixed from the JSON — so sharing the
+// function would have meant editing it.
+// ─────────────────────────────────────────────────────────────────────────
+
+let _btcdChart = null;
+
+async function btcdLoadDates() {
+  const sym = document.getElementById('btc-symbol').value;
+  const sel = document.getElementById('btcd-date');
+  if (!sym) { sel.innerHTML = '<option value="">Pick a symbol first</option>'; return; }
+  sel.innerHTML = '<option value="">Loading dates…</option>';
+  try {
+    const dates = await api('/api/cash/backtest/dates/' + encodeURIComponent(sym) + '?limit=120');
+    sel.innerHTML = (dates || []).map(d => `<option value="${d}">${d}</option>`).join('')
+      || '<option value="">No sessions with data</option>';
+  } catch (e) {
+    sel.innerHTML = '<option value="">Could not load dates</option>';
+  }
+}
+
+async function btcdRun() {
+  const sym  = document.getElementById('btc-symbol').value;
+  const date = document.getElementById('btcd-date').value;
+  if (!sym)  { toast('Pick a symbol first'); return; }
+  if (!date) { toast('Pick a date first'); return; }
+
+  const model = (_btSegment === 'xgb') ? 'xgb' : 'gbc';
+  const out   = document.getElementById('btcd-result');
+  const load  = document.getElementById('btcd-loading');
+  const btn   = document.getElementById('btcd-run-btn');
+
+  document.getElementById('btc-result').style.display  = 'none';
+  document.getElementById('btc-compare').style.display = 'none';
+  out.style.display = 'none';
+  load.style.display = 'block';
+  // First run for a (symbol, date, model) trains walk-forward and takes ~60s;
+  // afterwards the model is cached and it is a few seconds. Say so, rather
+  // than showing an unexplained long spinner.
+  document.getElementById('btcd-loading-text').textContent =
+    `Replaying ${sym} on ${date}… first run for this day trains a model from scratch (~60s), later runs are instant.`;
+  btn.disabled = true;
+
+  try {
+    const d = await api('/api/cash/backtest/run', {
+      method: 'POST',
+      body: JSON.stringify({ symbol: sym, date: date, model: model }),
+    });
+    if (d.error) { toast(d.error); return; }
+    fbtRenderCashResult(d);
+    out.style.display = 'block';
+  } catch (e) {
+    toast(e.message || 'Replay failed');
+  } finally {
+    load.style.display = 'none';
+    btn.disabled = false;
+  }
+}
+
+function _btcdFidelity(notes) {
+  if (!notes || !notes.length) return '';
+  // Reconstruction gaps are shown ABOVE the verdict, not buried under it.
+  // A backtest number without its caveats invites more confidence than the
+  // number deserves.
+  const rows = notes.map(n => {
+    const col = n.severity === 'high' ? 'var(--bt-amber)' : 'var(--bt-muted)';
+    return `<div style="display:flex;gap:8px;margin:5px 0;line-height:1.45">
+      <span style="color:${col};flex-shrink:0">●</span>
+      <span><b style="color:var(--bt-text)">${n.source}:</b> <span style="color:var(--bt-muted)">${n.text}</span></span>
+    </div>`;
+  }).join('');
+  return `<div style="border:1px solid var(--bt-border);border-left:3px solid var(--bt-amber);
+                border-radius:8px;padding:11px 13px;margin-bottom:14px;font-size:12px">
+      <div style="font-weight:700;margin-bottom:6px;color:var(--bt-text)">What this replay could not reconstruct</div>
+      ${rows}
+    </div>`;
+}
+
+function fbtRenderCashResult(d) {
+  const a    = d.analysis || {};
+  const meta = a.signal_meta || {};
+  const disc = d.discrepancy;
+  const t    = d.trade_simulation || {};
+  const money = v => '₹' + Number(v || 0).toLocaleString('en-IN', {maximumFractionDigits: 2});
+
+  const dirCol = a.direction === 'BULLISH' ? 'var(--bt-green)'
+               : a.direction === 'BEARISH' ? 'var(--bt-red)' : 'var(--bt-amber)';
+  const dirIcon = a.direction === 'BULLISH' ? '▲' : a.direction === 'BEARISH' ? '▼' : '●';
+
+  let outcome, outcomeCol, outcomeSub;
+  if (!disc) {
+    outcome = 'NO SIGNAL'; outcomeCol = 'var(--bt-muted)';
+    outcomeSub = 'Combined score stayed inside the neutral band all session';
+  } else {
+    outcome = disc.direction_correct ? 'CORRECT DIRECTION' : 'WRONG DIRECTION';
+    outcomeCol = disc.direction_correct ? 'var(--bt-green)' : 'var(--bt-red)';
+    outcomeSub = `Predicted ${disc.predicted_change_pct >= 0 ? '+' : ''}${disc.predicted_change_pct}% · `
+               + `Actual ${disc.actual_change_pct >= 0 ? '+' : ''}${disc.actual_change_pct}%`
+               + (disc.avg_deviation_pct != null ? ` · Avg deviation ${disc.avg_deviation_pct}%` : '');
+  }
+
+  const card = (lbl, val, sub, col) => `
+    <div class="bt-card">
+      <div class="bt-card-label">${lbl}</div>
+      <div class="bt-card-value" ${col ? `style="color:${col}"` : ''}>${val}</div>
+      <div class="bt-card-sub">${sub || ''}</div>
+    </div>`;
+
+  const heldTxt = d.days_held != null && d.days_held !== '-' ? ` · Held ${d.days_held} day(s)` : '';
+  const cards = `
+    <div class="bt-grid" style="grid-template-columns:repeat(4,1fr)">
+      ${card('Instrument', d.label || d.instrument, `${d.model} · ${d.total_candles} candles`)}
+      ${card('Session', d.target_date, d.entry_time ? `Entry ${d.entry_time}${heldTxt}` : 'No entry taken')}
+      ${card('Prediction', `${dirIcon} ${a.direction}`,
+             `Score ${a.weighted_score >= 0 ? '+' : ''}${a.weighted_score} · ${Math.round((a.confidence || 0) * 100)}% · ${a.strength}`, dirCol)}
+      ${card('Outcome', outcome, outcomeSub, outcomeCol)}
+    </div>`;
+
+  // Signal grid — driven by signal_meta, so cash shows its four real sources
+  // instead of the F&O legend's seven (five of which are the same number).
+  const sigCells = Object.entries(meta).map(([key, m]) => {
+    const s = (a.signals || {})[key] || {};
+    const noData = s.no_data;
+    const col = noData ? 'var(--bt-muted)'
+              : s.signal === 'BULLISH' ? 'var(--bt-green)'
+              : s.signal === 'BEARISH' ? 'var(--bt-red)' : 'var(--bt-amber)';
+    const wTxt = m.weight ? `${m.weight}%` : (m.note ? m.note : 'input');
+    return `<div class="bt-signal-cell" ${noData ? 'style="opacity:.62"' : ''}>
+        <div class="bt-signal-name">${m.label} <span style="color:var(--bt-muted);font-weight:400">(${wTxt})</span></div>
+        <div class="bt-signal-val" style="color:${col}">${s.signal || 'N/A'}</div>
+        <div class="bt-signal-score">score: ${(s.score >= 0 ? '+' : '')}${(s.score ?? 0).toFixed(3)}</div>
+      </div>`;
+  }).join('');
+
+  const tech = d.technicals || {};
+  const chip = (lbl, val, sig) => {
+    if (val == null) return `<div class="bt-tech-chip"><span>${lbl}</span><b>—</b></div>`;
+    const c = (sig === 'BULLISH' || sig === 'OVERSOLD') ? 'var(--bt-green)'
+            : (sig === 'BEARISH' || sig === 'OVERBOUGHT') ? 'var(--bt-red)' : '';
+    return `<div class="bt-tech-chip"><span>${lbl}</span><b>${typeof val === 'number' ? val.toFixed(2) : val}</b>${
+      sig ? ` <i style="font-style:normal;font-size:10px;color:${c || 'var(--bt-muted)'}">${sig}</i>` : ''}</div>`;
+  };
+  const techHtml = [
+    chip('RSI', tech.rsi, tech.rsi_signal),
+    chip('MACD', tech.macd, tech.macd_direction),
+    chip('EMA 9', tech.ema_9, null),
+    chip('EMA 21', tech.ema_21, tech.ema_signal),
+    chip('BB Upper', tech.bb_upper, tech.bb_signal),
+    chip('Stoch %K', tech.stoch_k, tech.stoch_signal),
+    chip('Support', tech.support, null),
+    chip('Resistance', tech.resistance, null),
+  ].join('');
+
+  // Trade block
+  let tradeHtml;
+  if (!t.would_trade) {
+    tradeHtml = `<div class="bt-card" style="margin-top:12px">
+        <div class="bt-card-label">No Trade Taken</div>
+        <div style="font-size:13px;color:var(--bt-muted);margin-top:6px;line-height:1.5">${t.reason || ''}</div>
+        <div style="font-size:12px;color:var(--bt-green);margin-top:8px">Capital preserved — no charges incurred.</div>
+      </div>`;
+  } else {
+    const lv = t.trade_levels || {};
+    const pnlCol = (t.total_pnl || 0) >= 0 ? 'var(--bt-green)' : 'var(--bt-red)';
+    const exitChip = t.tp_hit ? 'TARGET HIT' : t.sl_hit ? 'STOP LOSS HIT' : (t.exit_reason || '').replace(/_/g, ' ');
+    const rows = (t.timeline || []);
+    const step = Math.max(1, Math.floor(rows.length / 7));
+    const sampled = rows.filter((_, i) => i % step === 0).slice(0, 8);
+    tradeHtml = `
+      <div class="bt-grid" style="grid-template-columns:repeat(4,1fr);margin-top:12px">
+        ${card('Entry', money(lv.entry_price ?? t.entry_premium), `${t.lot_size} shares · ${money(t.entry_cost)}`)}
+        ${card('Stop / Target', `${money(lv.stop_loss)} / ${money(lv.take_profit)}`, `R:R ${lv.risk_reward ?? '—'} · ATR ${lv.atr ?? '—'}`)}
+        ${card('Exit', money(t.exit_premium), `${exitChip}`)}
+        ${card('Net P&L', `${(t.total_pnl || 0) >= 0 ? '+' : ''}${money(t.total_pnl)}`,
+               `${t.total_pnl_pct >= 0 ? '+' : ''}${t.total_pnl_pct}% · after ${money(t.total_charges)} charges`, pnlCol)}
+      </div>
+      <div style="margin-top:12px;border:1px solid var(--bt-border);border-radius:8px;overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:420px">
+          <thead><tr style="color:var(--bt-muted);text-align:left">
+            <th style="padding:7px 10px">Time</th><th style="padding:7px 10px">Price</th>
+            <th style="padding:7px 10px">Move</th><th style="padding:7px 10px">P&L</th><th style="padding:7px 10px"></th>
+          </tr></thead>
+          <tbody>${sampled.map(r => `<tr style="border-top:1px solid var(--bt-border)">
+            <td style="padding:7px 10px">${r.datetime_label || (r.date + ' ' + r.time)}</td>
+            <td style="padding:7px 10px">${money(r.spot_price)}</td>
+            <td style="padding:7px 10px">${r.spot_change_pct >= 0 ? '+' : ''}${r.spot_change_pct}%</td>
+            <td style="padding:7px 10px;color:${r.pnl_pct >= 0 ? 'var(--bt-green)' : 'var(--bt-red)'}">${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct}%</td>
+            <td style="padding:7px 10px;color:var(--bt-amber)">${(r.action || '').replace(/_/g, ' ')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+  }
+
+  document.getElementById('btcd-result').innerHTML = `
+    ${_btcdFidelity(d.fidelity)}
+    ${cards}
+    <div style="font-size:13px;font-weight:700;margin:16px 0 8px">Signal Breakdown</div>
+    <div class="bt-signals">${sigCells}</div>
+    <div style="font-size:13px;font-weight:700;margin:16px 0 8px">Technicals at Decision Time</div>
+    <div class="bt-tech">${techHtml}</div>
+    ${tradeHtml}
+    <div style="font-size:13px;font-weight:700;margin:16px 0 8px">Price Action — Actual vs Predicted</div>
+    <div style="position:relative;height:300px"><canvas id="btcd-chart"></canvas></div>`;
+
+  _btcdRenderChart(d);
+}
+
+function _btcdRenderChart(d) {
+  const c = d.chart || {};
+  const ctx = document.getElementById('btcd-chart');
+  if (!ctx || !c.labels) return;
+  if (_btcdChart) { _btcdChart.destroy(); _btcdChart = null; }
+
+  const ei = d.entry_candle_idx, xi = d.exit_candle_idx;
+  const ptRadius = c.labels.map((_, i) => (i === ei || i === xi) ? 6 : 0);
+  const ptColor  = c.labels.map((_, i) =>
+    i === ei ? '#6366f1'
+    : i === xi ? ((d.trade_simulation || {}).tp_hit ? '#22c55e' : '#ef4444')
+    : 'transparent');
+
+  const ds = [{
+    label: 'Actual', data: c.prices, borderColor: '#6366f1',
+    backgroundColor: 'rgba(99,102,241,.10)', borderWidth: 2, fill: true,
+    tension: .25, pointRadius: ptRadius, pointBackgroundColor: ptColor, pointBorderColor: ptColor,
+  }];
+  if (c.predicted) {
+    ds.push({
+      label: 'Predicted', data: c.predicted, borderColor: '#22c55e',
+      borderWidth: 2, borderDash: [6, 4], fill: false, tension: .25,
+      pointRadius: 0, spanGaps: false,
+    });
+  }
+
+  _btcdChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: c.labels, datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            // No BEARISH sign flip here. Cash is long-only: a fall is a loss,
+            // full stop. The F&O chart inverts it because a bearish F&O call
+            // is a long put that profits when spot falls.
+            afterBody(items) {
+              if (ei == null || !items.length) return '';
+              const entry = c.prices[ei];
+              const now = c.prices[items[0].dataIndex];
+              if (entry == null || now == null) return '';
+              const mv = ((now - entry) / entry * 100);
+              return `Move from entry: ${mv >= 0 ? '+' : ''}${mv.toFixed(2)}%`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { font: { size: 10 } }, grid: { color: 'rgba(148,163,184,.12)' } },
+      },
+    },
+  });
+}
+
+function _btcMetricCards(m, label) {
+  // Key names verified against backtester.run_backtest's actual return —
+  // it reports total_return_pct / win_rate_pct and has no net_pnl field.
+  const ret = m.total_return_pct ?? 0;
+  const pf  = m.profit_factor ?? 0;
+  const col = v => v >= 0 ? 'var(--pnl-up)' : 'var(--pnl-down)';
+  const card = (lbl, val, sub, c) => `
+    <div class="bt-card">
+      <div class="bt-card-label">${lbl}</div>
+      <div class="bt-card-value" ${c ? `style="color:${c}"` : ''}>${val}</div>
+      <div class="bt-card-sub">${sub || ''}</div>
+    </div>`;
+  return `
+    ${label ? `<div style="font-size:13px;font-weight:700;margin:4px 0 8px">${label}</div>` : ''}
+    <div class="bt-grid" style="grid-template-columns:repeat(4,1fr)">
+      ${card('Net Return', ret.toFixed(1) + '%', 'after real costs', col(ret))}
+      ${card('Profit Factor', pf.toFixed(2), pf >= 1 ? 'profitable' : 'LOSING (below 1.0)', col(pf - 1))}
+      ${card('Win Rate', (m.win_rate_pct ?? 0).toFixed(1) + '%', `${m.winning_trades ?? 0}W / ${m.losing_trades ?? 0}L`)}
+      ${card('Trades', m.total_trades ?? 0, `avg hold ${(m.avg_holding_days ?? 0).toFixed(1)}d`)}
+      ${card('Sharpe', (m.sharpe_ratio ?? 0).toFixed(2), 'risk-adjusted', col(m.sharpe_ratio ?? 0))}
+      ${card('Max Drawdown', (m.max_drawdown_pct ?? 0).toFixed(1) + '%', 'peak to trough', 'var(--pnl-down)')}
+      ${card('Avg Win', (m.avg_win_pct ?? 0).toFixed(2) + '%', 'per winning trade')}
+      ${card('Avg Loss', (m.avg_loss_pct ?? 0).toFixed(2) + '%', 'per losing trade')}
+    </div>`;
+}
+
+async function btcRun() {
+  const sym = document.getElementById('btc-symbol').value;
+  if (!sym) { toast('Pick a symbol first'); return; }
+  const btn = document.getElementById('btc-run-btn');
+  const load = document.getElementById('btc-loading');
+  const out = document.getElementById('btc-result');
+  document.getElementById('btc-compare').style.display = 'none';
+  out.style.display = 'none';
+  load.style.display = 'block';
+  btn.disabled = true;
+  try {
+    const d = await api(`/api/backtest/${sym}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy: BT_CASH_STRATEGY[_btSegment], initial_capital: 100000 }),
+    });
+    if (d.error) { toast('Backtest error: ' + d.error, 4000); return; }
+    out.innerHTML = _btcMetricCards(d.metrics || {}, `${sym} · ${BT_CASH_LABEL[_btSegment]}`);
+    out.style.display = 'block';
+  } catch (e) {
+    toast('Backtest failed: ' + e.message, 4000);
+  } finally {
+    load.style.display = 'none';
+    btn.disabled = false;
+  }
+}
+
+async function btcCompare() {
+  const sym = document.getElementById('btc-symbol').value;
+  if (!sym) { toast('Pick a symbol first'); return; }
+  const load = document.getElementById('btc-loading');
+  const cmp = document.getElementById('btc-compare');
+  document.getElementById('btc-result').style.display = 'none';
+  cmp.style.display = 'none';
+  load.style.display = 'block';
+  document.getElementById('btc-loading-text').textContent =
+    'Running BOTH cash models on ' + sym + '… roughly 6 minutes (~3 min each).';
+  try {
+    // Sequential, not parallel: each run is CPU-bound walk-forward training,
+    // so racing them would just contend for the same cores and slow both.
+    const results = {};
+    for (const seg of ['gbc', 'xgb']) {
+      const d = await api(`/api/backtest/${sym}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy: BT_CASH_STRATEGY[seg], initial_capital: 100000 }),
+      });
+      if (d.error) throw new Error(d.error);
+      results[seg] = d.metrics || {};
+    }
+    cmp.innerHTML =
+      `<div style="font-size:13px;font-weight:700;margin:4px 0 10px">${sym} — GradientBoosting vs XGBoost</div>` +
+      _btcMetricCards(results.gbc, 'Cash · GradientBoosting') +
+      `<div style="height:14px"></div>` +
+      _btcMetricCards(results.xgb, 'Cash · XGBoost');
+    cmp.style.display = 'block';
+  } catch (e) {
+    toast('Comparison failed: ' + e.message, 4000);
+  } finally {
+    load.style.display = 'none';
+    document.getElementById('btc-loading-text').textContent =
+      'Running walk-forward backtest… this takes ~3 minutes.';
+  }
+}
+
 async function fbtRun() {
   const btn = document.getElementById('fbt-run-btn');
   btn.disabled = true;
@@ -10757,12 +12566,12 @@ async function fbtRun() {
   const date = document.getElementById('fbt-date').value || undefined;
 
   try {
-    const r = await fetch(API + '/api/fno/backtest/run', {
+    // Via api() for X-Device-Token; api() also prefixes API itself.
+    const d = await api('/api/fno/backtest/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({instrument: inst, date: date}),
     });
-    const d = await r.json();
     if (d.error) { toast('Backtest error: ' + d.error, 4000); return; }
     fbtRenderResult(d);
   } catch(e) {
@@ -11167,12 +12976,12 @@ async function fbtRunMulti() {
 
   const inst = document.getElementById('fbt-instrument').value;
   try {
-    const r = await fetch(API + '/api/fno/backtest/multi', {
+    // Via api() for X-Device-Token; api() also prefixes API itself.
+    const d = await api('/api/fno/backtest/multi', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({instrument: inst, num_days: 10}),
     });
-    const d = await r.json();
     if (d.error) { toast('Multi-backtest error: ' + d.error, 4000); return; }
     fbtRenderMulti(d);
   } catch(e) {
@@ -11768,20 +13577,42 @@ function renderResearchLeaderboard(container, lb) {
     return;
   }
 
+  // Bounded. All 73 rows rendered unbounded before, which is both a standard
+  // #2 violation and unusable — nobody scans past the top of a ranking.
+  const LB_LIMIT = 25;
+  const shown = lb.slice(0, LB_LIMIT);
+  const hiddenCount = lb.length - shown.length;
+
   let html = `<div class="card" style="margin-bottom:14px">
     <div class="card-title"> Alpha Score Leaderboard — ${lb.length} Stocks Ranked</div>
     <div style="color:var(--muted);font-size:11px;margin-bottom:10px">Same algorithm, every stock. Ranked by composite Alpha Score.</div>
+    <div class="lb-table-wrap">
     <table class="table" style="width:100%;border-collapse:collapse"><thead>
       <tr style="font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
         <th style="padding:6px 4px">#</th><th>Stock</th><th>Sector</th><th>Alpha</th><th>Conviction</th>
-        <th>Verdict</th><th>Regime</th><th>Tech</th><th>Fund</th><th>Inst</th><th>Sent</th><th>Risk</th><th></th>
+        <th>Verdict</th><th>Regime</th><th>Tech</th><th>Fund</th><th>Inst</th><th>Sent</th><th>Risk</th>
       </tr></thead><tbody>`;
 
-  lb.forEach((s, i) => {
+  // Dimension scores default to 50 when absent — that is a placeholder, not a
+  // measurement, so it is rendered muted and dashed rather than as data.
+  const dim = v => (v == null ? null : v);
+
+  shown.forEach((s, i) => {
     const dims = s.dimensions || {};
     const rank = i + 1;
     const alphaC = _alphaColor(s.alpha_score);
-    html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="loadResearchDetail('${s.symbol}')">
+    const cell = v => v == null
+      ? '<td style="font-size:11px;color:var(--muted)">—</td>'
+      : `<td style="font-size:11px;color:${_alphaColor(v)}">${v.toFixed(0)}</td>`;
+    // The Detail column is gone: its button called loadResearchDetail with the
+    // same argument the row's own onclick already passes. Pure width, no
+    // added capability. role/tabindex/keydown make the row itself the
+    // control it was already pretending to be (standard #6).
+    html += `<tr class="lb-row" role="button" tabindex="0"
+        aria-label="Open research detail for ${s.symbol}"
+        style="border-bottom:1px solid var(--border);cursor:pointer"
+        onclick="loadResearchDetail('${s.symbol}')"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadResearchDetail('${s.symbol}');}">
       <td style="padding:6px 4px;font-weight:700;color:var(--muted)">${rank}</td>
       <td style="font-weight:700">${s.symbol}<br><span style="font-size:10px;color:var(--muted)">${s.company_name||''}</span></td>
       <td style="font-size:11px;color:var(--muted)">${s.sector||''}</td>
@@ -11789,16 +13620,58 @@ function renderResearchLeaderboard(container, lb) {
       <td style="font-size:12px;color:var(--text)">${s.conviction.toFixed(0)}%</td>
       <td>${_verdictBadge(s.verdict)}</td>
       <td>${_regimeBadge(s.regime)}</td>
-      <td style="font-size:11px;color:${_alphaColor(dims.technical?.score||50)}">${(dims.technical?.score||50).toFixed(0)}</td>
-      <td style="font-size:11px;color:${_alphaColor(dims.fundamental?.score||50)}">${(dims.fundamental?.score||50).toFixed(0)}</td>
-      <td style="font-size:11px;color:${_alphaColor(dims.institutional?.score||50)}">${(dims.institutional?.score||50).toFixed(0)}</td>
-      <td style="font-size:11px;color:${_alphaColor(dims.sentiment?.score||50)}">${(dims.sentiment?.score||50).toFixed(0)}</td>
-      <td style="font-size:11px;color:${_alphaColor(dims.risk?.score||50)}">${(dims.risk?.score||50).toFixed(0)}</td>
-      <td><button class="btn btn-secondary" style="font-size:10px;padding:3px 8px" onclick="event.stopPropagation();loadResearchDetail('${s.symbol}')">Detail</button></td>
+      ${cell(dim(dims.technical?.score))}
+      ${cell(dim(dims.fundamental?.score))}
+      ${cell(dim(dims.institutional?.score))}
+      ${cell(dim(dims.sentiment?.score))}
+      ${cell(dim(dims.risk?.score))}
     </tr>`;
   });
 
   html += '</tbody></table></div>';
+
+  // MOBILE: one card per stock. Thirteen columns needed ~1,100px against
+  // 315px of usable phone width — 3.5x overflow, with no edge fade or swipe
+  // hint, so it read as truncated rather than scrollable. Rank, symbol and
+  // Alpha lead; the five dimension scores sit in a 5-across strip below.
+  html += `<div class="lb-cards">`;
+  shown.forEach((s, i) => {
+    const dims = s.dimensions || {};
+    const alphaC = _alphaColor(s.alpha_score);
+    const d = (lbl, v) => `<div>
+        <div class="lb-dim-label">${lbl}</div>
+        <div class="lb-dim-value" style="${v == null ? 'color:var(--muted)' : 'color:' + _alphaColor(v)}">${v == null ? '—' : v.toFixed(0)}</div>
+      </div>`;
+    html += `<div class="lb-card" role="button" tabindex="0"
+        aria-label="Open research detail for ${s.symbol}"
+        onclick="loadResearchDetail('${s.symbol}')"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadResearchDetail('${s.symbol}');}">
+      <div class="lb-card-top">
+        <span class="lb-rank">${i + 1}</span>
+        <span class="lb-sym">${s.symbol}</span>
+        <span class="lb-alpha" style="color:${alphaC}">${s.alpha_score.toFixed(0)}</span>
+      </div>
+      <div class="lb-card-sub">${s.company_name || ''}${s.sector ? ' · ' + s.sector : ''}</div>
+      <div class="lb-card-badges">${_verdictBadge(s.verdict)}${_regimeBadge(s.regime)}
+        <span class="lb-conv">${s.conviction.toFixed(0)}% conviction</span></div>
+      <div class="lb-dims">
+        ${d('Tech', dim(dims.technical?.score))}
+        ${d('Fund', dim(dims.fundamental?.score))}
+        ${d('Inst', dim(dims.institutional?.score))}
+        ${d('Sent', dim(dims.sentiment?.score))}
+        ${d('Risk', dim(dims.risk?.score))}
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // Never a silent truncation — say what is not shown (standard #7).
+  if (hiddenCount > 0) {
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center">
+      Showing top ${shown.length} of ${lb.length} ranked stocks</div>`;
+  }
+
+  html += '</div>';
   container.innerHTML = html;
 }
 
@@ -11835,25 +13708,25 @@ function renderResearchReport(container, r) {
 
   // ── Header ────────────────────────────────────────────────────────────
   let html = `<div class="card" style="margin-bottom:14px;border:1px solid ${_alphaColor(r.alpha_score)}33">
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
-      <div>
+    <div class="rr-head" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
+      <div class="rr-id">
         <div style="font-size:18px;font-weight:800;color:var(--text)">${r.symbol}</div>
-        <div style="font-size:12px;color:var(--muted)">${r.company_name||''} • ${r.sector_display||r.sector||''}</div>
+        <div class="rr-company" style="font-size:12px;color:var(--muted)">${r.company_name||''} • ${r.sector_display||r.sector||''}</div>
       </div>
-      <div style="text-align:center">
-        <div style="font-size:38px;font-weight:900;color:${_alphaColor(r.alpha_score)};line-height:1">${r.alpha_score.toFixed(0)}</div>
-        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Alpha Score</div>
+      <div class="rr-stat rr-stat-alpha" style="text-align:center">
+        <div class="rr-stat-val" style="font-size:38px;font-weight:900;color:${_alphaColor(r.alpha_score)};line-height:1">${r.alpha_score.toFixed(0)}</div>
+        <div class="rr-stat-lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Alpha Score</div>
       </div>
-      <div style="text-align:center">
-        <div style="font-size:20px;font-weight:700;color:var(--text)">${r.conviction.toFixed(0)}%</div>
-        <div style="font-size:10px;color:var(--muted)">Conviction</div>
+      <div class="rr-stat" style="text-align:center">
+        <div class="rr-stat-val" style="font-size:20px;font-weight:700;color:var(--text)">${r.conviction.toFixed(0)}%</div>
+        <div class="rr-stat-lbl" style="font-size:10px;color:var(--muted)">Conviction</div>
       </div>
-      <div>${_verdictBadge(v)}</div>
-      <div>${_regimeBadge(r.regime)}</div>
-      <div style="font-size:11px;color:var(--muted)">Confidence: <b style="color:var(--text)">${v.confidence||'—'}</b></div>
-      <div style="font-size:11px;color:var(--muted)">Risk: <b style="color:var(--text)">${(v.risk_label||'—').replace(/_/g,' ')}</b></div>
-      <div style="flex:1"></div>
-      <button class="btn btn-secondary" style="font-size:11px" onclick="runResearchRefresh('${r.symbol}')">Refresh</button>
+      <div class="rr-badge">${_verdictBadge(v)}</div>
+      <div class="rr-badge">${_regimeBadge(r.regime)}</div>
+      <div class="rr-meta" style="font-size:11px;color:var(--muted)">Confidence: <b style="color:var(--text)">${v.confidence||'—'}</b></div>
+      <div class="rr-meta" style="font-size:11px;color:var(--muted)">Risk: <b style="color:var(--text)">${(v.risk_label||'—').replace(/_/g,' ')}</b></div>
+      <div class="rr-spacer" style="flex:1"></div>
+      <button class="btn btn-secondary rr-refresh" style="font-size:11px" onclick="runResearchRefresh('${r.symbol}')">Refresh</button>
     </div>
 
     <!-- Five dimension bars -->
@@ -11891,18 +13764,25 @@ function renderResearchReport(container, r) {
       // single-line badges floated relative to where the wrapped text
       // *started* rather than lining up with it. flex-start pins every badge
       // to the top of the row regardless of how many lines the text wraps to.
-      html += `<div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:12px">
-        <span style="background:${impactC}15;color:${impactC};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;flex-shrink:0">${c.impact}</span>
-        <span style="color:var(--muted);font-size:11px;width:70px;flex-shrink:0">${c.type}</span>
-        <span style="color:var(--text);flex:1">${c.catalyst}</span>
-        <span style="color:var(--muted);font-size:11px;flex-shrink:0">${c.timeframe||''}</span>
+      html += `<div class="rr-cat" style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:12px">
+        <span class="rr-cat-impact" style="background:${impactC}15;color:${impactC};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;flex-shrink:0">${c.impact}</span>
+        <span class="rr-cat-type" style="color:var(--muted);font-size:11px;width:70px;flex-shrink:0">${c.type}</span>
+        <span class="rr-cat-text" style="color:var(--text);flex:1">${c.catalyst}</span>
+        <span class="rr-cat-time" style="color:var(--muted);font-size:11px;flex-shrink:0">${c.timeframe||''}</span>
       </div>`;
     });
     html += '</div>';
   }
 
   // ── Dimension breakdowns (3x2 grid) ──────────────────────────────────
-  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:14px">';
+  // minmax(320px, ...) alone is a hard floor: a grid track never shrinks below
+  // its own minimum, so on a 320px phone (292px of usable width after the
+  // container's 14px gutters) each of the six cards rendered 320px wide and
+  // was clipped 28px past the container's right edge — measured. min(320px,
+  // 100%) keeps the desktop behaviour identical (100% is far wider than 320px
+  // there, so the floor stays 320px and cards still tile two-up) while letting
+  // the track collapse to the container on a narrow screen.
+  html += '<div class="rr-dims" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px;margin-bottom:14px">';
 
   // Technical
   const tf = tech.factors || {};
@@ -12098,23 +13978,29 @@ async function loadPaperTradingStatus() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
         
-        const response = await fetch('/api/live-prices', {
+        // Via api() so it carries X-Device-Token. /api/live-prices is a POST,
+        // and the server's before_request guard rejects every non-GET without
+        // that header — so the raw fetch that used to be here 401'd on every
+        // call, permanently, not just before unlock. Symptom was the trade
+        // list rendering with "0 priced symbols". Same bug already fixed at
+        // the two call sites noted above; this one was missed.
+        //
+        // api() returns parsed JSON and THROWS on a non-2xx (with .status),
+        // rather than handing back a Response — so there is no response.ok
+        // to branch on here; a failure lands in the catch below, which
+        // already falls back to per-symbol fetches.
+        const data = await api('/api/live-prices', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ symbols: symbols }),
-          signal: controller.signal
+          signal: controller.signal,
         });
-        
+
         clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          const data = await response.json();
-          livePrices = data.prices || {};
-          priceSources = data.sources || {};
-          console.log('Latest prices fetched:', livePrices, priceSources);
-        } else {
-          console.log('Batch price fetch returned status:', response.status);
-        }
+
+        livePrices = data.prices || {};
+        priceSources = data.sources || {};
+        console.log('Latest prices fetched:', livePrices, priceSources);
       } catch (e) {
         console.log('Batch price fetch failed, trying individual fetches:', e.message);
         
@@ -12161,18 +14047,17 @@ async function loadPaperTradingStatus() {
       try {
         console.log('Updating trailing stops with live prices...');
         
-        const updateResponse = await fetch('/api/update-trailing-stops', {
+        // Via api() for X-Device-Token — a raw fetch 401'd here, meaning
+        // trailing stops silently stopped being updated from live prices.
+        const updateData = await api('/api/update-trailing-stops', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({prices: livePrices})
         });
-        
-        if (updateResponse.ok) {
-          const updateData = await updateResponse.json();
-          console.log('Trailing stops updated for', updateData.updated, 'trades');
-          statusData = await api('/api/paper-trading/status');
-          trades = statusData.trades || trades;
-        }
+
+        console.log('Trailing stops updated for', updateData.updated, 'trades');
+        statusData = await api('/api/paper-trading/status');
+        trades = statusData.trades || trades;
       } catch (e) {
         console.warn('Trailing stop update failed:', e.message);
       }
@@ -12321,6 +14206,24 @@ function displayTrades(trades, livePrices = {}, priceSources = {}) {
   displayTradesWithStats(trades, livePrices, priceSources);
 }
 
+// Which model placed a trade, shown under the symbol.
+//
+// The attribution was being written to both the DB and the tracker file all
+// along, but was dropped twice on the way out (TradeJournalEntry.to_dict and
+// the whitelist in _normalize_tracker_trade), so every filled trade looked
+// like it came from nowhere. An UNTAGGED badge is deliberate rather than a
+// blank: a trade whose origin is genuinely unknown must look different from
+// one that simply hasn't loaded.
+function _modelBadge(src) {
+  if (!src) {
+    return `<br><small style="font-size:10px;color:var(--muted)"
+      title="No model recorded for this trade — placed before attribution existed, or by a path that does not tag it">UNTAGGED</small>`;
+  }
+  const short = src === 'GradientBoosting' ? 'GBC' : src === 'XGBoost' ? 'XGB' : src;
+  const col = src === 'XGBoost' ? 'var(--accent, #8b5cf6)' : 'var(--muted)';
+  return `<br><small style="font-size:10px;color:${col}" title="Placed by the ${src} model">${short}</small>`;
+}
+
 function displayPaperTrades(trades, livePrices = {}, priceSources = {}) {
   try {
     const tbody = document.getElementById('paper-trades-body');
@@ -12448,16 +14351,16 @@ function displayPaperTrades(trades, livePrices = {}, priceSources = {}) {
     }
     
     return `<tr style="background:rgba(16,185,129,0.05); cursor:pointer;" class="trade-row" data-entry-price="${entryPrice}" data-projected-exit="${t.projected_exit}" data-exit-price="${t.exit_price || ''}" data-symbol="${t.symbol}" data-signal="${tradeSignal}" data-entry-time="${entryTime}" data-profit-pct="${displayPnL}">
-      <td><strong>${t.symbol}</strong></td>
-      <td><span class="signal-${tradeSignal.toLowerCase()}">${tradeSignal}</span>${directionHint ? `<br><small style="font-size:10px;color:var(--muted)">${directionHint}</small>` : ''}</td>
-      <td>${qty}</td>
-      <td>₹${entryPrice.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${entryTime}</small></td>
-      <td>${formatMoney(positionValue, 2)}</td>
-      <td>₹${projExit.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '+' : ''}${profitTarget.toFixed(1)}%</small></td>
-      <td>${slDisplay}</td>
-      <td>${hasCurrentPrice ? '<strong style="color:var(--green)">₹' + currentPrice.toFixed(2) + '</strong><br><small style="color:' + priceSourceColor + '">' + priceSourceLabel + '</small>' : '-'}</td>
-      <td><span style="color:${pnlColor}; font-weight:700; font-size:11px;line-height:1.6">${pnlDisplay}</span></td>
-      <td><span style="padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;background:${statusColor}22;color:${statusColor}">${t.status}</span></td>
+      <td data-cell="symbol"><strong>${t.symbol}</strong>${_modelBadge(t.model_source)}</td>
+      <td data-cell="signal"><span class="signal-${tradeSignal.toLowerCase()}">${tradeSignal}</span>${directionHint ? `<br><small style="font-size:10px;color:var(--muted)">${directionHint}</small>` : ''}</td>
+      <td data-label="Qty">${qty}</td>
+      <td data-label="Entry">₹${entryPrice.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${entryTime}</small></td>
+      <td data-label="Value">${formatMoney(positionValue, 2)}</td>
+      <td data-label="Target">₹${projExit.toFixed(2)}<br><small style="color:var(--muted);font-size:11px">${profitTarget > 0 ? '+' : ''}${profitTarget.toFixed(1)}%</small></td>
+      <td data-label="Stop">${slDisplay}</td>
+      <td data-label="Current">${hasCurrentPrice ? '<strong style="color:var(--green)">₹' + currentPrice.toFixed(2) + '</strong><br><small style="color:' + priceSourceColor + '">' + priceSourceLabel + '</small>' : '-'}</td>
+      <td data-cell="pnl" data-label="P&L"><span style="color:${pnlColor}; font-weight:700; font-size:11px;line-height:1.6">${pnlDisplay}</span></td>
+      <td data-cell="status"><span style="padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;background:${statusColor}22;color:${statusColor}">${t.status}</span></td>
     </tr>`;
   }).join('');
   
@@ -12528,22 +14431,21 @@ async function getLivePrices(symbols) {
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       
       console.log('Fetching from /api/live-prices...');
-      const response = await fetch('/api/live-prices', {
+      // Via api() for X-Device-Token — see the note on the other
+      // /api/live-prices call site. api() returns parsed JSON and throws on
+      // non-2xx, so a failure lands in the catch below, which already falls
+      // back to per-symbol fetches.
+      const data = await api('/api/live-prices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbols: symbols }),
         signal: controller.signal
       });
-      
+
       clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Batch fetch successful, prices:', data.prices);
-        return data.prices || {};
-      } else {
-        console.log('Batch fetch failed with status:', response.status);
-      }
+
+      console.log('Batch fetch successful, prices:', data.prices);
+      return data.prices || {};
     } catch (e) {
       console.log('Batch price fetch error:', e.message);
     }
@@ -12601,7 +14503,13 @@ async function manualCloseTrade(tradeId, symbol, entryPrice, signal) {
     // Call backend to close the trade. The key is per-trade, so a retry after a
     // lost response replays the close instead of booking it twice.
     const intent = 'close-trade:' + tradeId;
-    const response = await fetch('/api/close-trade', {
+    // Via api(): a raw fetch here omitted X-Device-Token, so the server's
+    // non-GET guard 401'd every manual close. api() adds the token and
+    // preserves the Idempotency-Key header (it spreads opts.headers), and
+    // its contract — throw on non-2xx, never retire a key on a thrown
+    // error — is exactly what this money path needs: a failed close leaves
+    // the key intact so a retry replays rather than double-books.
+    const data = await api('/api/close-trade', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -12613,8 +14521,6 @@ async function manualCloseTrade(tradeId, symbol, entryPrice, signal) {
         exit_price: currentPrice
       })
     });
-
-    const data = await response.json();
 
     if (data.success) {
       clearOrderKey(intent);   // confirmed closed — a later close is a new intent
@@ -15114,18 +17020,116 @@ document.addEventListener('DOMContentLoaded', function() {
   updateMarketHoursBadge();
   setInterval(updateMarketHoursBadge, 60000);
   
-  // Auto-refresh paper trades every 5 seconds ONLY during market hours (9 AM - 4 PM)
-  // Only if previous request completed
+  // ── Paper Trader live refresh ───────────────────────────────────────────
+  //
+  // Split into two cadences on purpose. loadPaperTradingStatus() is not a
+  // read: it POSTs /api/update-trailing-stops and /api/auto-close/check, and
+  // the latter can CLOSE POSITIONS. Running that whole chain once a second
+  // would put five requests per second onto money paths to refresh a number
+  // on screen — so the fast loop does the read-only half only, and the write
+  // half keeps its original 5s cadence and its original market-hours gate.
+  //
+  // The previous guard did nothing: `isRefreshing` was set true and false
+  // synchronously around an un-awaited async call, so it was always false
+  // again before the request finished and never actually prevented overlap.
+  // Both loops below await properly.
+
+  // FAST (1s): status + live prices + re-render. No writes.
+  let summaryBusy = false;
+  setInterval(async () => {
+    if (summaryBusy) return;
+    // Don't poll a tab nobody is looking at, or a backgrounded browser tab.
+    // Panels are shown via `.tab-panel.active` (CSS display:block) — testing
+    // for a `hidden` class instead would be permanently false and poll on
+    // every tab in the app.
+    const panel = document.getElementById('paper');
+    if (!panel || !panel.classList.contains('active') || document.hidden) return;
+    // Outside market hours there are no new quotes to fetch — prices are
+    // frozen at the close — so this was spending broker requests all night
+    // to re-render identical numbers. Opening the tab still does a one-off
+    // load via activateTab(), so the cards are current whenever you look at
+    // them; only the repeating poll stops.
+    //
+    // isMarketHours() reads the BROWSER's local clock, not IST. That is
+    // correct on this machine and would be wrong from another timezone —
+    // acceptable here because the failure mode is a poll that doesn't run,
+    // not a trade that does.
+    if (!isMarketHours()) return;
+    summaryBusy = true;
+    try {
+      await refreshPaperSummaryLive();
+    } catch (e) {
+      // Silent: a transient failure will be retried a second later, and a
+      // toast every second would be worse than the failure.
+    } finally {
+      summaryBusy = false;
+    }
+  // 1000ms. Briefly raised to 2500 while chasing a FYERS HTTP 429, but that
+  // block turned out not to be caused by this poll: fyers_market_data_provider
+  // already had a 2s quote cache, so consecutive ticks inside that window
+  // cost no network call at all. The real gaps were the missing 429 backoff
+  // and rate limiter, both now in fyers_client — a 429 opens a shared
+  // cooldown instead of every caller retrying straight into the limit.
+  //
+  // Still gated on isMarketHours() below, so this does not run overnight.
+  }, 1000);
+
+  // SLOW (5s): the full chain including trailing-stop and auto-close writes.
   let isRefreshing = false;
-  setInterval(() => {
-    if (isMarketHours() && !isRefreshing) {
-      isRefreshing = true;
-      loadPaperTradingStatus();
-      // refreshPnLChart();  // DISABLED: Causing browser lag, will refresh manually when P&L tab clicked
+  setInterval(async () => {
+    if (isRefreshing || !isMarketHours()) return;
+    isRefreshing = true;
+    try {
+      await loadPaperTradingStatus();
+    } catch (e) {
+      // loadPaperTradingStatus already logs; don't double-report.
+    } finally {
       isRefreshing = false;
     }
-  }, 5000);  // Changed from 15000ms to 5000ms for real-time updates
+  }, 5000);
 });
+
+// Read-only refresh of the Paper Trader's live numbers.
+//
+// Deliberately does NOT call update-trailing-stops or auto-close/check —
+// those mutate trade state and belong on the slower loop. Everything here is
+// a read, so it is safe to run once a second.
+//
+// Rendering goes through displayTrades() rather than poking the card elements
+// directly, so the summary cards, the position rows and the P&L maths all
+// stay computed in exactly one place.
+async function refreshPaperSummaryLive() {
+  const statusData = await api('/api/paper-trading/status');
+  const trades = statusData.trades || [];
+
+  let livePrices = {};
+  let priceSources = {};
+  const symbols = [...new Set(
+    trades.filter(t => t.status === 'OPEN').map(t => t.symbol).filter(Boolean)
+  )];
+
+  if (symbols.length) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const data = await api('/api/live-prices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      livePrices = data.prices || {};
+      priceSources = data.sources || {};
+    } catch (e) {
+      // Prices unavailable this tick — still re-render so counts, status and
+      // realized P&L update. Unpriced rows keep showing "-" for current price
+      // rather than a stale number presented as live.
+    }
+  }
+
+  displayTrades(trades, livePrices, priceSources);
+}
 
 // ── P&L Chart Functions ──────────────────────────
 

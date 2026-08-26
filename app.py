@@ -283,6 +283,26 @@ def unlock():
     return jsonify({"success": True, "token": APP_DEVICE_TOKEN})
 
 
+@app.route("/api/session/verify", methods=["POST"])
+def session_verify():
+    """
+    Confirm this session's device token is still accepted by THIS process.
+
+    Deliberately a POST so it passes through _block_cross_origin_mutations —
+    an absent or stale token 401s here exactly as it would on a real call.
+
+    Why this exists: APP_DEVICE_TOKEN is per-process, so restarting the
+    backend silently invalidates every token already in a browser's
+    sessionStorage. The dashboard's boot check could only see that a token
+    was PRESENT, not that it was VALID, so a stale one passed, the lock
+    screen hid, and the first burst of pollers all 401'd — which reads to the
+    user as a broken backend rather than an expired session.
+
+    No side effects: reaching the handler body IS the answer.
+    """
+    return jsonify({"valid": True})
+
+
 def _device_token_is_valid() -> bool:
     if not APP_DEVICE_TOKEN:
         return True   # not configured on this deployment — nothing to enforce
@@ -664,6 +684,31 @@ try:
                 set_config(key, val, desc)
     except Exception as e:
         logger.warning("⚠️  Prediction weights seed failed (non-fatal): %s", e)
+    # Seed per-model cash paper-trading capital caps.
+    #
+    # auto_trade() runs GradientBoosting and cash XGBoost as independent signal
+    # sources and tags each resulting trade with model_source, so each model can
+    # have its own pot. paper_trade_amount_limit stays as the account-wide
+    # ceiling across both — a trade must satisfy its model's cap AND that one.
+    # F&O is unaffected: it keeps using fno.capital / fno.used_capital.
+    try:
+        for key, val, desc in [
+            # Descriptions must stay under config_settings.description's
+            # varchar(200) — set_config swallows the truncation error and still
+            # logs success, so an over-long one silently never gets written.
+            ("paper.cap.gradientboosting", "50000",
+             "Rupees the cash GradientBoosting model may hold across all its open paper "
+             "positions. 0 = unlimited. New trades are sized from what is left, so a bigger "
+             "cap means larger positions."),
+            ("paper.cap.xgboost", "50000",
+             "Rupees the cash XGBoost model may hold across all its open paper positions. "
+             "0 = unlimited. Applies only when XGB live trading is on; otherwise the model "
+             "is evaluation-only."),
+        ]:
+            if get_config(key) is None:
+                set_config(key, val, desc)
+    except Exception as e:
+        logger.warning("⚠️  Per-model capital caps seed failed (non-fatal): %s", e)
     # Seed F&O capital config — sync from actual Groww account
     try:
         if get_config("fno.used_capital") is None:
@@ -1906,6 +1951,154 @@ def risk_parameters():
     return jsonify({"groups": groups, "editable": False})
 
 
+# ── FYERS coverage cache ─────────────────────────────────────────────────────
+# See the note at its call site in data_health() for the profiling that
+# forced this. Module-level so it survives across requests; the endpoint is
+# read-only and a slightly stale coverage number is harmless, whereas a
+# 190-second request is not.
+_FY_COVERAGE_TTL = 300
+_fy_coverage_cache = {"at": 0.0, "counts": None}
+
+
+def _fyers_coverage_cached(session, force=False):
+    """
+    {resolution: symbols_with_data} for the watchlist + indices.
+
+    EXISTS-per-symbol against the (symbol, resolution, ts) index rather than
+    count(DISTINCT symbol) over ~60M rows, plus a ts bound so Postgres can
+    prune partitions. Cached for _FY_COVERAGE_TTL seconds.
+    """
+    from sqlalchemy import text as _t
+    now = time.time()
+    if not force and _fy_coverage_cache["counts"] is not None \
+            and now - _fy_coverage_cache["at"] < _FY_COVERAGE_TTL:
+        return _fy_coverage_cache["counts"]
+
+    sql = _t("""
+        SELECT count(*) FROM (
+            SELECT DISTINCT symbol FROM stock_prices
+            UNION SELECT unnest(ARRAY['NIFTY','BANKNIFTY','FINNIFTY'])
+        ) w
+        WHERE EXISTS (
+            SELECT 1 FROM fyers_candles f
+            WHERE f.symbol = w.symbol AND f.resolution = :res
+              AND f.ts >= now() - interval '400 days'
+            LIMIT 1
+        )
+    """)
+    counts = {}
+    for res in ("D", "1", "5S"):
+        try:
+            counts[res] = session.execute(sql, {"res": res}).scalar() or 0
+        except Exception as e:
+            logger.warning("fyers coverage query failed for %s: %s", res, e)
+            # Keep the previous value rather than reporting a false zero.
+            counts[res] = (_fy_coverage_cache["counts"] or {}).get(res, 0)
+
+    _fy_coverage_cache.update({"at": now, "counts": counts})
+    return counts
+
+
+@app.route("/api/self-healing")
+def self_healing_status():
+    """Recent auto-repair actions — the audit trail for what healed itself."""
+    try:
+        import self_healing
+        market_open, reason = self_healing._market_is_open()
+        return jsonify({
+            "market_open": market_open,
+            "market_reason": reason,
+            "backfill_locked": market_open,
+            "history": self_healing.history(limit=25),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "history": []}), 200
+
+
+@app.route("/api/self-healing/run", methods=["POST"])
+def self_healing_run():
+    """Trigger a healing pass on demand (same guardrails as the scheduled run)."""
+    try:
+        import self_healing
+        return jsonify(self_healing.run_all(dry_run=request.args.get("dry_run") == "1"))
+    except Exception as e:
+        logger.exception("manual self-healing run failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/fyers-token-status")
+def fyers_token_status():
+    """
+    FYERS access-token expiry, for the Data Coverage panel's token row.
+
+    FYERS tokens expire at a fixed 06:00 IST daily and their refresh-token
+    API is disabled for SEBI compliance (verified: code=-16), so renewal is
+    necessarily a human OAuth login. This endpoint gives the dashboard what
+    it needs to show a countdown and hand the user a one-click login link.
+    """
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    try:
+        import fyers_auth
+        exp = fyers_auth.token_expiry()
+        now = datetime.now(IST)
+        if exp is None:
+            return jsonify({
+                "valid": False, "expires_at": None, "seconds_remaining": 0,
+                "login_url": fyers_auth.get_login_url(),
+                "message": "No FYERS token — login required",
+            })
+        remaining = int((exp - now).total_seconds())
+        return jsonify({
+            "valid": remaining > 0,
+            "expires_at": exp.isoformat(),
+            "expires_at_human": exp.strftime("%d %b, %I:%M %p IST"),
+            "seconds_remaining": max(0, remaining),
+            "login_url": fyers_auth.get_login_url(),
+            "message": "Token active" if remaining > 0 else "Token expired — login required",
+        })
+    except Exception as e:
+        logger.exception("fyers token status failed")
+        return jsonify({"valid": False, "error": str(e), "seconds_remaining": 0}), 200
+
+
+@app.route("/fyers_callback")
+def fyers_callback():
+    """
+    OAuth redirect target for FYERS login — this is the redirect_uri
+    registered with the FYERS app, so the browser lands back here with the
+    auth_code and we complete the exchange server-side. That removes the
+    copy-paste step entirely: the user logs in (which SEBI requires a human
+    to do) and the token lands in .env automatically.
+    """
+    try:
+        auth_code = request.args.get("auth_code") or request.args.get("code")
+        if not auth_code:
+            return "<h3>FYERS login failed</h3><p>No auth_code in the redirect.</p>", 400
+
+        import fyers_auth
+        fyers_auth.complete_login(request.url)
+        exp = fyers_auth.token_expiry()
+        logger.info("FYERS token refreshed via dashboard login, valid until %s", exp)
+        return f"""
+        <html><head><title>FYERS Connected</title></head>
+        <body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px;background:#f5f5f7">
+          <div style="max-width:420px;margin:0 auto;background:#fff;border-radius:14px;padding:32px">
+            <div style="font-size:44px">&#9989;</div>
+            <h2 style="margin:12px 0 6px">FYERS connected</h2>
+            <p style="color:#666;font-size:14px;margin:0 0 20px">
+              Token valid until <b>{exp.strftime('%d %b, %I:%M %p IST') if exp else 'unknown'}</b>
+            </p>
+            <p style="color:#888;font-size:12px">You can close this tab and return to the dashboard.</p>
+          </div>
+          <script>setTimeout(function(){{ window.close(); }}, 2500);</script>
+        </body></html>
+        """, 200
+    except Exception as e:
+        logger.exception("FYERS callback failed")
+        return f"<h3>FYERS login failed</h3><pre>{e}</pre>", 500
+
+
 @app.route("/api/data-health")
 def data_health():
     """Coverage and completeness across every dataset the dashboard depends on.
@@ -2002,12 +2195,248 @@ def data_health():
                 "hint": "Weekends and market holidays add 2-3 days legitimately",
             })
 
+            # 6. Master ticker table — directory coverage, NOT a data-collection
+            # progress bar (see db_manager.MasterTicker docstring). Two
+            # independent sub-bars: FYERS coverage is a real completeness
+            # check (should sit near 100%, so it uses the same ok/warn/
+            # critical alarm scale as every other check here). Tijori
+            # coverage is NOT a completeness check — it only ever grows as
+            # stocks are added to Watchlist, so a low number is expected and
+            # normal, not a gap. Coloring it on the same red/yellow/green
+            # alarm scale would misrepresent it, so it's tagged "info" and
+            # deliberately excluded from the panel's issue count below.
+            from db_manager import MasterTicker
+            mt_active = s.query(func.count(MasterTicker.nse_ticker)).filter_by(is_active=True).scalar() or 0
+            mt_fyers_ok = s.query(func.count(MasterTicker.nse_ticker)).filter_by(
+                is_active=True, fyers_resolution_status="resolved").scalar() or 0
+            mt_tijori_ok = s.query(func.count(MasterTicker.nse_ticker)).filter_by(
+                is_active=True, tijori_resolution_status="resolved").scalar() or 0
+            mt_last_build = s.query(func.max(MasterTicker.updated_at)).scalar()
+            build_age_h = (datetime.utcnow() - mt_last_build).total_seconds() / 3600 if mt_last_build else None
+
+            fyers_pct = round(mt_fyers_ok / mt_active * 100, 1) if mt_active else 0.0
+            fyers_status = "ok" if fyers_pct >= 95 else ("warn" if fyers_pct >= 70 else "critical")
+            tijori_pct = round(mt_tijori_ok / mt_active * 100, 1) if mt_active else 0.0
+
+            checks.append({
+                "id": "master_ticker_table", "label": "Master Ticker Table",
+                # top-level fields mirror the FYERS sub-check, so this row
+                # still renders sensibly even without group-aware frontend code
+                "value": mt_fyers_ok, "total": mt_active, "pct": fyers_pct, "status": fyers_status,
+                "sub": [
+                    {"id": "master_ticker_fyers", "label": "FYERS", "value": mt_fyers_ok,
+                     "total": mt_active, "pct": fyers_pct, "status": fyers_status},
+                    {"id": "master_ticker_tijori", "label": "Tijori", "value": mt_tijori_ok,
+                     "total": mt_active, "pct": tijori_pct, "status": "info"},
+                ],
+                "detail": (f"Directory last refreshed {round(build_age_h, 1)} hour(s) ago"
+                           if build_age_h is not None else "Directory has never been built"),
+                "hint": "Run build_master_ticker_table.py to refresh. This is a directory build, "
+                        "not a price backfill — it does not download candles or subscribe to any feed.",
+            })
+
+            # 7. FYERS historical candle backfill — real per-resolution
+            # coverage of the Watchlist (stock_prices universe), derived
+            # live from fyers_candles. Only stocks actually added to
+            # Watchlist ever get backfilled (add_to_watchlist triggers it),
+            # so this is expected to climb gradually, not jump to 100%.
+            # Universe = tracked equities PLUS the index symbols that are
+            # backfilled for market-context/F&O. Counting only stock_prices
+            # in the denominator while counting every fyers_candles symbol in
+            # the numerator produced impossible ratios like 69/67 (=103%)
+            # once NIFTY/BANKNIFTY/FINNIFTY were backfilled — they have
+            # candles but are not equities and never appear in stock_prices.
+            # Hardcoded constant, not user input — safe to inline.
+            _IDX = "('NIFTY','BANKNIFTY','FINNIFTY')"
+            fy_equities = s.execute(_text("SELECT count(DISTINCT symbol) FROM stock_prices")).scalar() or 0
+            fy_universe = fy_equities + 3
+
+            # Per-resolution symbol coverage, cached.
+            #
+            # PROFILED: the previous `count(DISTINCT symbol) FROM fyers_candles
+            # WHERE resolution = ...` cost 45s / 27s / 119s for D / 5S / 1 —
+            # ~190s total, which is exactly why this endpoint timed out and
+            # the panel showed ERR_EMPTY_RESPONSE. fyers_candles is ~60M rows
+            # across 32 partitions, so a DISTINCT scan is inherently slow.
+            #
+            # Two changes: drive off the small watchlist and probe the
+            # (symbol, resolution, ts) index with EXISTS (stops at the first
+            # hit instead of scanning), and bound by ts so partition pruning
+            # applies. That got it to ~37s — still far too slow for an
+            # endpoint the dashboard polls every 1-5 seconds, hence the cache.
+            #
+            # Coverage only changes when a backfill runs, so a 5-minute TTL
+            # is far finer-grained than the thing it measures.
+            fy_counts = _fyers_coverage_cached(s)
+
+            def _fy_sub(label, val):
+                pct = round(val / fy_universe * 100, 1) if fy_universe else 0.0
+                return {"label": label, "value": val, "total": fy_universe, "pct": pct, "status": "info"}
+
+            checks.append({
+                "id": "fyers_candle_backfill", "label": "FYERS Historical Backfill",
+                "value": fy_counts["D"], "total": fy_universe,
+                "pct": round(fy_counts["D"] / fy_universe * 100, 1) if fy_universe else 0.0,
+                "status": "info",
+                "sub": [
+                    _fy_sub("Daily", fy_counts["D"]),
+                    _fy_sub("1-Minute", fy_counts["1"]),
+                    _fy_sub("5-Second", fy_counts["5S"]),
+                ],
+                "detail": "Runs only when a stock is added to Watchlist — not a background job",
+            })
+
+            # 8. ML model training — coverage AND freshness for both cash
+            # models plus F&O, since a model can exist on disk yet be months
+            # stale (which was true of every model before the FYERS
+            # migration) or be trained-but-degenerate (all-HOLD, no usable
+            # signal). Counting files alone would hide both failure modes.
+            import glob as _glob
+            # Equities only — NOT fy_universe. The backfill universe includes
+            # NIFTY/BANKNIFTY/FINNIFTY because those genuinely have candles,
+            # but they are indices and never get a cash model, so counting
+            # them here made the bars structurally unable to reach 100%
+            # (56/70 when the real ceiling was 56/67).
+            ml_universe = fy_equities or 0
+            _models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+            def _model_stats(pattern):
+                paths = [p for p in _glob.glob(pattern) if not p.endswith("xgb_backtester.joblib")]
+                if not paths:
+                    return 0, None
+                newest = max(os.path.getmtime(p) for p in paths)
+                age_h = (time.time() - newest) / 3600
+                return len(paths), age_h
+
+            # models/gbc_cash/ since the segregation; the legacy glob is kept
+            # as a fallback so a model that predates the move still counts.
+            gbc_n, gbc_age = _model_stats(os.path.join(_models_dir, "gbc_cash", "*.joblib"))
+            if gbc_n == 0:
+                gbc_n, gbc_age = _model_stats(os.path.join(_models_dir, "*.joblib"))
+            xgb_n, xgb_age = _model_stats(os.path.join(_models_dir, "xgb_cash", "*.joblib"))
+            fno_path = os.path.join(_models_dir, "xgb_backtester.joblib")
+            fno_exists = os.path.exists(fno_path)
+            fno_age = (time.time() - os.path.getmtime(fno_path)) / 3600 if fno_exists else None
+
+            # Live training progress (cross-process; see training_progress.py)
+            try:
+                import training_progress
+                _tp = training_progress.snapshot()
+            except Exception:
+                _tp = {}
+
+            def _eta_str(job):
+                r = _tp.get(job)
+                if not r or r.get("state") != "running":
+                    return None
+                eta = r.get("eta_seconds")
+                # Deliberately shows a percentage, not "16/73". The job's
+                # total comes from get_active_watchlist() while the bar's
+                # total is equities in stock_prices — two different universes,
+                # so printing both raw counts side by side (16/73 next to
+                # 56 of 67) reads as a contradiction. The percentage is
+                # unambiguous either way.
+                pct = r.get("pct", 0)
+                if eta is None:
+                    return f"training… {pct}%"
+                mins, secs = divmod(int(eta), 60)
+                left = f"{mins}m {secs}s" if mins else f"{secs}s"
+                return f"training {pct}% · ~{left} left"
+
+            def _ml_sub(label, n, age_h):
+                pct = round(n / ml_universe * 100, 1) if ml_universe else 0.0
+                # Stale = older than 48h; the retrain task runs every 24h, so
+                # anything past two cycles means retraining is not happening.
+                st = "info"
+                if n == 0:
+                    st = "warn"
+                elif age_h is not None and age_h > 48:
+                    st = "warn"
+                return {"label": label, "value": n, "total": ml_universe, "pct": pct, "status": st}
+
+            ml_subs = [
+                _ml_sub("Cash · GradientBoosting", gbc_n, gbc_age),
+                _ml_sub("Cash · XGBoost", xgb_n, xgb_age),
+            ]
+            # Attach live ETA to whichever sub-bar is currently training.
+            for _sub, _job in ((ml_subs[0], "cash_gbc"), (ml_subs[1], "cash_xgb")):
+                _e = _eta_str(_job)
+                if _e:
+                    _sub["eta"] = _e
+                    _sub["status"] = "info"
+
+            # F&O gets its own sub-bar now that it reports per-instrument
+            # progress, so it shows a real ETA like the cash models.
+            _fno = _tp.get("fno_xgb") or {}
+            _fno_running = _fno.get("state") == "running"
+            _fno_elapsed = _fno.get("elapsed_seconds", 0)
+            # When idle this used to report "1 of 1, 100%" merely because a
+            # model file existed — which rendered as 100% right next to
+            # "F&O XGB 137d ago". A bar claiming complete for an artifact
+            # four months stale is worse than no bar. Idle now reflects
+            # FRESHNESS (stale => 0% and warn), and only shows 100% when the
+            # model is actually current.
+            _fno_stale = (fno_age is None) or (fno_age > 48)
+            if _fno_running:
+                _fno_sub = {
+                    "label": "F&O · XGBoost",
+                    "value": _fno.get("done", 0), "total": _fno.get("total", 1),
+                    "pct": _fno.get("pct", 0.0), "status": "info",
+                }
+            else:
+                _fno_sub = {
+                    "label": "F&O · XGBoost",
+                    "value": 0 if _fno_stale else 1, "total": 1,
+                    "pct": 0.0 if _fno_stale else 100.0,
+                    "status": "warn" if _fno_stale else "info",
+                }
+            _fno_eta = _eta_str("fno_xgb")
+            if _fno_eta:
+                _fno_sub["eta"] = _fno_eta
+            ml_subs.append(_fno_sub)
+
+            # Tells the frontend to poll every second instead of every five
+            # while any training job is live.
+            _training_active = any(
+                (r or {}).get("state") == "running" for r in _tp.values()
+            )
+            ml_status = "warn" if any(s["status"] == "warn" for s in ml_subs) else "ok"
+
+            def _age_str(age_h):
+                if age_h is None:
+                    return "never trained"
+                if age_h < 1:
+                    return f"{int(age_h * 60)}m ago"
+                if age_h < 48:
+                    return f"{round(age_h, 1)}h ago"
+                return f"{int(age_h / 24)}d ago"
+
+            checks.append({
+                "id": "ml_model_training", "label": "ML Model Training",
+                "value": xgb_n, "total": ml_universe,
+                "pct": round(xgb_n / ml_universe * 100, 1) if ml_universe else 0.0,
+                "status": ml_status,
+                "sub": ml_subs,
+                "detail": (
+                    f"GBC last trained {_age_str(gbc_age)} · "
+                    f"XGB last trained {_age_str(xgb_age)} · "
+                    f"F&O XGB {_age_str(fno_age)}"
+                    + (f" · F&O retraining now ({_fno_elapsed // 60}m {_fno_elapsed % 60}s elapsed)"
+                       if _fno_running else "")
+                ),
+                "hint": "Retrains daily. GBC serves live signals; XGB is evaluation-only "
+                        "until its backtest is available.",
+            })
+
         rank = {"ok": 0, "unknown": 1, "warn": 2, "critical": 3}
         worst = max((c["status"] for c in checks), key=lambda s_: rank.get(s_, 0), default="ok")
         return jsonify({
             "generated_at": datetime.utcnow().isoformat(),
             "overall_status": worst,
             "issues": sum(1 for c in checks if c["status"] in ("warn", "critical")),
+            # Lets the panel poll every second while training is live and
+            # drop back to 5s when idle, instead of hammering it always.
+            "training_active": bool(locals().get("_training_active", False)),
             "checks": checks,
         })
     except Exception as e:
@@ -2958,6 +3387,41 @@ def fno_backtest_run():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/cash/backtest/run", methods=["POST"])
+def cash_backtest_run():
+    """
+    Run a single CASH-equity backtest on a historical day.
+
+    Separate route from the F&O one on purpose: the F&O endpoint and its
+    module are left exactly as they are. This one trains walk-forward, so it
+    takes ~60s — the frontend must show a progress state, not a spinner.
+    """
+    try:
+        import cash_backtester
+        data = request.get_json(force=True) if request.is_json else {}
+        symbol = data.get("symbol") or data.get("instrument")
+        target_date = data.get("date")
+        model = (data.get("model") or "gbc").lower()
+        if model not in ("gbc", "xgb"):
+            return jsonify({"error": f"Unknown model '{model}'"}), 400
+        result = cash_backtester.run_cash_backtest(symbol, target_date, model=model)
+        return jsonify(result)
+    except Exception as e:
+        logger.exception("Cash backtest error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/cash/backtest/dates/<symbol>")
+def cash_backtest_dates(symbol):
+    """Sessions available for cash backtesting, newest first."""
+    try:
+        import cash_backtester
+        limit = min(int(request.args.get("limit", 60)), 250)
+        return jsonify(cash_backtester.get_available_dates(symbol, limit=limit))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/fno/backtest/dates/<instrument>")
 def fno_backtest_dates(instrument):
     """Get available dates for backtesting."""
@@ -3031,15 +3495,19 @@ def get_watchlist():
         conn = psycopg2.connect(db_url, connect_timeout=3)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get watchlist stocks with their price data summary AND latest price
+        # Get watchlist stocks with their price data summary AND latest price.
+        # Source: fyers_candles (daily) — now the market-data source. Same
+        # response shape as before (field names unchanged) so the frontend
+        # needs no changes.
         cursor.execute("""
             SELECT DISTINCT symbol,
                    COUNT(*) as price_candles,
-                   MIN(date) as earliest_date,
-                   MAX(date) as latest_date,
-                   (SELECT close FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price,
-                   (SELECT date FROM stock_prices WHERE symbol = sp.symbol ORDER BY date DESC LIMIT 1) as latest_price_date
-            FROM stock_prices sp
+                   MIN(ts)::date as earliest_date,
+                   MAX(ts)::date as latest_date,
+                   (SELECT close FROM fyers_candles WHERE symbol = fc.symbol AND resolution = 'D' ORDER BY ts DESC LIMIT 1) as latest_price,
+                   (SELECT ts::date FROM fyers_candles WHERE symbol = fc.symbol AND resolution = 'D' ORDER BY ts DESC LIMIT 1) as latest_price_date
+            FROM fyers_candles fc
+            WHERE resolution = 'D'
             GROUP BY symbol
             ORDER BY symbol
         """)
@@ -3069,133 +3537,190 @@ def get_watchlist():
 
 @app.route("/api/watchlist/add", methods=["POST"])
 def add_to_watchlist():
-    """Add a stock to watchlist and fetch its 5-year price data."""
+    """
+    Add a stock to watchlist and fetch its price data.
+
+    FYERS is now the market-data source (daily+1-min+5-sec historical ladder
+    into fyers_candles). The original Groww weekly-candle fetch into
+    stock_prices is disabled below, not deleted — see the comment block in
+    bg_fetch() for why, and what still depends on stock_prices being empty
+    for new adds until the dashboard is repointed to read fyers_candles.
+    """
     try:
         data = request.json or {}
         symbol = data.get("symbol", "").upper()
-        
+
         if not symbol:
             return jsonify({"error": "symbol required"}), 400
-        
+
         logger.info(f"Adding {symbol} to watchlist and fetching prices...")
-        
+
+        # Market-hours check, done BEFORE starting the thread so the HTTP
+        # response can report the deferral synchronously rather than the
+        # caller having to poll for it.
+        #
+        # backfill_symbol() is ~64 FYERS calls for one symbol (full daily +
+        # 1-min + 5-sec ladder). Running that during live trading competes
+        # with the prediction/trading path for the same FYERS rate limit.
+        # Every other backfill trigger in the codebase already defers to
+        # after close (self_healing's two healers, fyers_daily_topup); this
+        # endpoint was the one that did not.
+        try:
+            from fno_trader import _is_market_open
+            _mkt_open, _mkt_reason = _is_market_open()
+        except Exception as e:
+            # Fail toward NOT deferring: an unavailable market-hours check
+            # must not silently stop new symbols from being backfilled at
+            # all. Worst case we do what today's code already does.
+            logger.warning("market-hours check failed on watchlist-add, backfilling now: %s", e)
+            _mkt_open, _mkt_reason = False, "market-hours check unavailable"
+
         # Fetch prices in background
         import threading
-        from price_fetcher import fetch_historical_prices, store_prices_in_db
-        
+
         def bg_fetch():
+            # --- Groww weekly-candle fetch: DISABLED as of 2026-08-15 ---
+            # Migrated to FYERS (see the backfill block below, writes into
+            # fyers_candles instead). Left commented rather than deleted in
+            # case of rollback.
+            #
+            # Known consequence of disabling this: stock_prices no longer
+            # gets a row for newly-added symbols. That table is what the
+            # Watchlist-add polling UI checks for "did it finish", and what
+            # /api/prices, /api/watchlist/<symbol>/analysis, the scheduler,
+            # and the Tijori-trigger universe all read as "the watchlist".
+            # None of those have been repointed to fyers_candles yet — until
+            # they are, a newly-added stock's chart/analysis will be empty
+            # and the add-flow's polling will time out after 45s, even
+            # though the FYERS backfill below succeeded.
+            #
+            # from price_fetcher import fetch_historical_prices, store_prices_in_db
+            # try:
+            #     candles = fetch_historical_prices(symbol, years=5)
+            #     if candles:
+            #         stored = store_prices_in_db(symbol, candles)
+            #         logger.info(f"✓ Added {symbol} to watchlist with {stored} price records")
+            #     else:
+            #         logger.warning(f"No price data fetched for {symbol}")
+            # except Exception as e:
+            #     logger.error(f"Error fetching prices for {symbol}: {e}")
+
+            # Peer comparison / market intelligence — no longer gated behind
+            # the Groww fetch succeeding (it used to live inside `if candles:`
+            # above); runs unconditionally now that block is disabled.
             try:
-                candles = fetch_historical_prices(symbol, years=5)
-                if candles:
-                    stored = store_prices_in_db(symbol, candles)
-                    logger.info(f"✓ Added {symbol} to watchlist with {stored} price records")
-
-                    # Immediately collect peer comparison and other intelligence
-                    try:
-                        import market_intelligence as mi
-                        results = mi.collect_all_intelligence(symbol)
-                        logger.info(f"Intelligence collected for {symbol}: {results}")
-                    except Exception as e:
-                        logger.warning(f"Could not collect intelligence for {symbol}: {e}")
-
-                    # Collect Tijori supply-chain + fundamentals data (suppliers,
-                    # customers, ratios, forensics) — same auto-flow as prices
-                    try:
-                        import tijori_collector
-                        # Full onboarding for this one stock: its own page,
-                        # then match its suppliers/customers to NSE symbols,
-                        # then fetch those partners so their data exists too.
-                        tj = tijori_collector.onboard_symbol(symbol)
-                        logger.info(
-                            "Tijori onboarding for %s: company=%s, partners resolved=%s, partner data=%s",
-                            symbol,
-                            (tj.get("company") or {}).get("sections_ok"),
-                            (tj.get("resolve") or {}).get("resolved"),
-                            (tj.get("partner_data") or {}).get("collected"))
-                    except Exception as e:
-                        logger.warning(f"Could not collect Tijori data for {symbol}: {e}")
-                else:
-                    logger.warning(f"No price data fetched for {symbol}")
+                import market_intelligence as mi
+                results = mi.collect_all_intelligence(symbol)
+                logger.info(f"Intelligence collected for {symbol}: {results}")
             except Exception as e:
-                logger.error(f"Error fetching prices for {symbol}: {e}")
-        
+                logger.warning(f"Could not collect intelligence for {symbol}: {e}")
+
+            # Collect Tijori supply-chain + fundamentals data (suppliers,
+            # customers, ratios, forensics) — same auto-flow as before.
+            try:
+                import tijori_collector
+                # Full onboarding for this one stock: its own page,
+                # then match its suppliers/customers to NSE symbols,
+                # then fetch those partners so their data exists too.
+                tj = tijori_collector.onboard_symbol(symbol)
+                logger.info(
+                    "Tijori onboarding for %s: company=%s, partners resolved=%s, partner data=%s",
+                    symbol,
+                    (tj.get("company") or {}).get("sections_ok"),
+                    (tj.get("resolve") or {}).get("resolved"),
+                    (tj.get("partner_data") or {}).get("collected"))
+            except Exception as e:
+                logger.warning(f"Could not collect Tijori data for {symbol}: {e}")
+
+            # FYERS historical backfill (daily + 1-min + 5-sec) — now the
+            # market-data source. Writes into fyers_candles. Falls back
+            # silently (logs only) if this symbol has no resolved FYERS
+            # mapping in master_ticker_table.
+            backfill_ok = False
+            if _mkt_open:
+                # DEFERRED — do not backfill during live market hours.
+                # self_healing.check_missing_symbols() picks this up after
+                # close: the symbol is in `stocks` with is_active=true and has
+                # zero fyers_candles rows, which is exactly that healer's
+                # detection criterion (it reads the `stocks` watchlist, not
+                # the stale stock_prices table).
+                #
+                # Recorded into self-healing history immediately so the
+                # deferral is visible at /api/self-healing right away, rather
+                # than only appearing after the next hourly healer run.
+                logger.info("FYERS backfill DEFERRED for %s — market is open (%s); "
+                            "self-healing will backfill after close", symbol, _mkt_reason)
+                try:
+                    import self_healing
+                    self_healing._record(
+                        "missing_data", symbol, "skipped",
+                        f"backfill deferred — added while market open ({_mkt_reason}); "
+                        f"self-healing will backfill after close",
+                    )
+                except Exception as e:
+                    logger.debug("could not record deferral for %s: %s", symbol, e)
+            else:
+                try:
+                    import fyers_historical_backfill
+                    fy_result = fyers_historical_backfill.backfill_symbol(symbol)
+                    if fy_result.get("status") == "ok":
+                        backfill_ok = True
+                        logger.info("FYERS backfill for %s: %s", symbol, fy_result["resolutions"])
+                    else:
+                        logger.info("FYERS backfill skipped for %s: %s", symbol, fy_result.get("reason"))
+                except Exception as e:
+                    logger.warning(f"FYERS backfill failed for {symbol}: {e}")
+
+            # Train BOTH cash models for the new stock, strictly after the
+            # backfill above — training reads fyers_candles, so running it
+            # first would train on an empty table and persist a useless
+            # model. Skipped entirely if the backfill did not succeed, for
+            # the same reason.
+            if backfill_ok:
+                import bot
+                try:
+                    gbc = bot.train_model(symbol)
+                    logger.info("GradientBoosting training for %s: success=%s %s",
+                                symbol, gbc.get("success"), gbc.get("message", ""))
+                except Exception as e:
+                    logger.warning("GradientBoosting training failed for %s: %s", symbol, e)
+                try:
+                    # Native FYERS 1-minute data, naive-IST — same path the
+                    # existing XGB models were trained on.
+                    xgb = bot.train_xgb_model(symbol)
+                    logger.info("XGBoost training for %s: success=%s rows=%s %s",
+                                symbol, xgb.get("success"), xgb.get("rows"), xgb.get("message", ""))
+                except Exception as e:
+                    logger.warning("XGBoost training failed for %s: %s", symbol, e)
+            elif _mkt_open:
+                # Training reads fyers_candles, which is empty for this
+                # symbol until the deferred backfill runs. Deferring training
+                # too is required, not incidental — training now would fit a
+                # model on an empty table and persist a useless artifact.
+                logger.info("Model training DEFERRED for %s — awaiting post-close backfill", symbol)
+            else:
+                logger.warning("Skipping model training for %s — no FYERS data backfilled", symbol)
+
         thread = threading.Thread(target=bg_fetch, daemon=True)
         thread.start()
-        
+
         return jsonify({
             "success": True,
-            "message": f"Adding {symbol} to watchlist (fetching prices in background)",
-            "symbol": symbol
+            "message": (
+                f"Adding {symbol} to watchlist. Historical backfill deferred — "
+                f"market is open ({_mkt_reason}); it will run after close."
+                if _mkt_open else
+                f"Adding {symbol} to watchlist (fetching prices in background)"
+            ),
+            "symbol": symbol,
+            # "deferred_market_open" -> backfill + model training will happen
+            # after close via self_healing.check_missing_symbols().
+            # "running"             -> backfill started immediately.
+            "backfill_status": "deferred_market_open" if _mkt_open else "running",
+            "market_open": _mkt_open,
         })
     except Exception as e:
         logger.exception("Add to watchlist error")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/watchlist/sync-holdings", methods=["POST"])
-def sync_holdings_to_watchlist():
-    """Sync all Groww holdings into the watchlist (fetch prices for any missing)."""
-    try:
-        import psycopg2
-        from dotenv import load_dotenv
-        load_dotenv()
-        import threading
-        from price_fetcher import fetch_historical_prices, store_prices_in_db
-
-        # 1. Get holdings from Groww
-        holdings_resp = bot.get_holdings()
-        holdings = holdings_resp.get("holdings", []) if isinstance(holdings_resp, dict) else holdings_resp
-        if not holdings:
-            return jsonify({"error": "No holdings found in Groww account"}), 404
-
-        holding_symbols = set()
-        for h in holdings:
-            sym = h.get("trading_symbol") or h.get("tradingSymbol") or h.get("symbol") or ""
-            sym = sym.split("-")[0].upper()
-            if sym:
-                holding_symbols.add(sym)
-
-        if not holding_symbols:
-            return jsonify({"error": "Could not extract symbols from holdings"}), 500
-
-        # 2. Check which are already in DB
-        db_url = os.getenv("DB_URL")
-        conn = psycopg2.connect(db_url, connect_timeout=3)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM stock_prices")
-        existing = {row[0] for row in cursor.fetchall()}
-        cursor.close()
-        conn.close()
-
-        missing = holding_symbols - existing
-        already = holding_symbols & existing
-
-        # 3. Fetch prices for missing stocks in background
-        def bg_fetch_all(symbols):
-            for sym in symbols:
-                try:
-                    candles = fetch_historical_prices(sym, years=5)
-                    if candles:
-                        stored = store_prices_in_db(sym, candles)
-                        logger.info(f"✓ Synced {sym}: {stored} price records")
-                    else:
-                        logger.warning(f"No price data for {sym}")
-                except Exception as e:
-                    logger.error(f"Error syncing {sym}: {e}")
-
-        if missing:
-            thread = threading.Thread(target=bg_fetch_all, args=(sorted(missing),), daemon=True)
-            thread.start()
-
-        return jsonify({
-            "success": True,
-            "total_holdings": len(holding_symbols),
-            "already_tracked": sorted(already),
-            "newly_added": sorted(missing),
-            "message": f"{len(missing)} new stocks being added, {len(already)} already tracked"
-        })
-    except Exception as e:
-        logger.exception("Sync holdings error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -3224,7 +3749,13 @@ def remove_from_watchlist(symbol):
         
         # Delete peer comparison data
         cursor.execute("DELETE FROM peer_comparisons WHERE symbol = %s", (symbol,))
-        
+
+        # Delete FYERS historical candles (daily/1-min/5-sec), so removing a
+        # stock cleans up everything watchlist-add wrote for it, not just the
+        # Groww side. Was previously missing here — fyers_candles didn't
+        # exist yet when this endpoint was first written.
+        cursor.execute("DELETE FROM fyers_candles WHERE symbol = %s", (symbol,))
+
         conn.commit()
         
         deleted_count = cursor.rowcount
@@ -3245,57 +3776,6 @@ def remove_from_watchlist(symbol):
         logger.exception("Remove from watchlist error")
         return jsonify({"error": str(e)}), 500
 
-
-@app.route("/api/candles/refresh", methods=["POST"])
-def refresh_candles():
-    """Manually trigger candle sync for all watchlist stocks or specific symbol."""
-    try:
-        data = request.json or {}
-        symbol = data.get("symbol", "").upper() if data.get("symbol") else None
-        
-        import threading
-        import bot
-        from db_manager import get_db, get_all_stocks
-        
-        def sync_candles():
-            try:
-                if symbol:
-                    # Sync single symbol
-                    new_candles = bot.sync_candles_from_api(symbol)
-                    logger.info(f"✅ Manually synced {new_candles} candles for {symbol}")
-                    return {"symbol": symbol, "new_candles": new_candles}
-                else:
-                    # Sync all stocks
-                    db = get_db()
-                    stocks = get_all_stocks(db)
-                    symbols = [s.symbol for s in stocks if s.is_active]
-                    
-                    total_candles = 0
-                    for sym in symbols:
-                        try:
-                            new_candles = bot.sync_candles_from_api(sym)
-                            total_candles += new_candles
-                        except Exception as e:
-                            logger.debug(f"Failed to sync {sym}: {e}")
-                    
-                    logger.info(f"✅ Manually synced {total_candles} candles for {len(symbols)} stocks")
-                    return {"stocks_synced": len(symbols), "total_candles": total_candles}
-            except Exception as e:
-                logger.exception("Candle sync error")
-                raise
-        
-        # Run in background to avoid blocking
-        thread = threading.Thread(target=sync_candles, daemon=True)
-        thread.start()
-        
-        return jsonify({
-            "success": True,
-            "message": f"Started {'symbol ' + symbol if symbol else 'all watchlist'} candle refresh in background",
-            "symbol": symbol
-        })
-    except Exception as e:
-        logger.exception("Candle refresh endpoint error")
-        return jsonify({"error": str(e)}), 500
 
 
 # ── Watchlist notes (why I'm tracking this stock) ─────────────────────────
@@ -3399,18 +3879,27 @@ def _do_watchlist_analysis(symbol):
             try:
                 conn = psycopg2.connect(db_url, connect_timeout=3)
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
+                # Source: fyers_candles (daily), not stock_prices. Explicitly
+                # bounded to 5 years — the old stock_prices query had no date
+                # filter at all, but it only ever behaved like "5Y stats"
+                # because Groww's weekly-candle writer never stored more than
+                # 5 years. fyers_candles holds ~29 years of daily data, so
+                # without this bound every "5Y low/high/avg" label below
+                # would silently become an all-time label instead.
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         MIN(close) as min_price,
                         MAX(close) as max_price,
                         AVG(close) as avg_price,
-                        (SELECT close FROM stock_prices WHERE symbol = %s ORDER BY date DESC LIMIT 1) as current_price,
-                        (SELECT close FROM stock_prices WHERE symbol = %s ORDER BY date ASC LIMIT 1) as entry_price,
+                        (SELECT close FROM fyers_candles WHERE symbol = %s AND resolution = 'D'
+                            AND ts >= now() - interval '5 years' ORDER BY ts DESC LIMIT 1) as current_price,
+                        (SELECT close FROM fyers_candles WHERE symbol = %s AND resolution = 'D'
+                            AND ts >= now() - interval '5 years' ORDER BY ts ASC LIMIT 1) as entry_price,
                         COUNT(*) as total_candles,
-                        MIN(date) as earliest_date,
-                        MAX(date) as latest_date
-                    FROM stock_prices 
-                    WHERE symbol = %s
+                        MIN(ts)::date as earliest_date,
+                        MAX(ts)::date as latest_date
+                    FROM fyers_candles
+                    WHERE symbol = %s AND resolution = 'D' AND ts >= now() - interval '5 years'
                 """, (symbol, symbol, symbol))
                 analysis = cursor.fetchone()
                 cursor.close()
@@ -3596,28 +4085,32 @@ def _do_watchlist_analysis(symbol):
             periods = {
                 "1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365
             }
-            # One round-trip for all five look-back closes instead of five
+            # One round-trip for all five look-back closes instead of five.
+            # Source: fyers_candles (daily) — now true daily bars rather than
+            # Groww's weekly candles, so these look-backs are more precise
+            # than before (a "1W" change is now an actual week-old close,
+            # not up to 6 days off from a weekly bar boundary).
             cur2.execute("""
                 SELECT label, close FROM (
-                    (SELECT %s AS label, close, 1 AS ord FROM stock_prices
-                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '7 days'
-                        ORDER BY date DESC LIMIT 1)
+                    (SELECT %s AS label, close, 1 AS ord FROM fyers_candles
+                        WHERE symbol = %s AND resolution = 'D' AND ts::date <= CURRENT_DATE - INTERVAL '7 days'
+                        ORDER BY ts DESC LIMIT 1)
                   UNION ALL
-                    (SELECT %s, close, 2 FROM stock_prices
-                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '30 days'
-                        ORDER BY date DESC LIMIT 1)
+                    (SELECT %s, close, 2 FROM fyers_candles
+                        WHERE symbol = %s AND resolution = 'D' AND ts::date <= CURRENT_DATE - INTERVAL '30 days'
+                        ORDER BY ts DESC LIMIT 1)
                   UNION ALL
-                    (SELECT %s, close, 3 FROM stock_prices
-                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '90 days'
-                        ORDER BY date DESC LIMIT 1)
+                    (SELECT %s, close, 3 FROM fyers_candles
+                        WHERE symbol = %s AND resolution = 'D' AND ts::date <= CURRENT_DATE - INTERVAL '90 days'
+                        ORDER BY ts DESC LIMIT 1)
                   UNION ALL
-                    (SELECT %s, close, 4 FROM stock_prices
-                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '180 days'
-                        ORDER BY date DESC LIMIT 1)
+                    (SELECT %s, close, 4 FROM fyers_candles
+                        WHERE symbol = %s AND resolution = 'D' AND ts::date <= CURRENT_DATE - INTERVAL '180 days'
+                        ORDER BY ts DESC LIMIT 1)
                   UNION ALL
-                    (SELECT %s, close, 5 FROM stock_prices
-                        WHERE symbol = %s AND date <= CURRENT_DATE - INTERVAL '365 days'
-                        ORDER BY date DESC LIMIT 1)
+                    (SELECT %s, close, 5 FROM fyers_candles
+                        WHERE symbol = %s AND resolution = 'D' AND ts::date <= CURRENT_DATE - INTERVAL '365 days'
+                        ORDER BY ts DESC LIMIT 1)
                 ) t ORDER BY ord
             """, ("1W", symbol, "1M", symbol, "3M", symbol,
                   "6M", symbol, "1Y", symbol))
@@ -3629,8 +4122,8 @@ def _do_watchlist_analysis(symbol):
             # Also get recent high/low (last 30 days)
             cur2.execute("""
                 SELECT MIN(low) as recent_low, MAX(high) as recent_high, AVG(volume) as avg_vol
-                FROM stock_prices 
-                WHERE symbol = %s AND date >= CURRENT_DATE - INTERVAL '30 days'
+                FROM fyers_candles
+                WHERE symbol = %s AND resolution = 'D' AND ts >= CURRENT_DATE - INTERVAL '30 days'
             """, (symbol,))
             recent = cur2.fetchone()
             if recent:
@@ -4576,19 +5069,74 @@ def fetch_stock_prices():
 
 @app.route("/api/prices/<symbol>", methods=["GET"])
 def get_stock_prices(symbol):
-    """Get stored historical prices for a symbol."""
+    """
+    Get stored historical prices for a symbol.
+
+    Daily bars by default. `?period=1D` / `?period=1W` return INTRADAY bars
+    instead, aggregated on the fly from the stored 5-second candles — a
+    single trading day has 4,500 5-second bars, far too many to plot, so
+    they're bucketed server-side (1-minute for 1D, 15-minute for 1W) rather
+    than shipped raw. Only the last ~25 trading days have 5-second data
+    (FYERS's seconds retention window), which is exactly the range 1D/1W
+    ask for.
+    """
     try:
         import psycopg2
         from dotenv import load_dotenv
         load_dotenv()
-        
+
         db_url = os.getenv("DB_URL")
         if not db_url:
             return jsonify({"error": "Database not configured"}), 500
-        
+
         conn = psycopg2.connect(db_url, connect_timeout=3)
         cursor = conn.cursor()
-        
+
+        # ── Intraday (1D / 1W) ────────────────────────────────────────────
+        period = (request.args.get("period") or "").upper()
+        if period in ("1D", "1W"):
+            sym = symbol.upper()
+            # Bucket width and window are the only things that differ.
+            bucket_sql = (
+                "date_trunc('minute', ts)" if period == "1D" else
+                "date_trunc('hour', ts) + (floor(extract(minute from ts) / 15) * interval '15 minutes')"
+            )
+            # Anchor to the newest stored bar, not now() — after a weekend or
+            # holiday "the last day" is not today, and anchoring to now()
+            # would return an empty chart on every Saturday.
+            window_sql = (
+                "ts::date = (SELECT max(ts)::date FROM fyers_candles WHERE symbol = %s AND resolution = '5S')"
+                if period == "1D" else
+                "ts > (SELECT max(ts) FROM fyers_candles WHERE symbol = %s AND resolution = '5S') - interval '7 days'"
+            )
+            cursor.execute(f"""
+                SELECT {bucket_sql} AS bucket,
+                       (array_agg(open  ORDER BY ts ASC ))[1] AS open,
+                       MAX(high) AS high,
+                       MIN(low)  AS low,
+                       (array_agg(close ORDER BY ts DESC))[1] AS close,
+                       SUM(volume) AS volume
+                FROM fyers_candles
+                WHERE symbol = %s AND resolution = '5S' AND {window_sql}
+                GROUP BY bucket
+                ORDER BY bucket ASC
+            """, (sym, sym))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "symbol": symbol,
+                "intraday": True,
+                "period": period,
+                "prices": [
+                    {"date": r[0].isoformat(), "open": r[1], "high": r[2],
+                     "low": r[3], "close": r[4], "volume": int(r[5]) if r[5] is not None else None}
+                    for r in rows
+                ],
+                "count": len(rows),
+            })
+
+        # ── Daily (default) ───────────────────────────────────────────────
         # Full 5Y chart by default; ?days=N or ?limit=N trims the payload.
         # Newest N rows are selected, then re-sorted oldest-first for charting.
         try:
@@ -4600,27 +5148,30 @@ def get_stock_prices(symbol):
         except (TypeError, ValueError):
             limit = 0
 
+        # Source: fyers_candles (daily resolution), not stock_prices — FYERS
+        # is now the market-data source. ts::date aliased as "date" so the
+        # response shape (and the frontend consuming it) is unchanged.
         if days > 0:
             cursor.execute("""
-                SELECT date, open, high, low, close, volume
-                FROM stock_prices
-                WHERE symbol = %s AND date >= CURRENT_DATE - make_interval(days => %s)
-                ORDER BY date ASC
+                SELECT ts::date AS date, open, high, low, close, volume
+                FROM fyers_candles
+                WHERE symbol = %s AND resolution = 'D' AND ts >= CURRENT_DATE - make_interval(days => %s)
+                ORDER BY ts ASC
             """, (symbol.upper(), days))
         elif limit > 0:
             cursor.execute("""
                 SELECT date, open, high, low, close, volume FROM (
-                    SELECT date, open, high, low, close, volume
-                    FROM stock_prices WHERE symbol = %s
-                    ORDER BY date DESC LIMIT %s
+                    SELECT ts::date AS date, open, high, low, close, volume
+                    FROM fyers_candles WHERE symbol = %s AND resolution = 'D'
+                    ORDER BY ts DESC LIMIT %s
                 ) t ORDER BY date ASC
             """, (symbol.upper(), limit))
         else:
             cursor.execute("""
-                SELECT date, open, high, low, close, volume
-                FROM stock_prices
-                WHERE symbol = %s
-                ORDER BY date ASC
+                SELECT ts::date AS date, open, high, low, close, volume
+                FROM fyers_candles
+                WHERE symbol = %s AND resolution = 'D'
+                ORDER BY ts ASC
             """, (symbol.upper(),))
         
         rows = cursor.fetchall()
@@ -5006,8 +5557,14 @@ def get_trade_snapshot_candles(symbol, trade_date):
         start = datetime.combine(target_date, datetime.min.time())
         end = datetime.combine(target_date + timedelta(days=1), datetime.max.time())
         
-        # Query database for candles in this date range
-        candles_df = db.get_candles(symbol, days=None)  # Get all available
+        # Query database for candles in this date range.
+        # Source: fyers_candles (5-min bars, naive IST) via the shared adapter.
+        # Bounded to just past the target date rather than pulling all history:
+        # the legacy call passed days=None and filtered in pandas, which against
+        # fyers_candles would resample the symbol's entire multi-year history to
+        # answer a single-day question.
+        _days_back = max((datetime.now().date() - target_date).days + 2, 2)
+        candles_df = db.get_fyers_candles_as_5min(symbol, days=_days_back)
         if candles_df.empty:
             logger.debug(f"No candles for {symbol}")
             return jsonify({"candles": [], "symbol": symbol, "date": str(target_date)}), 200
@@ -5051,21 +5608,17 @@ def get_trade_snapshot_candles(symbol, trade_date):
 def build_daily_snapshots():
     """
     Build comprehensive end-of-day trading snapshots with full market data.
-    Fetches intraday candles from Groww API and overlays all trades on market charts.
-    Should be called after 4 PM to avoid interference with trading hours.
+    Fetches intraday candles from fyers_candles and overlays all trades on
+    market charts. Should be called after 4 PM to avoid interference with
+    trading hours.
     """
     import json
     from datetime import date, datetime, timedelta
-    
+
     try:
-        from growwapi import GrowwAPI
-        
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            return jsonify({"success": False, "error": "Groww token not configured"}), 500
-        
-        groww = GrowwAPI(token)
-        
+        from db_manager import CandleDatabase
+        _candle_db = CandleDatabase()
+
         trades_json_path = '/Users/parthsharma/Desktop/Grow/paper_trades.json'
         if not os.path.exists(trades_json_path):
             return jsonify({"success": False, "message": "No trades to snapshot"}), 404
@@ -5101,22 +5654,15 @@ def build_daily_snapshots():
         for symbol, symbol_trades in trades_by_symbol.items():
             try:
                 # Market hours: 9:15 AM to 3:30 PM (15:30)
-                start_time = f"{today_str} 09:15:00"
-                end_time = f"{today_str} 15:30:00"
-                
-                logger.info(f"Fetching {symbol} candles from {start_time} to {end_time}")
-                
-                resp = groww.get_historical_candle_data(
-                    trading_symbol=symbol,
-                    exchange='NSE',
-                    segment='CASH',
-                    start_time=start_time,
-                    end_time=end_time,
-                    interval_in_minutes=5  # 5-minute candles (Groww doesn't support 1-minute)
-                )
-                
-                candles_raw = resp.get("candles", [])
-                if not candles_raw:
+                logger.info(f"Fetching {symbol} candles for {today_str} (09:15-15:30)")
+
+                # Source: fyers_candles, 5-minute bars, naive IST. days=2
+                # covers "today" with a day of slack for a late EOD run.
+                df = _candle_db.get_fyers_candles_as_5min(symbol, days=2)
+                if not df.empty:
+                    df = df[df["datetime"].dt.strftime("%Y-%m-%d") == today_str]
+
+                if df.empty:
                     logger.warning(f"No candles returned for {symbol}")
                     snapshots[symbol] = {
                         "trades": symbol_trades,
@@ -5124,19 +5670,20 @@ def build_daily_snapshots():
                         "error": "No market data available"
                     }
                     continue
-                
-                # Format candles for chart
-                formatted_candles = []
-                for candle in candles_raw:
-                    if len(candle) >= 6:
-                        formatted_candles.append({
-                            "time": candle[0],  # ISO timestamp
-                            "o": float(candle[1]),  # open
-                            "h": float(candle[2]),  # high
-                            "l": float(candle[3]),  # low
-                            "c": float(candle[4]),  # close
-                            "v": int(candle[5]) if len(candle) > 5 else 0  # volume
-                        })
+
+                # Format candles for chart. `time` stays a full timestamp
+                # string, matching what this route returned previously.
+                formatted_candles = [
+                    {
+                        "time": row.datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                        "o": float(row.open),
+                        "h": float(row.high),
+                        "l": float(row.low),
+                        "c": float(row.close),
+                        "v": int(row.volume) if row.volume else 0,
+                    }
+                    for row in df.itertuples()
+                ]
                 
                 # Store snapshot with trades and candles
                 snapshots[symbol] = {
@@ -5189,15 +5736,9 @@ def build_daily_snapshots_with_candles():
     from datetime import date, datetime, timedelta
     
     try:
-        from growwapi import GrowwAPI
-        from db_manager import get_db, IntradayCandle
-        
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            return jsonify({"success": False, "error": "Groww token not configured"}), 500
-        
-        groww = GrowwAPI(token)
-        
+        from db_manager import get_db, IntradayCandle, CandleDatabase
+        _candle_db = CandleDatabase()
+
         # Get DB session for storing candles
         try:
             db_inst = get_db(DB_URL)
@@ -5290,39 +5831,17 @@ def build_daily_snapshots_with_candles():
                         continue  # Skip to next symbol
                 
                 # Market hours: 9:15 AM to 3:30 PM (15:30)
-                start_time = f"{today_str} 09:15:00"
-                end_time = f"{today_str} 15:30:00"
-                
-                logger.info(f"Fetching FRESH 1-minute candles for {symbol} from {start_time} to {end_time}")
-                
-                # Try 5-minute candles first (Groww doesn't support 1-minute)
-                resp = groww.get_historical_candle_data(
-                    trading_symbol=symbol,
-                    exchange='NSE',
-                    segment='CASH',
-                    start_time=start_time,
-                    end_time=end_time,
-                    interval_in_minutes=5  # 5-minute is the finest granularity Groww supports
-                )
-                
-                candles_raw = resp.get("candles", [])
+                logger.info(f"Fetching FRESH 5-minute candles for {symbol} on {today_str}")
+
+                # Source: fyers_candles. The old hourly fallback is gone —
+                # it existed because Groww's 5-minute coverage was patchy
+                # per-symbol; fyers_candles is uniformly 5-minute.
+                df = _candle_db.get_fyers_candles_as_5min(symbol, days=2)
+                if not df.empty:
+                    df = df[df["datetime"].dt.strftime("%Y-%m-%d") == today_str]
                 interval = "5min"
-                
-                # Fallback to hourly if 5-minute unavailable
-                if not candles_raw or len(candles_raw) < 10:
-                    logger.info(f"Fallback: Fetching hourly candles for {symbol}")
-                    resp = groww.get_historical_candle_data(
-                        trading_symbol=symbol,
-                        exchange='NSE',
-                        segment='CASH',
-                        start_time=start_time,
-                        end_time=end_time,
-                        interval_in_minutes=60
-                    )
-                    candles_raw = resp.get("candles", [])
-                    interval = "60min"
-                
-                if not candles_raw:
+
+                if df.empty:
                     logger.warning(f"No candles available for {symbol}")
                     snapshots[symbol] = {
                         "trades": symbol_trades,
@@ -5330,53 +5849,37 @@ def build_daily_snapshots_with_candles():
                         "error": "No market data available"
                     }
                     continue
-                
+
                 # Format candles and store in database
                 formatted_candles = []
                 candles_to_save = []
-                
-                from datetime import datetime as dt
-                for candle in candles_raw:
-                    if len(candle) >= 6:
+
+                for row in df.itertuples():
                         try:
-                            unix_ts = candle[0]
-                            
-                            # Convert unix timestamp to HH:MM:SS
-                            if isinstance(unix_ts, (int, float)):
-                                time_obj = dt.fromtimestamp(unix_ts)
-                                time_part = time_obj.strftime("%H:%M:%S")
-                            else:
-                                # Fallback: assume it's already a string with timestamp
-                                if ' ' in str(unix_ts):
-                                    time_part = str(unix_ts).split(' ')[1]
-                                else:
-                                    time_part = str(unix_ts)
-                            
-                            # Remove seconds if present
-                            if time_part.count(':') > 1:
-                                time_part = ':'.join(time_part.split(':')[:2])
-                            
+                            # HH:MM, matching what this route stored before
+                            time_part = row.datetime.strftime("%H:%M")
+
                             candle_dict = {
                                 "time": time_part,
-                                "o": float(candle[1]),  # open
-                                "h": float(candle[2]),  # high
-                                "l": float(candle[3]),  # low
-                                "c": float(candle[4]),  # close
-                                "v": int(candle[5]) if len(candle) > 5 else 0  # volume
+                                "o": float(row.open),
+                                "h": float(row.high),
+                                "l": float(row.low),
+                                "c": float(row.close),
+                                "v": int(row.volume) if row.volume else 0,
                             }
                             formatted_candles.append(candle_dict)
-                            
+
                             # Create DB object
                             if session:
                                 candles_to_save.append(IntradayCandle(
                                     symbol=symbol,
                                     trading_date=today_str,
                                     time=time_part,
-                                    open=float(candle[1]),
-                                    high=float(candle[2]),
-                                    low=float(candle[3]),
-                                    close=float(candle[4]),
-                                    volume=int(candle[5]) if len(candle) > 5 else 0,
+                                    open=float(row.open),
+                                    high=float(row.high),
+                                    low=float(row.low),
+                                    close=float(row.close),
+                                    volume=int(row.volume) if row.volume else 0,
                                     interval=interval,
                                     created_at=datetime.utcnow()
                                 ))
@@ -5448,67 +5951,40 @@ def build_daily_snapshots_with_candles():
             if index_symbol not in trades_by_symbol:
                 try:
                     logger.info(f"Fetching fresh index data for {index_symbol}...")
-                    start_time = f"{today_str} 09:15:00"
-                    end_time = f"{today_str} 15:30:00"
-                    
-                    # Try 5-minute candles for indices (Groww doesn't support 1-minute)
-                    resp = groww.get_historical_candle_data(
-                        trading_symbol=index_symbol,
-                        exchange='NSE',
-                        segment='CASH',
-                        start_time=start_time,
-                        end_time=end_time,
-                        interval_in_minutes=5
-                    )
-                    
-                    candles_raw = resp.get("candles", [])
+
+                    # Source: fyers_candles. NOTE: the indices are only
+                    # present here once they've been backfilled — they were
+                    # not part of the equity watchlist backfill, so this
+                    # logs and skips rather than silently writing nothing.
+                    index_df = _candle_db.get_fyers_candles_as_5min(index_symbol, days=2)
+                    if not index_df.empty:
+                        index_df = index_df[index_df["datetime"].dt.strftime("%Y-%m-%d") == today_str]
                     index_interval = "5min"
-                    
-                    # Fallback to hourly if insufficient
-                    if not candles_raw or len(candles_raw) < 10:
-                        resp = groww.get_historical_candle_data(
-                            trading_symbol=index_symbol,
-                            exchange='NSE',
-                            segment='CASH',
-                            start_time=start_time,
-                            end_time=end_time,
-                            interval_in_minutes=60
+
+                    if index_df.empty:
+                        logger.warning(
+                            "No fyers_candles data for index %s — skipping (needs backfill)", index_symbol
                         )
-                        candles_raw = resp.get("candles", [])
-                        index_interval = "60min"
-                    
-                    if candles_raw and session:
+
+                    if not index_df.empty and session:
                         # Save to DB (replace old data for today)
                         session.query(IntradayCandle).filter(
                             IntradayCandle.symbol == index_symbol,
                             IntradayCandle.trading_date == today_str
                         ).delete()
-                        
+
                         index_candles_to_save = []
-                        for candle in candles_raw:
+                        for irow in index_df.itertuples():
                             try:
-                                unix_ts = candle[0]
-                                if isinstance(unix_ts, (int, float)):
-                                    time_obj = datetime.fromtimestamp(unix_ts)
-                                    time_part = time_obj.strftime("%H:%M:%S")
-                                else:
-                                    if ' ' in str(unix_ts):
-                                        time_part = str(unix_ts).split(' ')[1]
-                                    else:
-                                        time_part = str(unix_ts)
-                                
-                                if time_part.count(':') > 1:
-                                    time_part = ':'.join(time_part.split(':')[:2])
-                                
                                 index_candles_to_save.append(IntradayCandle(
                                     symbol=index_symbol,
                                     trading_date=today_str,
-                                    time=time_part,
-                                    open=float(candle[1]),
-                                    high=float(candle[2]),
-                                    low=float(candle[3]),
-                                    close=float(candle[4]),
-                                    volume=int(candle[5]) if len(candle) > 5 else 0,
+                                    time=irow.datetime.strftime("%H:%M"),
+                                    open=float(irow.open),
+                                    high=float(irow.high),
+                                    low=float(irow.low),
+                                    close=float(irow.close),
+                                    volume=int(irow.volume) if irow.volume else 0,
                                     interval=index_interval,
                                     created_at=datetime.utcnow()
                                 ))
@@ -6634,56 +7110,28 @@ def get_intraday_candles():
         if not symbol:
             return jsonify({"candles": [], "error": "Symbol required"}), 400
         
-        from datetime import datetime, timedelta
-        import os
-        from growwapi import GrowwAPI
-        
-        # Get token
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            logger.error("No GROWW_ACCESS_TOKEN found")
-            return jsonify({"candles": [], "message": "No token available"}), 200
-        
-        groww = GrowwAPI(token)
-        
-        # Fetch 5-minute candles from trading hours to current (Groww doesn't support 1-minute)
-        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        start_time = (datetime.now() - timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        resp = groww.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange='NSE',
-            segment='EQ',
-            start_time=start_time,
-            end_time=end_time,
-            interval_in_minutes=5
-        )
-        
-        candles_raw = resp.get("candles", [])
-        if not candles_raw:
+        # Source: fyers_candles via the shared adapter (5-minute bars, naive
+        # IST) — same cadence Groww actually returned here despite this
+        # route's "1-minute" name, so the response shape is unchanged.
+        from db_manager import CandleDatabase
+        df = CandleDatabase().get_fyers_candles_as_5min(symbol, days=1)
+
+        if df.empty:
             logger.info(f"No candles found for {symbol}")
             return jsonify({"candles": [], "symbol": symbol}), 200
-        
-        # Format candles: each candle is [timestamp, open, high, low, close, volume]
-        formatted = []
-        for candle in candles_raw:
-            try:
-                if len(candle) >= 6:
-                    timestamp = candle[0]  # format: "2026-04-02 14:30:00"
-                    time_part = timestamp.split(' ')[1] if ' ' in timestamp else timestamp
-                    
-                    formatted.append({
-                        "time": time_part,
-                        "open": float(candle[1]),
-                        "high": float(candle[2]),
-                        "low": float(candle[3]),
-                        "close": float(candle[4]),
-                        "volume": int(candle[5]) if len(candle) > 5 else 0
-                    })
-            except (IndexError, ValueError, TypeError) as e:
-                logger.debug(f"Error parsing candle {candle}: {e}")
-                continue
-        
+
+        formatted = [
+            {
+                "time": row.datetime.strftime("%H:%M:%S"),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": int(row.volume) if row.volume else 0,
+            }
+            for row in df.itertuples()
+        ]
+
         logger.info(f"✓ Fetched {len(formatted)} candles for {symbol}")
         return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted)}), 200
         
@@ -6704,24 +7152,14 @@ def get_trade_candles():
             return jsonify({"candles": [], "error": "Symbol, entry_time, and exit_time required"}), 400
         
         from datetime import datetime, timedelta
-        import os
-        from growwapi import GrowwAPI
-        
-        # Get token
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            logger.error("No GROWW_ACCESS_TOKEN found")
-            return jsonify({"candles": [], "message": "No token available"}), 200
-        
-        groww = GrowwAPI(token)
-        
+
         # Parse times - handle both ISO format and "YYYY-MM-DD HH:MM:SS" format
         try:
             if 'T' in entry_time:
                 entry_dt = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
             else:
                 entry_dt = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
-            
+
             if 'T' in exit_time:
                 exit_dt = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
             else:
@@ -6729,46 +7167,46 @@ def get_trade_candles():
         except ValueError as e:
             logger.error(f"Invalid time format: {e}")
             return jsonify({"candles": [], "error": f"Invalid time format: {e}"}), 400
-        
+
+        # Comparisons below are against the adapter's naive-IST datetimes, so
+        # drop any tzinfo the ISO parse attached rather than comparing
+        # aware-vs-naive (which raises).
+        if entry_dt.tzinfo is not None:
+            entry_dt = entry_dt.replace(tzinfo=None)
+        if exit_dt.tzinfo is not None:
+            exit_dt = exit_dt.replace(tzinfo=None)
+
         # Add buffer: start 5 minutes before entry, end 5 minutes after exit
-        start_time = (entry_dt - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        end_time = (exit_dt + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        logger.info(f"Fetching candles for {symbol} between {start_time} and {end_time}")
-        
-        resp = groww.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange='NSE',
-            segment='EQ',
-            start_time=start_time,
-            end_time=end_time,
-            interval_in_minutes=5
-        )
-        
-        candles_raw = resp.get("candles", [])
-        if not candles_raw:
-            logger.info(f"No candles found for {symbol} between {start_time} and {end_time}")
+        window_start = entry_dt - timedelta(minutes=5)
+        window_end = exit_dt + timedelta(minutes=5)
+
+        logger.info(f"Fetching candles for {symbol} between {window_start} and {window_end}")
+
+        # Source: fyers_candles via the shared adapter. Bounded to just past
+        # the trade date instead of pulling all history, then sliced to the
+        # requested window.
+        from db_manager import CandleDatabase
+        _days_back = max((datetime.now() - window_start).days + 2, 2)
+        df = CandleDatabase().get_fyers_candles_as_5min(symbol, days=_days_back)
+        if not df.empty:
+            df = df[(df["datetime"] >= window_start) & (df["datetime"] <= window_end)]
+
+        if df.empty:
+            logger.info(f"No candles found for {symbol} between {window_start} and {window_end}")
             return jsonify({"candles": [], "symbol": symbol}), 200
-        
+
         # Format candles as objects with time, o, h, l, c, v
-        formatted = []
-        for candle in candles_raw:
-            try:
-                if len(candle) >= 6:
-                    timestamp = candle[0]  # format: "2026-04-02 14:30:00"
-                    time_part = timestamp.split(' ')[1] if ' ' in timestamp else timestamp
-                    
-                    formatted.append({
-                        "time": time_part,
-                        "open": float(candle[1]),
-                        "high": float(candle[2]),
-                        "low": float(candle[3]),
-                        "close": float(candle[4]),
-                        "volume": int(candle[5]) if len(candle) > 5 else 0
-                    })
-            except (IndexError, ValueError, TypeError) as e:
-                logger.debug(f"Error parsing candle {candle}: {e}")
-                continue
+        formatted = [
+            {
+                "time": row.datetime.strftime("%H:%M:%S"),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": int(row.volume) if row.volume else 0,
+            }
+            for row in df.itertuples()
+        ]
         
         logger.info(f"✓ Fetched {len(formatted)} candles for {symbol}")
         return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "entry_time": str(entry_dt), "exit_time": str(exit_dt)}), 200
@@ -6837,140 +7275,59 @@ def get_1min_candles():
         except Exception as e:
             logger.debug(f"Database fetch failed for {target_date}, trying API: {e}")
         
-        # Fallback: Fetch from Groww API (only works for recent/today dates)
-        # Groww API doesn't support 1-minute candles, use 5-minute instead
+        # Fallback: fyers_candles via the shared adapter.
+        # This replaces a three-deep Groww fallback chain (5-min, then hourly,
+        # then 5-min again) that existed because Groww's intraday coverage was
+        # unreliable per-symbol. fyers_candles has uniform 5-minute coverage,
+        # so one query replaces all three attempts.
         from datetime import timedelta
-        import os
-        from growwapi import GrowwAPI
-        
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            logger.error("No GROWW_ACCESS_TOKEN found")
-            return jsonify({"candles": [], "message": "No token available"}), 200
-        
-        groww = GrowwAPI(token)
-        
-        # Use provided times or default to trading hours for the target date
-        if not start_time or not end_time:
-            # Parse target_date and build trading hours
-            try:
-                target_dt = datetime.strptime(target_date, "%Y-%m-%d")
-            except:
-                target_dt = datetime.today()
-            
-            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
-            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
-        else:
+        from db_manager import CandleDatabase
+
+        try:
+            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        except Exception:
+            target_dt = datetime.today()
+
+        if start_time and end_time:
             try:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                 end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-            except:
-                target_dt = datetime.today()
+                if start_dt.tzinfo is not None:
+                    start_dt = start_dt.replace(tzinfo=None)
+                if end_dt.tzinfo is not None:
+                    end_dt = end_dt.replace(tzinfo=None)
+            except Exception:
                 start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
                 end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
-        
-        start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-        logger.info(f"Fetching 5-minute candles for {symbol} from Groww API between {start_str} and {end_str}")
-        
-        # Groww API: Try 5-minute candles (primary - most reliable)
-        resp = groww.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange='NSE',
-            segment='CASH',
-            start_time=start_str,
-            end_time=end_str,
-            interval_in_minutes=5
-        )
-        
-        candles_raw = resp.get("candles", [])
-        
-        # Fallback to hourly candles if 5-minute not available
-        if not candles_raw:
-            logger.info(f"No 5-minute candles for {symbol}, trying hourly...")
-            resp = groww.get_historical_candle_data(
-                trading_symbol=symbol,
-                exchange='NSE',
-                segment='CASH',
-                start_time=start_str,
-                end_time=end_str,
-                interval_in_minutes=60
-            )
-            candles_raw = resp.get("candles", [])
-            
-        if not candles_raw:
+        else:
+            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
+
+        logger.info(f"Fetching 5-minute candles for {symbol} from fyers_candles between {start_dt} and {end_dt}")
+
+        _days_back = max((datetime.now() - start_dt).days + 2, 2)
+        df = CandleDatabase().get_fyers_candles_as_5min(symbol, days=_days_back)
+        if not df.empty:
+            df = df[(df["datetime"] >= start_dt) & (df["datetime"] <= end_dt)]
+
+        if df.empty:
             logger.info(f"No candles found for {symbol}")
             return jsonify({"candles": [], "symbol": symbol}), 200
-        
-        # Format candles
-        formatted = []
-        from datetime import datetime as dt
-        for candle in candles_raw:
-            try:
-                if len(candle) >= 6:
-                    unix_ts = candle[0]
-                    # Convert unix timestamp to HH:MM:SS
-                    if isinstance(unix_ts, (int, float)):
-                        time_obj = dt.fromtimestamp(unix_ts)
-                        time_part = time_obj.strftime("%H:%M:%S")
-                    else:
-                        # Fallback: assume it's already a string with timestamp
-                        time_part = str(unix_ts).split(' ')[1] if ' ' in str(unix_ts) else str(unix_ts)
-                    
-                    formatted.append({
-                        "time": time_part,
-                        "o": float(candle[1]),
-                        "h": float(candle[2]),
-                        "l": float(candle[3]),
-                        "c": float(candle[4]),
-                        "v": int(candle[5]) if len(candle) > 5 else 0
-                    })
-            except (IndexError, ValueError, TypeError) as e:
-                logger.debug(f"Error parsing candle {candle}: {e}")
-                continue
-        
-        logger.info(f"✓ Fetched {len(formatted)} 1-minute candles for {symbol} from Groww API")
-        if len(formatted) == 0:
-            logger.warning(f"⚠️ Formatted array is empty even though we have {len(candles_raw)} raw candles - trying 5-minute fallback")
-            # Try 5-minute as secondary fallback
-            resp_5min = groww.get_historical_candle_data(
-                trading_symbol=symbol,
-                exchange='NSE',
-                segment='CASH',
-                start_time=start_str,
-                end_time=end_str,
-                interval_in_minutes=5
-            )
-            candles_5min = resp_5min.get("candles", [])
-            if candles_5min:
-                formatted_5min = []
-                for candle in candles_5min:
-                    try:
-                        if len(candle) >= 6:
-                            unix_ts = candle[0]
-                            if isinstance(unix_ts, (int, float)):
-                                time_obj = dt.fromtimestamp(unix_ts)
-                                time_part = time_obj.strftime("%H:%M:%S")
-                            else:
-                                time_part = str(unix_ts).split(' ')[1] if ' ' in str(unix_ts) else str(unix_ts)
-                            
-                            formatted_5min.append({
-                                "time": time_part,
-                                "o": float(candle[1]),
-                                "h": float(candle[2]),
-                                "l": float(candle[3]),
-                                "c": float(candle[4]),
-                                "v": int(candle[5]) if len(candle) > 5 else 0
-                            })
-                    except (IndexError, ValueError, TypeError):
-                        continue
-                
-                if formatted_5min:
-                    logger.info(f"✓ Secondary fallback: Fetched {len(formatted_5min)} 5-minute candles for {symbol}")
-                    return jsonify({"candles": formatted_5min, "symbol": symbol, "count": len(formatted_5min), "interval": "5min", "source": "Groww API Fallback"}), 200
-        
-        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "Groww API"}), 200
+
+        formatted = [
+            {
+                "time": row.datetime.strftime("%H:%M:%S"),
+                "o": float(row.open),
+                "h": float(row.high),
+                "l": float(row.low),
+                "c": float(row.close),
+                "v": int(row.volume) if row.volume else 0,
+            }
+            for row in df.itertuples()
+        ]
+
+        logger.info(f"✓ Fetched {len(formatted)} 5-minute candles for {symbol} from fyers_candles")
+        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "fyers_candles", "date": target_date}), 200
         
     except Exception as e:
         logger.exception(f"Error fetching 5-minute candles: {e}")
@@ -7035,86 +7392,55 @@ def get_5min_candles():
         except Exception as e:
             logger.debug(f"Database fetch failed for {target_date}, trying API: {e}")
         
-        # Fallback: Fetch from Groww API (only works for recent/today dates)
+        # Fallback: fyers_candles via the shared adapter.
         from datetime import timedelta
-        import os
-        from growwapi import GrowwAPI
-        
-        # Get token
-        token = os.getenv("GROWW_ACCESS_TOKEN")
-        if not token:
-            logger.error("No GROWW_ACCESS_TOKEN found")
-            return jsonify({"candles": [], "message": "No token available"}), 200
-        
-        groww = GrowwAPI(token)
-        
-        # Use provided times or default to trading hours for the target date
-        if not start_time or not end_time:
-            # Parse target_date and build trading hours
-            try:
-                target_dt = datetime.strptime(target_date, "%Y-%m-%d")
-            except:
-                target_dt = datetime.today()
-            
-            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
-            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
-        else:
+        from db_manager import CandleDatabase
+
+        try:
+            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        except Exception:
+            target_dt = datetime.today()
+
+        if start_time and end_time:
             try:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                 end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-            except:
-                target_dt = datetime.today()
+                if start_dt.tzinfo is not None:
+                    start_dt = start_dt.replace(tzinfo=None)
+                if end_dt.tzinfo is not None:
+                    end_dt = end_dt.replace(tzinfo=None)
+            except Exception:
                 start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
                 end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
-        
-        start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-        logger.info(f"Fetching 5-minute candles for {symbol} from {start_str} to {end_str}")
-        
-        resp = groww.get_historical_candle_data(
-            trading_symbol=symbol,
-            exchange='NSE',
-            segment='CASH',
-            start_time=start_str,
-            end_time=end_str,
-            interval_in_minutes=5
-        )
-        
-        candles_raw = resp.get("candles", [])
-        if not candles_raw:
+        else:
+            start_dt = target_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+            end_dt = target_dt.replace(hour=15, minute=30, second=0, microsecond=0)
+
+        logger.info(f"Fetching 5-minute candles for {symbol} from {start_dt} to {end_dt}")
+
+        _days_back = max((datetime.now() - start_dt).days + 2, 2)
+        df = CandleDatabase().get_fyers_candles_as_5min(symbol, days=_days_back)
+        if not df.empty:
+            df = df[(df["datetime"] >= start_dt) & (df["datetime"] <= end_dt)]
+
+        if df.empty:
             logger.info(f"No 5-minute candles found for {symbol}")
             return jsonify({"candles": [], "symbol": symbol}), 200
-        
-        # Format candles
-        formatted = []
-        from datetime import datetime as dt
-        for candle in candles_raw:
-            try:
-                if len(candle) >= 6:
-                    unix_ts = candle[0]
-                    # Convert unix timestamp to HH:MM:SS
-                    if isinstance(unix_ts, (int, float)):
-                        time_obj = dt.fromtimestamp(unix_ts)
-                        time_part = time_obj.strftime("%H:%M:%S")
-                    else:
-                        # Fallback: assume it's already a string with timestamp
-                        time_part = str(unix_ts).split(' ')[1] if ' ' in str(unix_ts) else str(unix_ts)
-                    
-                    formatted.append({
-                        "time": time_part,
-                        "o": float(candle[1]),
-                        "h": float(candle[2]),
-                        "l": float(candle[3]),
-                        "c": float(candle[4]),
-                        "v": int(candle[5]) if len(candle) > 5 else 0
-                    })
-            except (IndexError, ValueError, TypeError) as e:
-                logger.debug(f"Error parsing candle {candle}: {e}")
-                continue
-        
+
+        formatted = [
+            {
+                "time": row.datetime.strftime("%H:%M:%S"),
+                "o": float(row.open),
+                "h": float(row.high),
+                "l": float(row.low),
+                "c": float(row.close),
+                "v": int(row.volume) if row.volume else 0,
+            }
+            for row in df.itertuples()
+        ]
+
         logger.info(f"✓ Fetched {len(formatted)} 5-minute candles for {symbol}")
-        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min"}), 200
+        return jsonify({"candles": formatted, "symbol": symbol, "count": len(formatted), "interval": "5min", "source": "fyers_candles"}), 200
         
     except Exception as e:
         logger.exception(f"Error fetching 5-minute candles: {e}")
@@ -7336,6 +7662,20 @@ if __name__ == "__main__":
     # Start master scheduler (unified background task runner)
     import os
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
+        # FYERS boot warm-up. Started BEFORE the scheduler so its _active
+        # flag is already set when the first scheduler tick evaluates the
+        # bulk-task guards. (The flag is True from import time anyway, so
+        # this is belt-and-braces, not load-bearing.)
+        #
+        # Runs on its own daemon thread — never blocks app.run(). If it
+        # cannot start, start_in_background() clears the flag itself so
+        # bulk tasks are not left paused.
+        try:
+            import fyers_boot_warmup
+            fyers_boot_warmup.start_in_background()
+        except Exception as e:
+            logger.warning("⚠️  FYERS boot warm-up failed to start: %s", e)
+
         try:
             from scheduler import start_scheduler
             start_scheduler()

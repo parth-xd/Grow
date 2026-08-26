@@ -413,6 +413,21 @@ def _store_connections(symbol, parsed, db):
     own_name = ((parsed.get("company_info") or {}).get("company") or "").strip().lower()
 
     with db.Session() as session:
+        # Preload every existing connection for this symbol in ONE query,
+        # keyed (relation_type, related_name). This was a
+        # .filter_by(...).first() inside the inner loop — one round-trip per
+        # supplier/customer/competitor, so a company with 40 connections cost
+        # 40 queries where one does.
+        #
+        # Newly created rows are inserted into the map as they are added. That
+        # is not cosmetic: the old code relied on SQLAlchemy AUTOFLUSH, so if
+        # `items` listed the same name twice the second .first() found the
+        # pending row and updated it. A plain preload would miss it and add a
+        # duplicate, so the map has to be kept live to preserve that.
+        _existing = {
+            (r.relation_type, r.related_name): r
+            for r in session.query(CompanyConnection).filter_by(symbol=symbol).all()
+        }
         for rel_type, items in rel_map.items():
             seen_names = set()
             for item in items:
@@ -420,9 +435,7 @@ def _store_connections(symbol, parsed, db):
                 if not name or name.lower() == own_name:
                     continue
                 seen_names.add(name)
-                row = (session.query(CompanyConnection)
-                       .filter_by(symbol=symbol, relation_type=rel_type, related_name=name)
-                       .first())
+                row = _existing.get((rel_type, name))
                 if row:
                     row.last_seen = now
                     row.is_active = True
@@ -431,11 +444,14 @@ def _store_connections(symbol, parsed, db):
                     if item.get("symbol") and not row.related_symbol:
                         row.related_symbol = item["symbol"]
                 else:
-                    session.add(CompanyConnection(
+                    _new = CompanyConnection(
                         symbol=symbol, relation_type=rel_type, related_name=name,
                         related_slug=item.get("slug"), related_symbol=item.get("symbol"),
                         source=SOURCE, first_seen=now, last_seen=now, is_active=True,
-                    ))
+                    )
+                    session.add(_new)
+                    # Keep the map live — see the autoflush note above.
+                    _existing[(rel_type, name)] = _new
                 counts[rel_type] += 1
             # deactivate relationships that vanished from the source
             if items:  # only if the section parsed at all (don't deactivate on parse failure)

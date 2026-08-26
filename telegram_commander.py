@@ -763,8 +763,17 @@ def _get_paper_pnl():
         from db_manager import get_db, PaperTrade
         from sqlalchemy import and_
         db = get_db()
-        today_utc = datetime.now(IST).date()
-        today_midnight = datetime(today_utc.year, today_utc.month, today_utc.day)  # naive UTC midnight
+        # created_at is stored NAIVE UTC (Column default=datetime.utcnow). The
+        # old code took the IST calendar date and built naive midnight from it,
+        # then compared that against UTC values — the variable was even named
+        # today_utc while holding an IST date. Convert the IST day boundary to
+        # UTC so both sides are on the same clock; otherwise anything written
+        # between 00:00 and 05:30 IST lands on the previous UTC date and is
+        # silently excluded from the day's P&L.
+        from datetime import time as _dtime, timezone as _tz
+        today_ist = datetime.now(IST).date()
+        today_midnight = datetime.combine(today_ist, _dtime.min).replace(
+            tzinfo=IST).astimezone(_tz.utc).replace(tzinfo=None)
         with db.Session() as session:
             # Bound the read to today only — no N tables worth of scans
             trades = session.query(PaperTrade).filter(

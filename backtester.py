@@ -52,8 +52,15 @@ STRATEGIES = {
         "params": {"agreement_threshold": 3},
     },
     "ml_walkforward": {
-        "name": "ML Walk-Forward",
+        "name": "ML Walk-Forward (GradientBoosting)",
         "desc": "GradientBoosting walk-forward validation (train→predict→roll)",
+        "params": {"train_window": 120, "test_window": 20, "confidence": 0.6},
+    },
+    "ml_walkforward_xgb": {
+        "name": "ML Walk-Forward (XGBoost)",
+        "desc": "XGBoost walk-forward validation — identical features, labels, "
+                "windows and confidence gate as the GradientBoosting variant, so "
+                "the two are directly comparable on net P&L",
         "params": {"train_window": 120, "test_window": 20, "confidence": 0.6},
     },
 }
@@ -68,28 +75,30 @@ def get_strategies():
 # ─── Data Loading ────────────────────────────────────────────────────────────
 
 def _load_candles(symbol, start_date=None, end_date=None):
-    """Load daily OHLCV from candles table."""
-    from db_manager import get_db, Candle
-    db = get_db()
-    session = db.Session()
-    try:
-        q = session.query(Candle).filter(Candle.symbol == symbol)
-        if start_date:
-            q = q.filter(Candle.timestamp >= start_date)
-        if end_date:
-            q = q.filter(Candle.timestamp <= end_date)
-        q = q.order_by(Candle.timestamp)
-        rows = q.all()
-        if not rows:
-            return pd.DataFrame()
-        data = [{"date": r.timestamp, "open": r.open, "high": r.high,
-                 "low": r.low, "close": r.close, "volume": r.volume} for r in rows]
-        df = pd.DataFrame(data)
-        df.set_index("date", inplace=True)
-        df.index = pd.to_datetime(df.index)
-        return df
-    finally:
-        session.close()
+    """
+    Load daily OHLCV from fyers_candles (resolution='D').
+
+    This function always wanted daily bars — see _load_data()'s
+    "daily candles preferred, fall back to weekly" — but the legacy `candles`
+    table had no resolution column, so it returned whatever mix was stored.
+    Reading resolution='D' makes the intent explicit and the data consistent.
+    """
+    from db_manager import CandleDatabase
+    df = CandleDatabase().get_fyers_daily(symbol)
+    if df.empty:
+        return pd.DataFrame()
+    df = df.rename(columns={"datetime": "date"})[
+        ["date", "open", "high", "low", "close", "volume"]
+    ]
+    if start_date:
+        df = df[df["date"] >= pd.to_datetime(start_date)]
+    if end_date:
+        df = df[df["date"] <= pd.to_datetime(end_date)]
+    if df.empty:
+        return pd.DataFrame()
+    df = df.set_index("date")
+    df.index = pd.to_datetime(df.index)
+    return df
 
 
 def _load_weekly(symbol, start_date=None, end_date=None):
@@ -225,9 +234,18 @@ def _sig_combined(df, p):
     return sig
 
 
-def _sig_ml(df, p):
-    """Walk-forward ML signal generation."""
+def _sig_ml(df, p, predictor_factory=None):
+    """
+    Walk-forward ML signal generation.
+
+    predictor_factory lets a second model reuse this identical walk-forward
+    harness — same train/test windows, same confidence gate, same data — so a
+    GBC-vs-XGB comparison isolates the algorithm rather than the procedure.
+    Defaults to PricePredictor, so existing "ml" backtests are unchanged.
+    """
     from predictor import build_features, create_labels, PricePredictor
+    if predictor_factory is None:
+        predictor_factory = PricePredictor
 
     tw = p.get("train_window", 120)
     tst = p.get("test_window", 20)
@@ -244,7 +262,7 @@ def _sig_ml(df, p):
         end = min(cursor + tst, n)
         train_df = df.iloc[cursor - tw:cursor].copy()
         try:
-            pred = PricePredictor()
+            pred = predictor_factory()
             res = pred.train(train_df)
             if not res.get("success"):
                 cursor = end
@@ -266,6 +284,17 @@ def _sig_ml(df, p):
     return sig
 
 
+def _sig_ml_xgb(df, p):
+    """
+    Same walk-forward harness as _sig_ml, but fitting XGBoost instead of
+    GradientBoosting. Identical features, labels, windows and confidence
+    gate — the only variable is the estimator, which is the point: it makes
+    the two directly comparable on net P&L rather than on accuracy.
+    """
+    from xgb_predictor import XGBPricePredictor
+    return _sig_ml(df, p, predictor_factory=XGBPricePredictor)
+
+
 _GENERATORS = {
     "ema_crossover": _sig_ema,
     "rsi_reversal": _sig_rsi,
@@ -274,14 +303,24 @@ _GENERATORS = {
     "breakout_52w": _sig_breakout,
     "combined": _sig_combined,
     "ml_walkforward": _sig_ml,
+    "ml_walkforward_xgb": _sig_ml_xgb,
 }
 
 
 # ─── Trade Simulation ────────────────────────────────────────────────────────
 
 def _simulate(df, signals, symbol, initial_capital, sl_pct, tp_pct, slippage=0.05):
-    """Simulate trades with costs, stop-loss, target, slippage."""
+    """Simulate trades with costs, stop-loss, target, slippage.
+
+    Exits are decided by trailing_strategy — the SAME module the live cash path
+    uses — so a backtest cannot drift away from what actually trades. RULE 1's
+    1% ceiling on the initial hard stop is applied here too; a backtest run at
+    the old 3% default would have reported risk this system can no longer take.
+    """
     import costs as cost_mod
+    import trailing_strategy
+    from config import MAX_CASH_SL_PCT
+    sl_pct = min(sl_pct, MAX_CASH_SL_PCT)
 
     capital = initial_capital
     position = None
@@ -302,7 +341,31 @@ def _simulate(df, signals, symbol, initial_capital, sl_pct, tp_pct, slippage=0.0
             tp = ep * (1 + tp_pct / 100)
             exit_p = exit_r = None
 
-            if l <= sl:
+            # Evaluated against the bar's LOW while the peak is still the
+            # PREVIOUS bar's; the peak is advanced afterwards with this bar's
+            # high. The reverse order would let the stop ratchet up on the very
+            # bar it is tested against — i.e. assume the high printed before the
+            # low, an intra-bar look-ahead that manufactures free money.
+            #
+            # confidence_fn is None deliberately: the ML reprieve needs a
+            # point-in-time model call, and asking today's model about a past
+            # bar is look-ahead. evaluate() fails CLOSED without it, so the
+            # backtest models the reprieve-denied (conservative) path.
+            ts = position.get("tstate")
+            if ts is not None:
+                r_low = trailing_strategy.evaluate(ts, l, confidence_fn=None)
+                ts.update(r_low["state"])
+                if r_low["action"] == trailing_strategy.ACTION_CLOSE:
+                    stop_px = ts.get("trailing_stop") or sl
+                    exit_p = min(max(stop_px, l), h)      # fill inside the bar
+                    exit_r = "trailing_stop"
+                else:
+                    ts.update(trailing_strategy.evaluate(
+                        ts, h, confidence_fn=None)["state"])
+
+            if exit_p:
+                pass
+            elif l <= sl:
                 exit_p, exit_r = sl, "stop_loss"
             elif h >= tp:
                 exit_p, exit_r = tp, "target"
@@ -335,6 +398,10 @@ def _simulate(df, signals, symbol, initial_capital, sl_pct, tp_pct, slippage=0.0
             if bp * qty + preview.total <= capital:
                 capital -= bp * qty
                 position = {"entry_date": date, "entry_price": bp, "quantity": qty}
+                # Trailing state, priced for THIS quantity (breakeven is
+                # size-dependent — fixed brokerage/DP do not scale).
+                position["tstate"] = trailing_strategy.build_trade(
+                    bp, qty, "BUY", symbol=symbol)
 
         # Equity curve
         unr = 0
@@ -498,6 +565,9 @@ def _benchmark(df, initial_capital):
 
 # ─── Main API ────────────────────────────────────────────────────────────────
 
+from config import MAX_CASH_SL_PCT as _MAX_CASH_SL_PCT
+
+
 def run_backtest(symbol, strategy="ema_crossover", params=None,
                  start_date=None, end_date=None,
                  initial_capital=100000, stop_loss_pct=3.0, target_pct=6.0):
@@ -555,7 +625,11 @@ def run_backtest(symbol, strategy="ema_crossover", params=None,
         },
         "config": {
             "initial_capital": initial_capital,
-            "stop_loss_pct": stop_loss_pct,
+            # Report the stop actually USED, not the one requested. _simulate
+            # clamps to MAX_CASH_SL_PCT (RULE 1), so echoing the caller's value
+            # would report 3% risk on a run that actually took 1%.
+            "stop_loss_pct": min(stop_loss_pct, _MAX_CASH_SL_PCT),
+            "stop_loss_pct_requested": stop_loss_pct,
             "target_pct": target_pct,
         },
         "metrics": metrics,

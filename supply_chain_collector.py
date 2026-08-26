@@ -238,16 +238,23 @@ def collect_once(db_url=None):
 
     logger.info("🔄 Supply chain collector: starting pass")
 
+    # Preload every commodity snapshot in ONE query. This was a
+    # .filter_by(commodity=...).first() inside the loop below — one round-trip
+    # per commodity on every pass. The table is small and bounded by
+    # COMMODITY_TICKERS, so loading it whole is cheaper than N lookups.
+    _snaps = {r.commodity: r for r in session.query(CommoditySnapshot).all()}
+
     for commodity, ticker in COMMODITY_TICKERS.items():
         try:
             # 1. Fetch live price
             price_data = _fetch_commodity_price(ticker)
 
             # 2. Upsert commodity snapshot (track previous values for change detection)
-            snap = session.query(CommoditySnapshot).filter_by(commodity=commodity).first()
+            snap = _snaps.get(commodity)
             if not snap:
                 snap = CommoditySnapshot(commodity=commodity, ticker=ticker)
                 session.add(snap)
+                _snaps[commodity] = snap      # keep the map live, mirroring autoflush
 
             price_changed = False
             if price_data:

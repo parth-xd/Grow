@@ -2196,13 +2196,28 @@ def _is_market_open():
 
 
 def _count_open_positions():
-    """Count current open F&O positions."""
+    """
+    Count current open F&O positions.
+
+    Returns None when the count cannot be determined. Callers MUST treat None
+    as "unknown" and refuse to open a new position, never as zero.
+
+    It previously returned 0 on error, which reads as "no positions are open"
+    — so a broker hiccup silently removed the max-positions cap at exactly the
+    moment the system had lost track of what it held. Unknown positions are
+    not the same as no positions; this is the same fail-closed rule
+    bot.auto_trade already applies when its own position lookup fails.
+    """
     try:
         pos = get_fno_positions()
         positions = pos.get("positions", [])
         return len(positions)
-    except Exception:
-        return 0
+    except Exception as e:
+        logger.error(
+            "SAFETY: could not count open F&O positions (%s) — returning None so "
+            "callers block new entries rather than trading with the limit off", e
+        )
+        return None
 
 
 def _check_position_exits():
@@ -2419,6 +2434,18 @@ def auto_trade_fno():
         # 4. Check if we have room for new positions
         open_positions = _count_open_positions()
         max_positions = _AUTO_TRADE_CONFIG["max_positions"]
+
+        # None = the position count is UNKNOWN (broker lookup failed). Skip the
+        # cycle rather than entering blind: without a reliable count the
+        # max-positions cap cannot be enforced at all. Handled explicitly
+        # because `None >= int` raises TypeError in Python 3 — that would also
+        # abort the cycle, but by accident and with a confusing traceback
+        # instead of a clear, logged safety decision.
+        if open_positions is None:
+            log_entry["skipped_reason"] = "Open-position count unavailable — skipping entry for safety"
+            logger.error("SAFETY: F&O auto-trade skipped — could not determine open positions")
+            _log_auto_trade(log_entry)
+            return log_entry
 
         if open_positions >= max_positions:
             log_entry["skipped_reason"] = f"Max positions reached ({open_positions}/{max_positions})"

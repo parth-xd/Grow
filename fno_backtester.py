@@ -1,7 +1,10 @@
 """
 Swing Backtester v4 — Multi-Day Position Holding (up to 7 days)
 ================================================================
-Uses 1-hour candles from the PostgreSQL `candles` table.
+Uses 5-minute candles from the PostgreSQL `fyers_candles` table (via
+CandleDatabase.get_fyers_candles_as_5min). The "1-hour" in earlier versions
+of this note was never accurate — the file's own constants (75 candles/day,
+lookahead=525, ATR*8.66) have always assumed 5-minute bars.
 Scans through price data like a real trader:
   - Uses prior candles for indicator baseline
   - Walks candle-by-candle, runs technicals at each bar
@@ -16,6 +19,7 @@ Supports all 16 stocks in the database.
 import logging
 import math
 import os
+import threading
 import numpy as np
 from datetime import datetime, timedelta
 
@@ -66,16 +70,16 @@ def _build_backtest_instruments():
     
     instruments = dict(STATIC_INSTRUMENTS)  # Start with indices
     
-    # Add all stocks from database
+    # Add all stocks from database (fyers_candles — the market-data source)
     try:
-        from db_manager import CandleDatabase, Candle
+        from db_manager import CandleDatabase
+        from sqlalchemy import text as _text
         db = CandleDatabase()
-        session = db.Session()
-        
-        # Get all unique symbols that aren't indices
-        symbols = session.query(Candle.symbol).distinct().all()
-        session.close()
-        
+        with db.engine.connect() as conn:
+            symbols = conn.execute(_text(
+                "SELECT DISTINCT symbol FROM fyers_candles WHERE resolution = '5S'"
+            )).fetchall()
+
         for (symbol,) in symbols:
             if symbol not in instruments and symbol not in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
                 # Use known lot size or default
@@ -110,115 +114,77 @@ except Exception:
 # DATABASE CANDLE FETCHING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _fetch_candles_from_db(symbol):
+# How much history the F&O paths read. Both are bounded because the FYERS
+# migration raised per-instrument candle counts ~36x (NIFTY: 2,632 legacy ->
+# 94,500), which made the unbounded reads below untenable:
+#
+#   - training walked every candle of all 69 instruments with a 525-bar
+#     forward label simulation per sample (~3.4 billion comparisons). It
+#     never completed, which is why the live model stayed 137 days stale.
+#   - live inference re-read the entire history on every get_xgb_signal()
+#     call, and the F&O auto-trade task fires every 5 seconds.
+#
+# Bar cadence is unchanged, so every resolution-dependent constant in this
+# file (MAX_HOLD_CANDLES, lookahead=525, ATR*8.66) stays valid.
+# 180 days chosen from measurement, not guesswork: labelling costs ~0.6ms
+# per sample (feature vector + two 525-bar forward simulations), so
+#   unbounded (~94.5k candles) ~65 min  <- this is what hung
+#   365 days   (~18.4k candles) ~12.5 min
+#   180 days   (~9.0k candles)  ~6 min, 606k samples across 69 instruments
+# 180 keeps a comfortable margin inside a daily post-market window while
+# leaving far more samples than XGBoost needs.
+FNO_TRAIN_DAYS = int(os.getenv("FNO_TRAIN_DAYS", "180"))
+# Live signal needs only MIN_BASELINE_CANDLES (200) plus feature lookback;
+# 30 calendar days is ~1,600 five-minute bars, comfortable headroom.
+FNO_SIGNAL_DAYS = int(os.getenv("FNO_SIGNAL_DAYS", "30"))
+
+
+def _fetch_candles_from_db(symbol, days=None, as_of=None):
     """
-    Fetch all 1-hour candles for a symbol from the candles table.
-    Enhanced: Uses fresh IntradayCandle data for recent dates (after March 30th).
+    Fetch 5-minute-equivalent candles for a symbol from fyers_candles.
+
+    as_of: optional point-in-time ceiling, passed straight through to the
+    reader. None keeps the existing live behaviour for every current caller.
+
+    Replaces the old candles+IntradayCandle stitch. That version read the
+    legacy Groww table up to a per-symbol boundary date, then hand-aggregated
+    1-minute IntradayCandle rows into hourly bars after it — producing a
+    single list with MIXED bar widths (5-min historical + 1-hour recent) that
+    the feature and label code downstream treated as uniform. fyers_candles
+    has continuous 5-minute-equivalent coverage, so the boundary and the
+    hand-aggregation both go away.
+
+    Bar cadence is unchanged (5-minute), so the resolution-dependent
+    constants in this file stay valid: MAX_HOLD_CANDLES (= days * 75),
+    _simulate_trade_outcome's lookahead=525 (7 days * 75), and
+    daily_atr = candle_atr * 8.66 (~sqrt(75)).
     """
     try:
-        from db_manager import CandleDatabase, Candle, get_db, IntradayCandle
-        from datetime import datetime
-        
-        db = CandleDatabase()
-        session = db.Session()
-        candles = []
-        
-        try:
-            # 1. Fetch historical candles from old table (up to March 30th)
-            rows = (
-                session.query(Candle)
-                .filter(Candle.symbol == symbol)
-                .order_by(Candle.timestamp)
-                .all()
-            )
-            
-            for r in rows:
-                ts = r.timestamp
-                candles.append({
-                    "timestamp": ts.timestamp(),
-                    "date": ts.strftime("%Y-%m-%d"),
-                    "time": ts.strftime("%H:%M"),
-                    "datetime_label": ts.strftime("%b %d %H:%M"),
-                    "open": float(r.open),
-                    "high": float(r.high),
-                    "low": float(r.low),
-                    "close": float(r.close),
-                    "volume": int(r.volume) if r.volume else 0,
-                })
-            
-            # Get latest date from historical data
-            latest_hist_date = candles[-1]["date"] if candles else "2026-03-30"
-            
-            # 2. Fetch fresh intraday candles for dates AFTER the last historical date
-            # IntradayCandle has 1-minute data, aggregate to 1-hour for consistency
-            from datetime import date as dateobj
-            db_session = get_db().Session()
-            
-            intraday_rows = (
-                db_session.query(IntradayCandle)
-                .filter(IntradayCandle.symbol == symbol)
-                .order_by(IntradayCandle.trading_date, IntradayCandle.time)
-                .all()
-            )
-            
-            if intraday_rows:
-                # Group by hour to create hourly candles from 1-minute data
-                hourly_map = {}
-                for row in intraday_rows:
-                    # Only use dates after the latest historical date
-                    if row.trading_date > latest_hist_date:
-                        hour_key = f"{row.trading_date}_{row.time[:2]}"  # "2026-04-11_14"
-                        if hour_key not in hourly_map:
-                            hourly_map[hour_key] = {
-                                "date": row.trading_date,
-                                "hour": row.time[:2],
-                                "opens": [],
-                                "highs": [],
-                                "lows": [],
-                                "closes": [],
-                                "volumes": 0,
-                                "first_time": row.time,
-                                "last_time": row.time,
-                            }
-                        hourly_map[hour_key]["opens"].append(row.open)
-                        hourly_map[hour_key]["highs"].append(row.high)
-                        hourly_map[hour_key]["lows"].append(row.low)
-                        hourly_map[hour_key]["closes"].append(row.close)
-                        hourly_map[hour_key]["volumes"] += row.volume or 0
-                        hourly_map[hour_key]["last_time"] = row.time
-                
-                # Convert hourly aggregates to candle format
-                for hour_key in sorted(hourly_map.keys()):
-                    h_data = hourly_map[hour_key]
-                    if h_data["opens"]:  # Only if we have data
-                        try:
-                            ts_str = f"{h_data['date']} {h_data['hour']}:00:00"
-                            ts = datetime.fromisoformat(ts_str)
-                            candles.append({
-                                "timestamp": ts.timestamp(),
-                                "date": h_data["date"],
-                                "time": f"{h_data['hour']}:00",
-                                "datetime_label": ts.strftime("%b %d %H:%M"),
-                                "open": float(h_data["opens"][0]),
-                                "high": max(h_data["highs"]),
-                                "low": min(h_data["lows"]),
-                                "close": float(h_data["closes"][-1]),
-                                "volume": int(h_data["volumes"]),
-                            })
-                        except Exception:
-                            pass
-            
-            db_session.close()
-            
-        finally:
-            session.close()
-        
-        # Sort all candles by timestamp
-        candles.sort(key=lambda x: x["timestamp"])
-        
-        logger.debug(f"Loaded {len(candles)} candles for {symbol} (historical + fresh intraday)")
+        from db_manager import CandleDatabase
+
+        df = CandleDatabase().get_fyers_candles_as_5min(symbol, days=days, as_of=as_of)
+        if df.empty:
+            logger.warning("No fyers_candles data for %s", symbol)
+            return []
+
+        candles = [
+            {
+                "timestamp": row.datetime.timestamp(),
+                "date": row.datetime.strftime("%Y-%m-%d"),
+                "time": row.datetime.strftime("%H:%M"),
+                "datetime_label": row.datetime.strftime("%b %d %H:%M"),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": int(row.volume) if row.volume else 0,
+            }
+            for row in df.itertuples()
+        ]
+
+        logger.debug(f"Loaded {len(candles)} candles for {symbol} (fyers_candles)")
         return candles
-        
+
     except Exception as e:
         logger.error("Failed to fetch candles for %s: %s", symbol, e)
         return []
@@ -252,7 +218,8 @@ def _get_nifty_context():
     global _nifty_candles_cache, _nifty_by_date
     if _nifty_candles_cache is not None:
         return _nifty_candles_cache, _nifty_by_date
-    _nifty_candles_cache = _fetch_candles_from_db("NIFTY")
+    # Bounded: used only for NIFTY-relative return features on recent bars.
+    _nifty_candles_cache = _fetch_candles_from_db("NIFTY", days=FNO_TRAIN_DAYS)
     _nifty_by_date = {}
     for c in _nifty_candles_cache:
         d = c["date"]
@@ -602,6 +569,24 @@ def _simulate_analysis(tech, change_pct):
 _xgb_models = None  # Cached XGBoost models (trained once, reused)
 _xgb_model_timestamp = None  # Timestamp of last XGBoost training
 
+# Serialises the load-or-train decision in _get_xgb_models().
+#
+# Flask runs threaded=True, so two backtests started at the same moment (a
+# phone and a laptop, say) land on two threads. Both used to see
+# `_xgb_models is None`, and both then trained the same model from ~600k
+# candles — 30-40 minutes each, running concurrently. Two XGBoost fits each
+# default to every core, so they oversubscribe the CPU and finish SLOWER than
+# one would have, for an identical result.
+#
+# Worse, both then wrote the same file: two interleaved joblib.dump() calls to
+# one path produce a corrupt model, and the loader only checks n_features, so
+# a garbled model loads and silently yields wrong signals.
+#
+# The second caller now waits and takes the first caller's result. After the
+# trained_at fix below this path is almost never reached at all — the disk
+# cache loads in milliseconds — so the wait is a safety net, not the norm.
+_xgb_lock = threading.Lock()
+
 FEATURE_NAMES = [
     'rsi', 'macd_hist_norm', 'ema9_21_ratio', 'ema21_50_ratio',
     'price_ema9', 'price_ema21', 'bb_position', 'stoch_k',
@@ -793,7 +778,7 @@ def _simulate_trade_outcome(candles, idx, direction, lookahead=525):
     return 0  # Max hold exceeded → loss
 
 
-def _generate_xgb_training_data():
+def _generate_xgb_training_data(progress_cb=None):
     """
     Generate labeled training data from ALL stocks' candle histories.
     Labels each candle with whether a long/short trade would be profitable.
@@ -802,8 +787,14 @@ def _generate_xgb_training_data():
     all_X, all_y_long, all_y_short = [], [], []
 
     for symbol in BACKTEST_INSTRUMENTS:
-        candles = _fetch_candles_from_db(symbol)
+        # Bounded to FNO_TRAIN_DAYS — see the note on _fetch_candles_from_db.
+        # Unbounded, this walked ~94k candles per instrument across 69
+        # instruments with a 525-bar forward simulation per sample and never
+        # finished.
+        candles = _fetch_candles_from_db(symbol, days=FNO_TRAIN_DAYS)
         if len(candles) < MIN_BASELINE_CANDLES + 14:
+            if progress_cb:
+                progress_cb(symbol)     # skipped instruments still advance
             continue
 
         max_label_idx = len(candles) - 14  # Need forward candles for labeling
@@ -820,6 +811,9 @@ def _generate_xgb_training_data():
             all_y_long.append(y_l)
             all_y_short.append(y_s)
 
+        if progress_cb:
+            progress_cb(symbol)
+
     return all_X, all_y_long, all_y_short
 
 
@@ -832,104 +826,142 @@ def _get_xgb_models():
     if _xgb_models is not None:
         return _xgb_models if _xgb_models else None
 
-    try:
-        import xgboost as xgb
-    except ImportError:
-        logger.warning("XGBoost not installed — falling back to heuristic signals")
-        _xgb_models = False
-        return None
+    # Everything below either loads the cache or spends 30-40 minutes training,
+    # so only one thread may be inside it at a time. Re-check after acquiring:
+    # a thread that waited here while another trained should take that result
+    # rather than start its own identical run.
+    with _xgb_lock:
+        if _xgb_models is not None:
+            return _xgb_models if _xgb_models else None
 
-    # Try loading pre-trained models from disk
-    try:
-        import joblib
-        if os.path.exists(_XGB_MODEL_PATH):
-            saved = joblib.load(_XGB_MODEL_PATH)
-            # Validate feature count matches current code
-            if saved.get("n_features") == len(FEATURE_NAMES):
-                _xgb_models = {"long": saved["long"], "short": saved["short"]}
-                _xgb_model_timestamp = saved.get("trained_at", datetime.now())
-                logger.info("Loaded XGB backtester models from disk (trained %s, %d features)",
-                           _xgb_model_timestamp.strftime("%Y-%m-%d %H:%M"), len(FEATURE_NAMES))
-                return _xgb_models
-            else:
-                logger.info("XGB model feature count mismatch (%d vs %d) — retraining",
-                           saved.get("n_features", 0), len(FEATURE_NAMES))
-    except Exception as e:
-        logger.debug("Could not load XGB from disk: %s", e)
+        try:
+            import xgboost as xgb
+        except ImportError:
+            logger.warning("XGBoost not installed — falling back to heuristic signals")
+            _xgb_models = False
+            return None
 
-    logger.info("Training XGBoost backtester on all candle data (%d features)...", len(FEATURE_NAMES))
-    X, y_long, y_short = _generate_xgb_training_data()
+        # Try loading pre-trained models from disk
+        try:
+            import joblib
+            if os.path.exists(_XGB_MODEL_PATH):
+                saved = joblib.load(_XGB_MODEL_PATH)
+                # Validate feature count matches current code
+                if saved.get("n_features") == len(FEATURE_NAMES):
+                    _xgb_models = {"long": saved["long"], "short": saved["short"]}
+                    # `or`, not dict.get's default: the key EXISTS in files
+                    # written by scheduler._task_retrain_xgb_daily but its value
+                    # is None, and get(key, default) returns the stored None in
+                    # that case. The next line then called .strftime() on None,
+                    # raised AttributeError, and the handler below discarded a
+                    # perfectly good model and retrained from ~600k candles —
+                    # 30-40 minutes at full CPU, on every single backtest, for a
+                    # missing log field. Measured live on 2026-08-25.
+                    _xgb_model_timestamp = saved.get("trained_at") or datetime.now()
+                    logger.info("Loaded XGB backtester models from disk (trained %s, %d features)",
+                               _xgb_model_timestamp.strftime("%Y-%m-%d %H:%M"), len(FEATURE_NAMES))
+                    return _xgb_models
+                else:
+                    logger.info("XGB model feature count mismatch (%d vs %d) — retraining",
+                               saved.get("n_features", 0), len(FEATURE_NAMES))
+        except Exception as e:
+            # WARNING, not debug. Falling through from here costs 30-40 minutes
+            # of pinned CPU, and at debug level (the app runs at INFO) the log
+            # jumped straight from silence to "Training XGBoost..." with nothing
+            # explaining why the cache was rejected. A cache miss this expensive
+            # must never be silent.
+            logger.warning("Could not load XGB models from %s (%s: %s) — falling back to a "
+                           "full retrain, which takes 30-40 minutes at full CPU",
+                           _XGB_MODEL_PATH, type(e).__name__, e)
 
-    if len(X) < 100:
-        logger.warning("Insufficient training data for XGBoost: %d samples", len(X))
-        _xgb_models = False
-        return None
+        logger.info("Training XGBoost backtester on all candle data (%d features)...", len(FEATURE_NAMES))
+        X, y_long, y_short = _generate_xgb_training_data()
 
-    X = np.array(X, dtype=np.float32)
-    y_long = np.array(y_long)
-    y_short = np.array(y_short)
+        if len(X) < 100:
+            logger.warning("Insufficient training data for XGBoost: %d samples", len(X))
+            _xgb_models = False
+            return None
 
-    lp = int(y_long.sum())
-    sp = int(y_short.sum())
-    logger.info("XGB data: %d samples — long wins %d (%.0f%%), short wins %d (%.0f%%)",
-                len(X), lp, lp / len(X) * 100, sp, sp / len(X) * 100)
+        X = np.array(X, dtype=np.float32)
+        y_long = np.array(y_long)
+        y_short = np.array(y_short)
 
-    # Guard against degenerate labels
-    if lp < 5 or sp < 5:
-        logger.warning("Too few positive labels (long=%d, short=%d) — skipping XGB", lp, sp)
-        _xgb_models = False
-        return None
+        lp = int(y_long.sum())
+        sp = int(y_short.sum())
+        logger.info("XGB data: %d samples — long wins %d (%.0f%%), short wins %d (%.0f%%)",
+                    len(X), lp, lp / len(X) * 100, sp, sp / len(X) * 100)
 
-    params = dict(
-        n_estimators=150,
-        max_depth=3,
-        learning_rate=0.08,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_alpha=1.0,
-        reg_lambda=2.0,
-        min_child_weight=5,
-        random_state=42,
-        eval_metric='logloss',
-    )
+        # Guard against degenerate labels
+        if lp < 5 or sp < 5:
+            logger.warning("Too few positive labels (long=%d, short=%d) — skipping XGB", lp, sp)
+            _xgb_models = False
+            return None
 
-    long_model = xgb.XGBClassifier(
-        scale_pos_weight=max(1.0, (len(y_long) - lp) / max(1, lp)),
-        **params,
-    )
-    long_model.fit(X, y_long)
+        params = dict(
+            n_estimators=150,
+            max_depth=3,
+            learning_rate=0.08,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=1.0,
+            reg_lambda=2.0,
+            min_child_weight=5,
+            random_state=42,
+            eval_metric='logloss',
+        )
 
-    short_model = xgb.XGBClassifier(
-        scale_pos_weight=max(1.0, (len(y_short) - sp) / max(1, sp)),
-        **params,
-    )
-    short_model.fit(X, y_short)
+        long_model = xgb.XGBClassifier(
+            scale_pos_weight=max(1.0, (len(y_long) - lp) / max(1, lp)),
+            **params,
+        )
+        long_model.fit(X, y_long)
 
-    _xgb_models = {"long": long_model, "short": short_model}
-    _xgb_model_timestamp = datetime.now()
+        short_model = xgb.XGBClassifier(
+            scale_pos_weight=max(1.0, (len(y_short) - sp) / max(1, sp)),
+            **params,
+        )
+        short_model.fit(X, y_short)
 
-    # Save to disk for fast loading on next restart
-    try:
-        import joblib
-        os.makedirs(os.path.dirname(_XGB_MODEL_PATH), exist_ok=True)
-        joblib.dump({
-            "long": long_model,
-            "short": short_model,
-            "n_features": len(FEATURE_NAMES),
-            "trained_at": _xgb_model_timestamp,
-            "n_samples": len(X),
-        }, _XGB_MODEL_PATH)
-        logger.info("Saved XGB backtester models to %s", _XGB_MODEL_PATH)
-    except Exception as e:
-        logger.warning("Could not save XGB models to disk: %s", e)
+        _xgb_models = {"long": long_model, "short": short_model}
+        _xgb_model_timestamp = datetime.now()
 
-    # Log feature importances
-    for tag, mdl in [("LONG", long_model), ("SHORT", short_model)]:
-        imp = mdl.feature_importances_
-        top5 = sorted(zip(FEATURE_NAMES, imp), key=lambda x: -x[1])[:5]
-        logger.info("XGB %s top features: %s", tag, ", ".join(f"{n}={v:.3f}" for n, v in top5))
+        # Save to disk for fast loading on next restart.
+        #
+        # Written to a temp file in the SAME directory and then os.replace()d
+        # into place, which is atomic on the same filesystem. Dumping straight
+        # onto the final path leaves a truncated file if the process is killed
+        # mid-write — and a corrupt model still LOADS (the reader only checks
+        # n_features), so it yields garbage signals silently, whereas a missing
+        # file correctly triggers a clean retrain. This is CLAUDE.md
+        # operational rule 4, and it is not hypothetical here: a training run
+        # was killed 16 minutes in on 2026-08-25.
+        try:
+            import joblib
+            os.makedirs(os.path.dirname(_XGB_MODEL_PATH), exist_ok=True)
+            tmp_path = f"{_XGB_MODEL_PATH}.tmp.{os.getpid()}"
+            joblib.dump({
+                "long": long_model,
+                "short": short_model,
+                "n_features": len(FEATURE_NAMES),
+                "trained_at": _xgb_model_timestamp,
+                "n_samples": len(X),
+            }, tmp_path)
+            os.replace(tmp_path, _XGB_MODEL_PATH)
+            logger.info("Saved XGB backtester models to %s", _XGB_MODEL_PATH)
+        except Exception as e:
+            logger.warning("Could not save XGB models to disk: %s", e)
+            try:
+                os.remove(tmp_path)      # never leave a partial file behind
+            except Exception:
+                pass
 
-    return _xgb_models
+        # Log feature importances
+        for tag, mdl in [("LONG", long_model), ("SHORT", short_model)]:
+            imp = mdl.feature_importances_
+            top5 = sorted(zip(FEATURE_NAMES, imp), key=lambda x: -x[1])[:5]
+            logger.info("XGB %s top features: %s", tag, ", ".join(f"{n}={v:.3f}" for n, v in top5))
+
+        return _xgb_models
 
 
 def _xgb_analysis(tech, change_pct, p_long, p_short):
@@ -1799,7 +1831,9 @@ def get_xgb_signal(instrument_key):
       - recommendation: BUY CE / BUY PE / WAIT
       - technicals: computed technical indicators
     """
-    candles = _fetch_candles_from_db(instrument_key)
+    # Bounded: this runs on the 5-second F&O auto-trade cycle, and only the
+    # latest bar plus MIN_BASELINE_CANDLES of lookback is used.
+    candles = _fetch_candles_from_db(instrument_key, days=FNO_SIGNAL_DAYS)
     if len(candles) < MIN_BASELINE_CANDLES:
         return {
             "direction": "NEUTRAL",

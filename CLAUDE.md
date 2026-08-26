@@ -283,3 +283,155 @@ instrument before the code.
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer
 rewrites due to overcomplication, and clarifying questions come before
 implementation rather than after mistakes.
+
+---
+
+# 🔁 Operational Rules
+
+Process rules learned from real incidents in this repo. Each one exists
+because ignoring it cost real debugging time or corrupted real data.
+
+## 1. Restart the app ONLY via the script
+
+```bash
+./start-all.sh --stop && ./start-all.sh --dashboard-only
+```
+
+**Never** `nohup python3 app.py &` directly. `--stop` kills by PID *and*
+sweeps the port, then verifies the port is actually free (it exits 1 if not).
+A raw start skips all of that.
+
+**What happened:** a stale `.groww-pids` meant `--stop` killed a dead PID,
+deleted the file, and reported success while a 2-hour-old instance kept port
+8000. Every subsequent start died with `Address already in use`, so the
+dashboard silently served *old code* through several "restarts", and hours
+were spent debugging symptoms of a process that was never restarted.
+
+Before assuming the app restarted, check:
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+Also: process-name matching is unreliable here — the binary is `Python`, not
+`python3`, so `pkill -f "python3 app.py"` matches nothing. Kill by port or PID.
+
+## 2. Never exercise a write path against live trading records
+
+Testing a trade-write by actually calling it pollutes real data. `_paper_trade`
+writes to **four** stores — `paper_trades.json`, `trade_journal.json`, and the
+`paper_trades` + `trade_journal` DB tables — so restoring one file does not
+undo it.
+
+Test instead by: building ORM objects and `session.rollback()`; asserting on
+the dict a function *returns* without persisting; or pointing the tracker at a
+temp copy. If live records do get polluted, identify the exact rows by ID
+before deleting, and back up first.
+
+## 3. Every background watcher needs a timeout
+
+An `until grep -q "DONE" log; do sleep 30; done` loop waits forever if the
+process it watches is killed before writing its marker. Two such loops ran for
+**2h48m** watching processes that had died minutes in.
+
+Bound every wait, and when killing a job, kill its watcher too.
+
+## 4. Model artifacts: save atomically, and verify the save happened
+
+`joblib.dump()` straight onto the final path leaves a truncated file if
+interrupted — and a *corrupt* model loads as garbage, whereas a *missing* one
+correctly triggers a retrain. Write to a temp file in the same directory and
+`os.replace()`.
+
+Separately: **"trained successfully" is not "saved"**. The F&O retrain logged
+success daily for four months while only setting an in-memory global — the
+file on disk never changed. After any retrain, verify the artifact's mtime.
+
+## 5. Long-running jobs must be staggered, not stacked
+
+Retrains measured at ~25 min (GBC), ~4 min (cash XGB), ~31 min (F&O) were
+scheduled **10 seconds apart**. Derive offsets from measured runtimes so jobs
+never overlap, especially alongside 5-second trade tasks.
+
+## 6. Frontend: mutating requests must go through `api()`
+
+The server rejects any non-GET without `X-Device-Token` (see
+`_block_cross_origin_mutations`). `api()` attaches it; a raw `fetch()` does
+not — so a raw mutating fetch 401s **permanently**, and because GETs still
+work the dashboard looks healthy while mutations fail silently.
+
+This bug recurred **four times**, including on `/api/close-trade` (a money
+path). A guard now exists:
+
+```bash
+python check_raw_fetch.py     # exit 1 if any raw mutating fetch() exists
+```
+
+Note `api()` returns parsed JSON and **throws** on non-2xx — it does not
+return a `Response`, so drop any `response.ok` / `await response.json()`.
+
+## 7. Expensive reads need a bound AND a cache
+
+`/api/data-health` timed out at ~190s because `count(DISTINCT symbol)` over
+`fyers_candles` (~60M rows, 32 partitions) ran on every poll. Fix order:
+rewrite to probe the index (`EXISTS`), bound by `ts` so partitions prune, then
+cache. 190s → 0.7s.
+
+This is CLAUDE.md standard #2 ("bound every read that can grow") violated in
+new code — check new queries against the existing standards, not just old ones.
+
+## 8. Guards must fail CLOSED
+
+A safety check that returns "zero" or "none" on error removes itself exactly
+when the system is least healthy. `_count_open_positions()` returned `0` on
+broker failure, which reads as "no positions open" and silently voided the
+max-positions cap.
+
+Return `None` for unknown and make callers refuse to act. Unknown ≠ none.
+
+Related: a duplicate-entry guard built from broker positions is blind in paper
+mode (the broker reports nothing), so it re-enters the same symbol every cycle
+— measured at **385 LT entries in one day, ₹24,242 wasted on fragmentation**.
+Union broker positions with open paper positions.
+
+## 9. FYERS API rate limit
+
+**10 requests/sec, 200/min (Standard tier) — 600/min on Prime — 100,000/day.**
+`[OFFICIAL FYERS DOCUMENTATION]`, see `docs/FYERS_MIGRATION_MASTER_REPORT.md`
+§10. Quotes batch cap is documented at 50 symbols/call.
+
+**Exceeding the per-minute limit more than 3 times in a day gets the account
+blocked for the rest of that day** — not throttled, blocked. This is a much
+harsher consequence than an ordinary rate limit and changes how conservative
+the local limiter needs to be.
+
+Every FYERS call must go through `fyers_client._request()` — it's the single
+chokepoint enforcing a token-bucket limiter (`_acquire_token`) and an
+exponential-backoff cooldown on a real 429 (`_note_429`, capped at 300s).
+Config-driven via `fyers.rate_per_sec` / `fyers.burst` (`config_settings`,
+memoized `get_config`), literal fallback in code if the DB row is absent.
+
+**The literal fallback must itself stay under the documented limit.** It
+previously didn't: `_DEFAULT_RATE = 5.0`/sec (300/min) was 50% over the
+200/min Standard cap, while the live DB override (2.5/sec = 150/min) carried
+a description that literally said *"keep under ~3.3/sec to avoid 429
+blocks"* — the code just didn't listen to its own config's advice. A missing
+`config_settings` row (fresh DB, restored backup, new environment) would have
+silently run the limiter at a rate capable of triggering FYERS's own
+account-block penalty. Same "guards fail closed" principle as rule 8, applied
+to a limiter's *own* fallback rather than to what it's guarding.
+
+Also found and fixed: `_note_429()`/`_note_ok()` did an **unlocked**
+read-modify-write on two shared globals (`_cooldown_step`, `_cooldown_until`)
+from multiple threads (4 five-second scheduler tasks + ~15 `fetch_live_price`
+call sites). Proven with an adversarial concurrency test — forcing the
+interleaving a torn read needs — that the unlocked version lost 14/20 updates
+under real thread scheduling; the locked version (reusing `_bucket_lock`)
+lost 0/120 across repeated stress runs. Whether that specific race caused any
+one incident is unproven (GIL scheduling usually completes the critical
+section without switching), but the code was provably unsafe regardless, so
+it's fixed on the general principle, not on a specific incident being pinned
+to it.
+
+Before touching this file: verify a config change against the math —
+`rate_per_sec * 60 + burst` must stay under the tier's per-minute cap, not
+just look like a plausible number.

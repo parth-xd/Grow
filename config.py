@@ -28,7 +28,13 @@ WATCHLIST = os.getenv(
 ).split(",")
 
 # Risk management
-STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "2.0"))
+# Hard ceiling on the INITIAL stop-loss for cash trades. Clamped here rather
+# than at each call site so every consumer inherits it: paper_trader.record_entry,
+# trade_journal (pre-trade report + narrative) and bot.py's GTT placement all
+# derive their SL from STOP_LOSS_PCT, and a cap applied in only some of them
+# would put the journal's stated SL out of step with the one actually armed.
+MAX_CASH_SL_PCT = 1.0
+STOP_LOSS_PCT = min(float(os.getenv("STOP_LOSS_PCT", "2.0")), MAX_CASH_SL_PCT)
 TARGET_PCT = float(os.getenv("TARGET_PCT", "4.0"))
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 

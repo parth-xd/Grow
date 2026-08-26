@@ -1,9 +1,9 @@
 """
 PostgreSQL database manager — unified ORM for all persistent data.
 Models: Candle, CommoditySnapshot, DisruptionEvent, NewsArticle, GlobalNews,
-        Stock, TradeJournalEntry, TradeLogEntry, StockThesis, AnalysisCache,
-        WatchlistNote, ConfigSetting, CompanyConnection, CompanyExternalData,
-        ExternalSlugMap.
+        Stock, NSEInstrument, MasterTicker, TradeJournalEntry, TradeLogEntry,
+        StockThesis, AnalysisCache, WatchlistNote, ConfigSetting,
+        CompanyConnection, CompanyExternalData, ExternalSlugMap.
 """
 
 import json
@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Index, Text, Boolean, text, update
 from sqlalchemy.ext.declarative import declarative_base
@@ -19,6 +19,12 @@ from sqlalchemy.exc import IntegrityError, DataError
 from sqlalchemy.orm import sessionmaker, scoped_session
 
 logger = logging.getLogger(__name__)
+
+# Indian market time. Used to normalise FYERS TIMESTAMPTZ reads, which come
+# back from pandas as UTC-aware — never rely on the host machine's timezone
+# for market-session logic.
+_IST_NAME = "Asia/Kolkata"
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 Base = declarative_base()
 
@@ -205,6 +211,77 @@ class Stock(Base):
         return f"<Stock {self.symbol} ({self.company_name})>"
 
 
+class NSEInstrument(Base):
+    """
+    Full NSE main-board equity directory (exchange=NSE, segment=CASH,
+    series=EQ), sourced from Groww's instrument master. Search/autocomplete
+    only — deliberately separate from `Stock`, which drives the scheduler's
+    polling loop, Tijori collection, and research scoring. Adding a row here
+    does not add it to any active tracking loop.
+    """
+    __tablename__ = "nse_instruments"
+
+    symbol = Column(String(20), primary_key=True)
+    name = Column(String(200), nullable=False, index=True)
+    isin = Column(String(20))
+    series = Column(String(10))
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<NSEInstrument {self.symbol} ({self.name})>"
+
+
+class MasterTicker(Base):
+    """
+    Master ticker / security directory — the complete NSE-listed universe
+    plus the identifier each data provider needs for the same security.
+
+    This is a DIRECTORY, not a data-collection universe: adding a row here
+    does not fetch prices, subscribe to any feed, or trigger Tijori
+    collection. It only maps `nse_ticker` to what each provider calls that
+    security, so the Watchlist add flow and search can resolve identifiers
+    without guessing. `Stock` (the scheduler/Tijori/research active
+    universe) and `NSEInstrument` (superseded by this table for search) are
+    separate and untouched by this model.
+
+    `tijori_ticker` is populated read-only from the existing
+    `external_slug_map` cache — this table never triggers a new Tijori page
+    fetch; that still only happens via the existing watchlist-add onboarding
+    flow (tijori_collector.onboard_symbol).
+    """
+    __tablename__ = "master_ticker_table"
+
+    nse_ticker = Column(String(20), primary_key=True)
+    company_name = Column(String(200))
+    isin = Column(String(20), index=True)
+    exchange = Column(String(10), default="NSE")
+    segment = Column(String(10))           # "CASH" (equities) or "INDEX"
+    instrument_type = Column(String(10))   # "EQ" or "INDEX"
+
+    # FYERS — historical-symbol format verified identical to the string the
+    # SDK's WebSocket subscribe() call accepts (fyers_apiv3 3.1.16
+    # data_ws.py:1776); kept as separate columns since the two are resolved
+    # independently and could diverge for a future instrument type.
+    fyers_historical_symbol = Column(String(40))
+    fyers_websocket_symbol = Column(String(40))
+    fyers_token = Column(String(30))
+    fyers_isin = Column(String(20))        # FYERS's own ISIN, for cross-check against `isin`
+    fyers_resolution_status = Column(String(20), default="unresolved")  # resolved/unresolved
+    fyers_unresolved_reason = Column(Text)
+
+    tijori_ticker = Column(String(200))    # verified Tijori slug, read from external_slug_map only
+    tijori_resolution_status = Column(String(20), default="not_attempted")  # resolved/failed/not_attempted
+    tijori_unresolved_reason = Column(Text)
+
+    is_active = Column(Boolean, default=True)  # False = no longer in the current NSE universe pull; never deleted
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<MasterTicker {self.nse_ticker} fyers={self.fyers_resolution_status} tijori={self.tijori_resolution_status}>"
+
+
 # ── Trade Journal (replaces trade_journal.json) ─────────────────────────────
 
 class TradeJournalEntry(Base):
@@ -218,6 +295,10 @@ class TradeJournalEntry(Base):
     side = Column(String(4), nullable=False)      # BUY / SELL
     quantity = Column(Integer, nullable=False)
     trigger = Column(String(20), default="auto")  # auto / manual
+    # Which model produced the signal: 'GradientBoosting' or 'XGBoost'.
+    # Nullable because rows written before the cash-XGBoost addition have no
+    # attribution; those predate any model other than GradientBoosting.
+    model_source = Column(String(20), index=True)
     is_paper = Column(Boolean, default=True)      # True for paper trades, False for actual
     
     # Entry details
@@ -278,6 +359,12 @@ class TradeJournalEntry(Base):
             "peak_pnl": self.peak_pnl,
             "actual_profit_pct": self.actual_profit_pct,
             "breakeven_price": self.breakeven_price,
+            # Which model decided this trade. The column was added and is
+            # populated on write, but was missing here — so every API response
+            # and the whole dashboard dropped it silently, and a filled trade
+            # looked like it came from nowhere. Attribution that exists in the
+            # DB but never reaches the screen is the same as no attribution.
+            "model_source": self.model_source,
             "pre_trade": pre,
             "post_trade": post,
         }
@@ -400,6 +487,8 @@ class PaperTrade(Base):
     order_type = Column(String(20), default="MARKET")
     status = Column(String(20), default="FILLED")
     paper_order_id = Column(String(50))
+    # Which model produced the signal — see TradeJournalEntry.model_source.
+    model_source = Column(String(20), index=True)
     charges = Column(Float, default=0)
     remark = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -719,22 +808,43 @@ class CandleDatabase:
         
         session = self.Session()
         try:
+            # Normalise every timestamp FIRST, then ask the DB once which of
+            # them already exist. This was a .filter_by(symbol, timestamp)
+            # .first() inside the loop — one round-trip PER CANDLE, so a
+            # 500-candle batch cost 500 queries before inserting anything.
+            #
+            # The preload is bounded to the batch's own [min, max] range rather
+            # than reading every candle for the symbol, so it stays small no
+            # matter how large the table grows (CLAUDE.md standard 2). Only the
+            # timestamp column is selected — the rows themselves are never
+            # needed, just their existence.
+            _parsed = []
             for candle_data in candles_list:
-                # Handle timestamp
                 if isinstance(candle_data["timestamp"], str):
                     ts = datetime.fromisoformat(candle_data["timestamp"])
                 elif isinstance(candle_data["timestamp"], (int, float)):
                     ts = datetime.fromtimestamp(candle_data["timestamp"])
                 else:
                     ts = candle_data["timestamp"]
+                _parsed.append((ts, candle_data))
 
-                # Use insert_or_ignore logic (update if exists, insert if not)
-                existing = session.query(Candle).filter_by(
-                    symbol=symbol,
-                    timestamp=ts
-                ).first()
+            _existing_ts = set()
+            if _parsed:
+                _lo = min(t for t, _ in _parsed)
+                _hi = max(t for t, _ in _parsed)
+                _existing_ts = {
+                    r[0] for r in session.query(Candle.timestamp).filter(
+                        Candle.symbol == symbol,
+                        Candle.timestamp >= _lo,
+                        Candle.timestamp <= _hi,
+                    ).all()
+                }
 
-                if not existing:
+            for ts, candle_data in _parsed:
+                if ts not in _existing_ts:
+                    # Mirrors the autoflush the old .first() relied on: a batch
+                    # containing the same timestamp twice must insert it once.
+                    _existing_ts.add(ts)
                     candle = Candle(
                         symbol=symbol,
                         timestamp=ts,
@@ -755,15 +865,240 @@ class CandleDatabase:
         finally:
             session.close()
 
+    # Resolution tiers available in fyers_candles, finest first. '5S' covers
+    # roughly the last 25 trading days (FYERS seconds retention), '1' covers
+    # 2017-07-03 onward.
+    #
+    # THEY DO OVERLAP. An earlier note here claimed they did not and unioned
+    # both tiers unconditionally; measured against the live DB, 5S began
+    # 2026-07-13 while 1-minute ran to 2026-08-14, giving 1,680 symbol-days
+    # carrying both. Because the resample sums volume, every trade in that
+    # window was counted twice - exactly 2.0x on 1,864 of 1,875 RELIANCE bars,
+    # with a hard 1x->2x step at the boundary. OHLC was unaffected (first/max/
+    # min/last over a superset yields the same values), but volume_ratio is a
+    # live model feature, so models trained on 1x history were being served 2x
+    # bars. get_fyers_candles_as_5min() now keeps one tier per bucket.
+    _FYERS_INTRADAY_TIERS = ("5S", "1")
+
+    @staticmethod
+    def _resolve_window(days, as_of):
+        """
+        Turn (days, as_of) into the (lower, upper) ts bounds these readers use.
+
+        All three fyers readers were lower-bound-only: `ts >= now - days`, with
+        no upper bound. That is correct for live use and WRONG for replay — a
+        backtest asking for "the 1-day window as of 2026-05-13" would silently
+        receive candles up to today, handing the model the future.
+
+        `as_of` supplies the missing upper bound AND re-anchors the lower one,
+        so `days` keeps meaning "this much history ending at as_of" rather than
+        "ending now". Passing as_of=None reproduces the previous behaviour
+        exactly, so every existing caller is unaffected.
+
+        A naive as_of is read as IST — the convention these readers already
+        return — because comparing a naive value against a TIMESTAMPTZ column
+        would otherwise be resolved using the server's timezone.
+        """
+        if as_of is not None and as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=_IST)
+        anchor = as_of or datetime.now(_IST)
+        lower = anchor - timedelta(days=days) if days is not None else None
+        return lower, as_of
+
+    def get_fyers_candles_as_5min(self, symbol, days=None, as_of=None):
+        """
+        Read fyers_candles and return 5-minute bars in the exact shape
+        get_candles() returns, so existing feature engineering, labels and
+        models keep working unchanged.
+
+        Two things this must get right, both verified empirically against the
+        live DB (see docs/FYERS_CANDLE_MIGRATION_PLAN.md):
+
+        1. TIMEZONE. fyers_candles.ts is TIMESTAMPTZ, and pandas reads it back
+           as UTC-aware — 09:15 IST arrives as 03:45 UTC. The legacy `candles`
+           table stored naive IST. predictor.build_features() derives
+           time_of_day / is_opening / is_closing from .dt.hour and assumes
+           naive IST, so the UTC form silently corrupts them (09:15 would read
+           as hour 3). We convert to IST and drop the tzinfo, reproducing the
+           legacy representation exactly.
+
+        2. SESSION-ALIGNED RESAMPLING. Bucketing happens after the IST
+           conversion. At 5-minute width this is belt-and-braces rather than
+           strictly required — IST's +5:30 offset is a multiple of 5 minutes,
+           so a UTC-midnight-anchored 5-minute grid happens to coincide with
+           the IST-09:15 grid too (verified empirically). It would matter for
+           an hourly or daily bucket width, so converting first is kept as
+           the always-correct order rather than relying on that coincidence.
+
+        Empty buckets are dropped rather than forward-filled: no candle is
+        invented for a period with no source data.
+
+        Args:
+            symbol: canonical symbol, e.g. 'RELIANCE' (same convention as
+                    the legacy table — fyers_candles uses identical strings)
+            days: lookback window; None = all available history. Callers on
+                  a hot path should always pass a bound — unbounded reads
+                  resample a symbol's entire multi-year 1-minute history
+                  (measured ~5s / ~770MB peak for a liquid name).
+            as_of: optional point-in-time ceiling (see _resolve_window). None
+                   keeps the original live behaviour; a value makes `days`
+                   count back from as_of and excludes anything after it.
+
+        Returns:
+            DataFrame with columns: timestamp, datetime, open, high, low, close, volume
+            (datetime is naive IST, matching get_candles())
+        """
+        try:
+            lower, upper = self._resolve_window(days, as_of)
+            frames = []
+            for tier_rank, resolution in enumerate(self._FYERS_INTRADAY_TIERS):
+                params = {"sym": symbol, "res": resolution}
+                cutoff_sql = ""
+                if lower is not None:
+                    cutoff_sql += " AND ts >= :cutoff"
+                    params["cutoff"] = lower
+                if upper is not None:
+                    cutoff_sql += " AND ts <= :as_of"
+                    params["as_of"] = upper
+                sql = text(
+                    "SELECT ts, open, high, low, close, volume FROM fyers_candles "
+                    f"WHERE symbol = :sym AND resolution = :res {cutoff_sql} ORDER BY ts"
+                )
+                part = pd.read_sql(sql, self.engine, params=params)
+                if not part.empty:
+                    part["_tier"] = tier_rank
+                    frames.append(part)
+
+            if not frames:
+                return pd.DataFrame()
+
+            df = pd.concat(frames, ignore_index=True)
+
+            # UTC -> IST -> naive. Must happen before resampling so buckets
+            # align to the trading session, not to UTC midnight.
+            ts = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(_IST_NAME).dt.tz_localize(None)
+            df = df.drop(columns=["ts"]).set_index(pd.DatetimeIndex(ts)).sort_index()
+
+            # Keep exactly ONE tier per 5-minute bucket: the finest present.
+            # Without this, overlapping 5S and 1-minute rows both land in the
+            # same bucket and `volume: sum` double-counts them (see the note on
+            # _FYERS_INTRADAY_TIERS). Choosing per BUCKET rather than per symbol
+            # means a hole in 5S coverage falls back to 1-minute for just the
+            # affected buckets instead of leaving a gap. Comparison is
+            # positional because the index has duplicate timestamps across
+            # tiers, which would make label-aligned comparison unreliable.
+            tier = df["_tier"].to_numpy()
+            finest = (
+                pd.Series(tier)
+                .groupby(df.index.floor("5min").values)
+                .transform("min")
+                .to_numpy()
+            )
+            df = df[tier == finest].drop(columns=["_tier"])
+
+            agg = df.resample("5min").agg(
+                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+            ).dropna(subset=["open"])
+
+            if agg.empty:
+                return pd.DataFrame()
+
+            out = agg.reset_index(names="datetime")
+            out = out.drop_duplicates(subset=["datetime"], keep="last").sort_values("datetime")
+            out["timestamp"] = out["datetime"].astype("int64") // 10**9
+            return out[["timestamp", "datetime", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+        except Exception as e:
+            logger.error(f"✗ Error fetching fyers candles for {symbol}: {e}")
+            return pd.DataFrame()
+
+    def get_fyers_1min(self, symbol, days=None, as_of=None):
+        """
+        NATIVE 1-minute bars from fyers_candles (resolution='1'), no
+        resampling. Same output shape and same naive-IST `datetime`
+        convention as get_candles()/get_fyers_candles_as_5min().
+
+        Used by the cash XGBoost model, which trains and infers on native
+        1-minute data. Because both training and live inference call this
+        one method, they cannot drift onto different resolutions — the
+        train/serve skew risk that the tiered 5-second/1-minute split would
+        otherwise create.
+
+        IST conversion is identical to the 5-minute adapter: the TIMESTAMPTZ
+        column comes back from pandas as UTC-aware, so it is converted to
+        Asia/Kolkata and then made naive, reproducing exactly what
+        predictor.build_features() expects when it reads .dt.hour.
+        """
+        try:
+            lower, upper = self._resolve_window(days, as_of)
+            params = {"sym": symbol}
+            cutoff_sql = ""
+            if lower is not None:
+                cutoff_sql += " AND ts >= :cutoff"
+                params["cutoff"] = lower
+            if upper is not None:
+                cutoff_sql += " AND ts <= :as_of"
+                params["as_of"] = upper
+            sql = text(
+                "SELECT ts, open, high, low, close, volume FROM fyers_candles "
+                f"WHERE symbol = :sym AND resolution = '1' {cutoff_sql} ORDER BY ts"
+            )
+            df = pd.read_sql(sql, self.engine, params=params)
+            if df.empty:
+                return pd.DataFrame()
+            df["datetime"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(_IST_NAME).dt.tz_localize(None)
+            df = df.drop(columns=["ts"]).drop_duplicates(subset=["datetime"]).sort_values("datetime")
+            df["timestamp"] = df["datetime"].astype("int64") // 10**9
+            return df[["timestamp", "datetime", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+        except Exception as e:
+            logger.error(f"✗ Error fetching fyers 1-min candles for {symbol}: {e}")
+            return pd.DataFrame()
+
+    def get_fyers_daily(self, symbol, days=None, as_of=None):
+        """
+        Daily bars from fyers_candles (resolution='D'), same output shape as
+        get_candles(). For consumers that want true daily data rather than
+        intraday — no resampling involved, but the same IST normalisation
+        applies so `datetime` means the same thing everywhere.
+        """
+        try:
+            lower, upper = self._resolve_window(days, as_of)
+            params = {"sym": symbol}
+            cutoff_sql = ""
+            if lower is not None:
+                cutoff_sql += " AND ts >= :cutoff"
+                params["cutoff"] = lower
+            if upper is not None:
+                cutoff_sql += " AND ts <= :as_of"
+                params["as_of"] = upper
+            sql = text(
+                "SELECT ts, open, high, low, close, volume FROM fyers_candles "
+                f"WHERE symbol = :sym AND resolution = 'D' {cutoff_sql} ORDER BY ts"
+            )
+            df = pd.read_sql(sql, self.engine, params=params)
+            if df.empty:
+                return pd.DataFrame()
+            df["datetime"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(_IST_NAME).dt.tz_localize(None)
+            df = df.drop(columns=["ts"])
+            df["timestamp"] = df["datetime"].astype("int64") // 10**9
+            return df[["timestamp", "datetime", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+        except Exception as e:
+            logger.error(f"✗ Error fetching fyers daily candles for {symbol}: {e}")
+            return pd.DataFrame()
+
     def get_candles(self, symbol, days=None, interval_minutes=5):
         """
-        Retrieve candles from database using raw SQL for speed.
-        
+        Retrieve candles from the LEGACY Groww-sourced `candles` table using
+        raw SQL for speed.
+
+        NOTE: FYERS-sourced reads should use get_fyers_candles_as_5min() /
+        get_fyers_daily() instead. This method is retained unchanged for the
+        consumers that still legitimately read the legacy table.
+
         Args:
             symbol: Stock symbol
             days: Number of days to look back (None = all available)
             interval_minutes: Expected interval (for info only, DB stores raw candles)
-        
+
         Returns:
             DataFrame with columns: timestamp, datetime, open, high, low, close, volume
         """

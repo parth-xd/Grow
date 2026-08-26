@@ -157,48 +157,50 @@ def _get_portfolio_snapshot():
 
 
 def _get_watchlist_predictions():
-    """Get ML predictions for each watchlist stock using DB candles only (no live API calls)."""
+    """
+    ML predictions for the whole watchlist, via bot.scan_watchlist().
+
+    Rewritten because the previous implementation returned an empty list every
+    time, for FOUR independent reasons — each of which alone was enough:
+
+      1. It read the legacy `candles` table, which has had 0 rows since the
+         FYERS migration.
+      2. It imported `StockPredictor`, which does not exist in predictor.py
+         (the class is PricePredictor). The ImportError was swallowed by the
+         outer try/except, so the whole function silently returned [].
+      3. Even with the right name, it constructed a FRESH predictor and called
+         .predict() on it — PricePredictor.predict() short-circuits to
+         HOLD/confidence 0 unless is_trained, and a new instance never is.
+      4. It iterated config.WATCHLIST — the static 10-symbol seed list — not
+         the ~73-symbol DB watchlist. The same bug scheduler.py documents for
+         ml_retrain.
+
+    bot.scan_watchlist() is the path the dashboard itself uses: it loads the
+    persisted per-symbol models, applies the same four-source weighted blend,
+    and is already parallelised (serial measured ~4.5s/symbol). Using it means
+    the summary reports exactly what the dashboard shows, instead of a second
+    implementation that can drift.
+    """
     try:
-        from config import WATCHLIST
-        from db_manager import CandleDatabase, Candle
-        from predictor import StockPredictor
-        from sqlalchemy import text
-        import pandas as pd
-
-        db = CandleDatabase()
+        import bot
+        results = bot.scan_watchlist() or []
+        if isinstance(results, dict):
+            results = results.get("results") or results.get("predictions") or []
         preds = []
-        for sym in WATCHLIST:
-            try:
-                # Read last 200 5-min candles from DB directly (fast, no API)
-                with db.engine.connect() as conn:
-                    rows = conn.execute(text(
-                        "SELECT timestamp, open, high, low, close, volume "
-                        "FROM candles WHERE symbol=:sym ORDER BY timestamp DESC LIMIT 200"
-                    ), {"sym": sym}).fetchall()
-                if not rows or len(rows) < 30:
-                    continue
-                df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df = df.sort_values("timestamp").reset_index(drop=True)
-                for col in ["open", "high", "low", "close", "volume"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-
-                predictor = StockPredictor()
-                result = predictor.predict(df)
-                if result and isinstance(result, dict):
-                    preds.append({
-                        "symbol": sym,
-                        "signal": result.get("signal", "HOLD"),
-                        "confidence": round(result.get("confidence", 0) * 100, 1)
-                              if result.get("confidence", 0) <= 1
-                              else round(result.get("confidence", 0), 1),
-                        "reason": (result.get("reason", "") or "")[:80],
-                    })
-            except Exception:
-                pass
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            conf = r.get("confidence", 0) or 0
+            preds.append({
+                "symbol": r.get("symbol"),
+                "signal": r.get("signal", "HOLD"),
+                "confidence": round(conf * 100, 1) if conf <= 1 else round(conf, 1),
+                "reason": (r.get("reason", "") or "")[:80],
+            })
         return sorted(preds, key=lambda x: x.get("confidence", 0), reverse=True)
-    except Exception:
+    except Exception as e:
+        logger.warning("Watchlist predictions failed: %s", e)
         return []
-
 
 def _get_key_news():
     """Get top recent news headlines."""
@@ -216,15 +218,22 @@ def _get_key_news():
 
 
 def _get_last_day_candle_stats():
-    """Get last trading day's candle summary for key indices."""
+    """
+    Get last trading day's candle summary for key indices.
+
+    Source: fyers_candles. Uses the intraday ('5S'/'1') rows rather than the
+    resolution='D' bar so day_open/day_close remain first-bar/last-bar of the
+    session, exactly as the previous legacy query computed them.
+    """
     try:
-        from db_manager import CandleDatabase, Candle
-        from sqlalchemy import func, text
+        from db_manager import CandleDatabase
+        from sqlalchemy import text
         db = CandleDatabase()
         with db.engine.connect() as conn:
             # Get the most recent trading date in DB
             row = conn.execute(text(
-                "SELECT MAX(DATE(timestamp)) FROM candles"
+                "SELECT MAX((ts AT TIME ZONE 'Asia/Kolkata')::date) FROM fyers_candles "
+                "WHERE resolution IN ('5S','1')"
             )).scalar()
             if not row:
                 return {}
@@ -235,10 +244,13 @@ def _get_last_day_candle_stats():
             for sym in ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS", "HDFCBANK"]:
                 r = conn.execute(text("""
                     SELECT
-                        (SELECT open FROM candles WHERE symbol=:sym AND DATE(timestamp)=:dt ORDER BY timestamp ASC LIMIT 1) as day_open,
-                        (SELECT close FROM candles WHERE symbol=:sym AND DATE(timestamp)=:dt ORDER BY timestamp DESC LIMIT 1) as day_close,
+                        (SELECT open FROM fyers_candles WHERE symbol=:sym AND resolution IN ('5S','1')
+                            AND (ts AT TIME ZONE 'Asia/Kolkata')::date=:dt ORDER BY ts ASC LIMIT 1) as day_open,
+                        (SELECT close FROM fyers_candles WHERE symbol=:sym AND resolution IN ('5S','1')
+                            AND (ts AT TIME ZONE 'Asia/Kolkata')::date=:dt ORDER BY ts DESC LIMIT 1) as day_close,
                         MAX(high) as day_high, MIN(low) as day_low, SUM(volume) as day_vol
-                    FROM candles WHERE symbol=:sym AND DATE(timestamp)=:dt
+                    FROM fyers_candles WHERE symbol=:sym AND resolution IN ('5S','1')
+                        AND (ts AT TIME ZONE 'Asia/Kolkata')::date=:dt
                 """), {"sym": sym, "dt": last_date}).fetchone()
                 if r and r[0] is not None:
                     day_open, day_close = float(r[0]), float(r[1])
