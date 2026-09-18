@@ -121,8 +121,15 @@ def analyze_portfolio(groww_api, get_prediction_fn, fetch_live_price_fn):
     all_items = analyzed_holdings + analyzed_positions
     summary = _build_summary(all_items, analyzed_holdings, analyzed_positions)
 
+    # Also carried inside `summary` because the dashboard renders the "Analysis
+    # run at" label from the summary object alone and never sees the top-level
+    # response, which is why it read "Unknown". Kept in both places so neither
+    # consumer breaks.
+    ts = datetime.now().isoformat()
+    summary["timestamp"] = ts
+
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": ts,
         "summary": summary,
         "holdings": analyzed_holdings,
         "positions": analyzed_positions,
@@ -148,6 +155,18 @@ def _analyze_stock(symbol, quantity, avg_price, source, get_prediction_fn, fetch
         logger.warning("Could not fetch LTP for %s: %s", symbol, e)
         result["ltp"] = avg_price  # fallback
         ltp = avg_price
+
+    # A price source may legitimately have no price for a symbol. Flag it and
+    # leave ltp unset rather than substituting avg_price, which would render a
+    # cost price as though it were live. This stays source-agnostic: it knows
+    # only that a price can be absent, not where prices come from.
+    if ltp is None:
+        result["price_unavailable"] = True
+        result["ltp"] = None          # display shows "—", never a cost price
+        # Local value only, so the five downstream `ltp > 0` comparisons in
+        # this function take their existing no-price branches instead of
+        # raising TypeError. result["ltp"] stays None so nothing renders 0.
+        ltp = 0
 
     # ── Unrealised P&L ──────────────────────────────────────────────────
     if avg_price > 0 and ltp > 0:

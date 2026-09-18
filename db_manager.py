@@ -12,13 +12,35 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+import numpy as _np
 import pandas as pd
+from psycopg2.extensions import adapt as _pg_adapt, register_adapter as _pg_register_adapter
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Index, Text, Boolean, text, update
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import IntegrityError, DataError
 from sqlalchemy.orm import sessionmaker, scoped_session
 
 logger = logging.getLogger(__name__)
+
+# Teach psycopg2 to write numpy scalars. The models return np.float64 /
+# np.int64, and numpy 2.0 changed their repr from "0.6047" to
+# "np.float64(0.6047)". np.float64 subclasses float, so psycopg2 accepted it,
+# adapted it via the float path, and put that repr straight into the SQL —
+# which Postgres reads as schema "np", function "float64". Every
+# trade_journal and trade_snapshots write failed that way, silently, because
+# both call sites catch and log rather than raise. np.int64/np.bool_ are not
+# float subclasses and failed earlier still, with "can't adapt type".
+#
+# Delegating to psycopg2's own adapter rather than formatting the value here
+# is deliberate: repr() would emit bare `nan`/`inf` for those values, which
+# Postgres rejects as an unknown column — the same bug in a new costume.
+#
+# Registered against the abstract bases so every width is covered (float32/64,
+# int8..int64), not just the two that happen to appear in today's models.
+_np_adapt = lambda v: _pg_adapt(v.item())
+_pg_register_adapter(_np.floating, _np_adapt)
+_pg_register_adapter(_np.integer, _np_adapt)
+_pg_register_adapter(_np.bool_, _np_adapt)
 
 # Indian market time. Used to normalise FYERS TIMESTAMPTZ reads, which come
 # back from pandas as UTC-aware — never rely on the host machine's timezone
@@ -469,6 +491,29 @@ class WatchlistNote(Base):
     symbol = Column(String(20), nullable=False, unique=True, index=True)
     note = Column(Text, default="")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── Auth sessions ────────────────────────────────────────────────────────────
+
+class AuthSession(Base):
+    """
+    A logged-in browser/device (see auth_session.py). The random session ID
+    lives only in the client's cookie; this row keeps its SHA-256, so a DB
+    read never yields a usable credential. user_id is 1 today (the single
+    account) and is the hook the Google/Apple accounts plug into later.
+    """
+    __tablename__ = "auth_sessions"
+
+    id = Column(Integer, primary_key=True)
+    sid_hash = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, nullable=False, default=1, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)      # absolute lifetime
+    revoked_at = Column(DateTime)                      # logout / server-side kill
+    sudo_until = Column(DateTime)                      # step-up window (unused until D)
+    ip = Column(String(64))
+    user_agent = Column(String(300))
 
 
 # ── Paper Trades ─────────────────────────────────────────────────────────────
@@ -1464,6 +1509,14 @@ def set_config(key, value, description=None, db=None):
             session.add(ConfigSetting(key=key, value=str(value), description=description))
         session.commit()
         invalidate_config_cache(key)
+        # Tell open dashboards (see change_feed.py / /api/events). After the
+        # commit and in its own try, so a feed problem can never reach the
+        # rollback path or mask the write; notify() itself never raises.
+        try:
+            import change_feed
+            change_feed.notify("config", key=key)
+        except Exception:
+            pass
     except Exception as e:
         session.rollback()
         logger.error(f"Error setting config: {e}")

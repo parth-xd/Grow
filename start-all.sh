@@ -239,6 +239,18 @@ if [ "$START_DASHBOARD" = true ]; then
       exit 1
     }
     log_info "Python dependencies installed"
+
+    # FYERS market-data WebSocket. Installed WITHOUT its dependency metadata:
+    # it hard-pins requests==2.31.0 / aiohttp==3.9.3, which cannot coexist with
+    # growwapi's requirements, so listing it in requirements.txt makes pip fail
+    # with ResolutionImpossible. Its real runtime deps are declared there
+    # instead. See the comment block at the end of requirements.txt.
+    #
+    # Non-fatal on failure: fyers_ws_client is inert with respect to trading and
+    # app.py's startup hook already catches a missing SDK, so the dashboard runs
+    # normally without the live feed rather than refusing to start.
+    pip install -q --no-deps fyers-apiv3==3.1.17 2>/dev/null || \
+      log_error "FYERS WebSocket SDK install failed — dashboard will run without the live feed"
   fi
 fi
 

@@ -1563,13 +1563,21 @@
     input, select, textarea { font-size: 16px !important; }
 
     /* ── 3. Apple HIG minimum touch target: 44x44pt ──────────────────────
-       Measured: 172 controls below it — tabs at 41px, header buttons 31px. */
-    .btn, button, .tab, [role="button"] {
+       Measured: 172 controls below it — tabs at 41px, header buttons 31px.
+
+       Only real buttons get the inline-flex centring. A div with
+       role="button" is a *row* that happens to be tappable (the leaderboard
+       card), and inline-flex on it laid its stacked children out side by
+       side — symbol clipped to one letter, five scores overprinting each
+       other. Measured at 375px: the symbol block was 10px wide. Rows keep
+       their own layout and only inherit the target size. */
+    .btn, button, .tab {
       min-height: 44px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
     }
+    [role="button"] { min-height: 44px; }
 
     /* ── 4. Safe areas — the notch and the home indicator ────────────────
        <header> is sticky at top:0 with no inset, so it sits under the notch. */
@@ -2273,6 +2281,12 @@
       transform: scale(1.025);
       box-shadow: var(--shadow-md);
     }
+    /* An expanded card stays where it is. The pop is for the compact list:
+       on a collapsed 46px card it is a 1px nudge, on an opened 2,700px
+       report it is 34px of growth upward, straight over the trade count
+       above it (measured: card top 310 -> 276 against a count bottom of
+       298). transform is not layout, so nothing moves out of its way. */
+    .journal-entry.is-focused:has(.journal-detail.open) { transform: none; }
     @media (prefers-reduced-motion: reduce) {
       .journal-entry { transition: none; }
       .journal-entry.is-focused { transform: none; }
@@ -2498,20 +2512,20 @@
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lb-alpha { font-size: 18px; font-weight: 800; }
     .lb-card-sub {
-      font-size: 10px; color: var(--muted); margin-top: 1px;
+      font-size: 11px; color: var(--muted); margin-top: 1px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .lb-card-badges {
       display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 7px;
     }
-    .lb-conv { font-size: 10px; color: var(--muted); }
+    .lb-conv { font-size: 11px; color: var(--muted); }
     .lb-dims {
       display: grid; grid-template-columns: repeat(5, 1fr);
       gap: 4px; margin-top: 8px;
       border-top: .5px solid var(--border); padding-top: 7px;
     }
     .lb-dim-label {
-      font-size: 8px; font-weight: 600; letter-spacing: .04em;
+      font-size: 11px; font-weight: 600; letter-spacing: .02em;
       text-transform: uppercase; color: var(--muted);
     }
     .lb-dim-value { font-size: 13px; font-weight: 700; line-height: 1.2; }
@@ -2650,6 +2664,53 @@
     .peer-cards { display: none; }
     /* Desktop keeps the real leaderboard table. */
     .lb-cards { display: none; }
+    /* ── Leaderboard column budget ──────────────────────────────────────
+       A <table> cannot wrap columns: thirteen of them needed 1,139px, and
+       between 769px and ~1,150px the table either pushed the page sideways
+       (+339px at 800px, measured) or, with a scroller, cut the scores off
+       to the right while names wrapped onto three lines. Instead the table
+       is always exactly its card's width (table-layout: fixed), every cell
+       is one line (nowrap + ellipsis, full text on hover), and columns are
+       dropped by priority as the CARD narrows — container queries, so a
+       half-screen window and an iPad get the same rules. The global
+       th,td padding of 14px 16px alone cost 416px across 13 columns.
+
+       Never dropped: rank, stock, alpha, verdict — what you decide with.
+         < 1000px card : sector column goes, folds into the company line
+         <  780px card : five score columns become one compact cell;
+                         conviction moves under alpha
+       overflow-x:auto stays as the fallback for a browser without
+       container queries — it scrolls rather than breaking the page. */
+    .lb-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; container-type: inline-size; }
+    .lb-table { table-layout: fixed; width: 100%; }
+    .lb-table th, .lb-table td {
+      padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      vertical-align: middle;
+    }
+    .lb-table td { height: 44px; }
+    .lb-table .lb-num { text-align: right; font-variant-numeric: tabular-nums; }
+    .lb-col-rank { width: 36px; }
+    .lb-col-sector { width: 132px; }
+    .lb-col-alpha { width: 62px; }
+    .lb-col-conv { width: 104px; }
+    .lb-col-verdict { width: 118px; }
+    .lb-col-regime { width: 126px; }
+    .lb-col-dim { width: 52px; }
+    .lb-col-dims-compact { width: 134px; display: none; }
+    .lb-company {
+      display: block; font-size: 11px; font-weight: 400; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .lb-sub-sector, .lb-sub-conv { display: none; }
+    @container (max-width: 999px) {
+      .lb-col-sector { display: none; }
+      .lb-sub-sector { display: inline; }
+    }
+    @container (max-width: 779px) {
+      .lb-col-dim, .lb-col-conv { display: none; }
+      .lb-col-dims-compact { display: table-cell; }
+      .lb-sub-conv { display: block; font-size: 11px; font-weight: 500; color: var(--muted); line-height: 1.2; }
+    }
   }
   .lb-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   @media (max-width: 768px) {
@@ -2739,7 +2800,57 @@
     .rr-cat-type   { grid-column: 2; grid-row: 1; }
     .rr-cat-time   { grid-column: 3; grid-row: 1; justify-self: end; }
     .rr-cat-text   { grid-column: 1 / -1; grid-row: 2; }
+
+    /* ── Toolbar: search + Analyze on one row, Run All under it ──────────
+       Measured: heading + full-width search + three buttons put the first
+       stock at 267px, a third of the screen. The bottom nav already names
+       the tab, and "Leaderboard" only re-shows what is on screen — on a
+       phone the back control below does that job. */
+    .rs-toolbar {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px !important;
+      margin-bottom: 12px !important;
+    }
+    .rs-title, .rs-spacer, .rs-lb-btn { display: none !important; }
+    .rs-search { width: auto !important; grid-column: 1; }
+    .rs-analyze { grid-column: 2; }
+    .rs-run-all { grid-column: 1 / -1; }
+
+    /* ── Detail mode: the report is a screen, not an appendix ────────────
+       Measured: 25 cards = 2,860px of list, and a tapped report rendered
+       below them at y=3,078 with no way back but scrolling. On a phone the
+       report replaces the list and the back bar returns to where you were.
+       Desktop keeps the stacked layout; none of this applies there. */
+    #research.rs-detail .rs-toolbar,
+    #research.rs-detail #research-leaderboard { display: none !important; }
+    #research.rs-detail .rs-back { display: block; margin-bottom: 10px; }
+    .rs-back .btn { width: 100%; }
+
+    /* ── Factor cards fold on a phone ────────────────────────────────────
+       Six cards x five bars was six screens of bars. Each card is a
+       <details>: the header (name + score) is the whole summary a reader
+       needs to choose what to open. Desktop renders them open. */
+    .rr-dim > summary {
+      min-height: 44px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      cursor: pointer; margin-bottom: 0 !important;   /* .card-title's 10px is !important */
+    }
+    .rr-dim[open] > summary { margin-bottom: 10px !important; }
+    .rr-dim > summary > span:first-child { flex: 1; }   /* score sits by the chevron */
+    /* A chevron says "this opens"; the score stays where the eye expects it. */
+    .rr-dim > summary::after {
+      content: '\203A'; color: var(--muted); font-size: 18px; line-height: 1;
+      transition: transform .2s;
+    }
+    .rr-dim[open] > summary::after { transform: rotate(90deg); }
+    .rr-weights { display: none; }
   }
+  /* Both breakpoints: the report's back bar exists only for phone detail
+     mode, and <details> summaries never show the browser's own marker. */
+  .rs-back { display: none; }
+  .rr-dim > summary { list-style: none; }
+  .rr-dim > summary::-webkit-details-marker { display: none; }
 
   /* No dark-mode block here on purpose. This app defines a single light :root
      and uses prefers-color-scheme nowhere else, so an OS-driven dark override
@@ -2826,7 +2937,7 @@ function ensureChronological(prices) {
       <canvas id="boot-orb-canvas" width="112" height="112"></canvas>
       <span class="orb-pill-label" id="boot-orb-label">Waking up&hellip;</span>
     </div>
-    <div class="loading-text">Starting WhiteOak Trading</div>
+    <div class="loading-text">Starting OHLCV</div>
     <div class="loading-status" id="boot-status-text">Connecting to trading engine&hellip;</div>
     <button class="btn" id="boot-continue" style="margin-top:20px;display:none" onclick="dismissBootOverlay()">Continue anyway</button>
   </div>
@@ -3079,13 +3190,18 @@ window.fetch = function(...args) {
 
   <!-- ── Research Engine ────────────────── -->
   <div id="research" class="tab-panel">
-    <div style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <h3 style="margin:0;color:var(--text);font-size:16px">Unified Research Engine</h3>
-      <div style="flex:1"></div>
-      <div class="ac-wrap" style="width:220px"><input type="text" id="research-symbol-input" placeholder="Analyze a stock..." style="width:100%;padding:8px 12px;border:.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:13px" autocomplete="off" /><div class="ac-drop" id="research-symbol-input-ac"></div></div>
-      <button class="btn btn-primary" onclick="runSingleResearch()" style="font-size:12px">Analyze</button>
-      <button class="btn btn-secondary" onclick="runAllResearch()" style="font-size:12px" title="Run research on all tracked stocks (takes a few minutes)">Run All</button>
-      <button class="btn btn-secondary" onclick="loadResearchLeaderboard()" style="font-size:12px">Leaderboard</button>
+    <div class="rs-toolbar" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <h3 class="rs-title" style="margin:0;color:var(--text);font-size:16px">Unified Research Engine</h3>
+      <div class="rs-spacer" style="flex:1"></div>
+      <div class="ac-wrap rs-search" style="width:220px"><input type="text" id="research-symbol-input" placeholder="Analyze a stock..." style="width:100%;padding:8px 12px;border:.5px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:13px" autocomplete="off" /><div class="ac-drop" id="research-symbol-input-ac"></div></div>
+      <button class="btn btn-primary rs-analyze" onclick="runSingleResearch()" style="font-size:12px">Analyze</button>
+      <button class="btn btn-secondary rs-run-all" onclick="runAllResearch()" style="font-size:12px" title="Run research on all tracked stocks (takes a few minutes)">Run All</button>
+      <button class="btn btn-secondary rs-lb-btn" onclick="loadResearchLeaderboard()" style="font-size:12px">Leaderboard</button>
+    </div>
+    <!-- Phone detail mode only (see .rs-detail): the report replaces the list,
+         and this is the way back. Hidden everywhere else by CSS. -->
+    <div class="rs-back">
+      <button type="button" class="btn btn-secondary" onclick="researchBack()" aria-label="Back to the leaderboard">&#8249; Leaderboard</button>
     </div>
     <div id="research-loading" style="display:none"><div class="inline-loader"><span class="mini-orbs"><span></span><span></span><span></span></span>Running unified research algorithm…</div></div>
     <div id="research-leaderboard"></div>
@@ -3739,28 +3855,27 @@ window.fetch = function(...args) {
     <div class="card" style="padding:12px;margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div class="card-title" style="font-size:16px">P&L</div>
-        <select id="pnl-timerange" onchange="cachedTrades && refreshPnLChart(cachedTrades)" style="padding:6px 10px;border:.5px solid var(--border);background:var(--bg);border-radius:8px;color:var(--text);font-size:12px;font-family:inherit;cursor:pointer">
-          <option value="30">30m</option>
-          <option value="60" selected>60m</option>
-          <option value="240">4h</option>
-          <option value="480">8h</option>
-          <option value="1440">24h</option>
+        <select id="pnl-timerange" onchange="cachedTrades && refreshPnLChart(cachedTrades)" aria-label="How many closed trades to include in the P&amp;L chart" title="How many of your most recent closed trades to include" style="padding:6px 10px;border:.5px solid var(--border);background:var(--bg);border-radius:8px;color:var(--text);font-size:12px;font-family:inherit;cursor:pointer">
+          <option value="25">Last 25 trades</option>
+          <option value="50">Last 50 trades</option>
+          <option value="100">Last 100 trades</option>
+          <option value="0" selected>All trades</option>
         </select>
       </div>
-      <canvas id="pnl-chart-canvas" style="width:100%;height:120px;margin-bottom:8px"></canvas>
+      <canvas id="pnl-chart-canvas" style="width:100%;height:320px;margin-bottom:8px"></canvas>
       
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
         <div class="card" style="padding:8px;text-align:center">
           <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-current">₹0</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Current</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Current (net)</div>
+        </div>
+        <div class="card" style="padding:8px;text-align:center">
+          <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-gross">₹0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Gross</div>
         </div>
         <div class="card" style="padding:8px;text-align:center">
           <div style="font-size:16px;font-weight:700;color:var(--green)" id="pnl-peak">₹0</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Peak</div>
-        </div>
-        <div class="card" style="padding:8px;text-align:center">
-          <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-percent">0.00%</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">%</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.04em;font-weight:600">Peak (gross)</div>
         </div>
         <div class="card" style="padding:8px;text-align:center">
           <div style="font-size:16px;font-weight:700;color:var(--text)" id="pnl-trades">0 / 0</div>
@@ -4113,7 +4228,7 @@ function pinKey(n) {
   if (_pinBuf.length === 4) {
     const entered = _pinBuf;
     setTimeout(async () => {
-      let ok = false, token = null;
+      let ok = false;
       try {
         // location.origin here for the same reason API does below — this
         // runs before API is even declared, and must resolve correctly
@@ -4125,17 +4240,28 @@ function pinKey(n) {
           body: JSON.stringify({ pin: entered }),
         });
         const d = await r.json().catch(() => ({}));
-        if (r.ok && d.success && d.token) { ok = true; token = d.token; }
+        // A correct PIN answers with a Set-Cookie (HttpOnly session, see
+        // auth_session.py); this script never sees or stores a credential.
+        if (r.ok && d.success) { ok = true; }
       } catch (e) {
         // Network/server unreachable — treated the same as a wrong PIN
         // below; there is no partially-unlocked state.
       }
 
       if (ok) {
-        sessionStorage.setItem('pin_ok', '1');
-        sessionStorage.setItem('device_token', token);
         document.getElementById('pin-lock').classList.add('hidden');
         document.body.classList.remove('locked');
+        // Opens the gate: every data request parked while the lock was up
+        // (see _whenUnlocked) is released now, once each. The change feed's
+        // first open waits on the same gate, so this is only for the re-lock
+        // case: a session that expired across a server restart leaves the
+        // EventSource CLOSED (it does not retry a non-200), and a fresh PIN
+        // is the moment to open a new one.
+        _setUnlocked();
+        if (typeof startChangeFeed === 'function') {
+          if (typeof _feed !== 'undefined' && _feed && _feed.readyState === 2) _feed = null;
+          startChangeFeed();
+        }
         // Release the root colour the lock screen painted, or the dashboard
         // overscrolls against a dark edge for the rest of the session.
         _lockPaintRoot('');
@@ -4162,72 +4288,67 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Backspace') pinDel();
 });
 
-// Auto-unlock if already authenticated this session.
+// ── Session gate for data requests ───────────────────────────────────────
+// Since the server started refusing every /api/* call without a session
+// cookie, a freshly opened page fired ~15 tab loaders straight into that
+// wall: fifteen 401s in the console, fifteen "Error: locked" toasts, and
+// after the PIN nothing re-ran, so panels sat empty until a timer ticked.
 //
-// Requires BOTH keys. pin_ok alone only hides the lock screen; device_token
-// is what the server actually checks on every non-GET (app.py's
-// _block_cross_origin_mutations). Checking pin_ok alone produced a dashboard
-// that looked unlocked while every POST 401'd — GETs rendered fine, but
-// /api/live-prices and /api/portfolio-review failed on load — which is
-// indistinguishable from a broken backend from the user's side.
-//
-// The two can genuinely diverge: the token is per-server-process, so a
-// backend restart invalidates it while pin_ok survives in sessionStorage.
-// When they disagree, clear both and show the lock screen so re-entering the
-// PIN mints a fresh token, rather than leaving a half-authenticated session.
-// PRESENT is not the same as VALID. APP_DEVICE_TOKEN is minted per server
-// process, so any backend restart invalidates every token already sitting in
-// a browser's sessionStorage — while pin_ok survives untouched. Checking only
-// that the two keys EXIST let a stale token through: the lock screen hid, the
-// dashboard looked authenticated, and then the whole first burst of pollers
-// 401'd (live-prices, portfolio-review, update-trailing-stops,
-// auto-close/check). From the user's side that is indistinguishable from a
-// broken backend.
-//
-// So ask the server. /api/session/verify is a POST, so it runs the same token
-// check every real mutating call does, and has no side effects.
+// This gate is the browser-side counterpart. It holds one of three states —
+// 'unknown' (page just opened, server not yet asked), 'locked', 'unlocked' —
+// and api() parks any request while the state is not 'unlocked', releasing
+// everything parked the moment it is. The server's 401 remains the real
+// lock; this only stops the page from asking questions it knows the answer
+// to. Declared here, in the first script block, because verifySessionOnBoot
+// below runs during parse — before api() and `const API` exist.
+let _sessionState = 'unknown';
+let _unlockWaiters = [];
+
+function _whenUnlocked() {
+  if (_sessionState === 'unlocked') return Promise.resolve();
+  return new Promise(resolve => _unlockWaiters.push(resolve));
+}
+
+function _setUnlocked() {
+  _sessionState = 'unlocked';
+  const waiters = _unlockWaiters;
+  _unlockWaiters = [];
+  waiters.forEach(resolve => resolve());
+}
+
+function _setLocked() {
+  _sessionState = 'locked';
+}
+
+// Auto-unlock if this browser already holds a live session.
 (function verifySessionOnBoot() {
   const lock = document.getElementById('pin-lock');
   const relock = () => {
-    sessionStorage.removeItem('pin_ok');
-    sessionStorage.removeItem('device_token');
     if (lock) lock.classList.remove('hidden');
     document.body.classList.add('locked');
+    _setLocked();
   };
-
-  if (sessionStorage.getItem('pin_ok') !== '1' || !sessionStorage.getItem('device_token')) {
-    // Either never unlocked, or half-authenticated. Both mean: show the lock.
-    if (sessionStorage.getItem('pin_ok') === '1') relock();
-    return;
-  }
-
-  // Stay locked until the token is confirmed. Briefly showing the lock screen
-  // is the honest state; flashing an unlocked dashboard that then fails every
-  // request is not.
-  // location.origin, not the API constant: this runs during the lock-screen
-  // block near the top of the document, while `const API = location.origin`
-  // is not declared until much further down. `const` has a temporal dead
-  // zone, so touching it early throws a ReferenceError AT TOP LEVEL — which
-  // aborts the remainder of the script block and left later declarations
-  // (BACKFILL_BLOCKED_TABS, activateTab's dependencies) uninitialised. One
-  // early reference broke the whole page, so this deliberately depends on
-  // nothing declared below it.
-  fetch(location.origin + '/api/session/verify', {
-    method: 'POST',
-    headers: { 'X-Device-Token': sessionStorage.getItem('device_token') },
-  }).then(r => {
-    if (r.ok) {
+  // "Logged in" is a fact the server holds (auth_session.py), never the
+  // browser: the only way to know is to ask. /api/session is public and
+  // answers a boolean; the session itself is an HttpOnly cookie this script
+  // cannot read. Stay locked until the answer arrives — briefly showing the
+  // lock is the honest state; an unlocked dashboard whose every request
+  // then 401s is not.
+  // location.origin, not the API constant: `const API` is declared much
+  // further down and has a temporal dead zone.
+  fetch(location.origin + '/api/session', { cache: 'no-store' }).then(r => r.json()).then(d => {
+    if (d && d.authenticated) {
       if (lock) lock.classList.add('hidden');
       document.body.classList.remove('locked');
+      _setUnlocked();
     } else {
       relock();
     }
   }).catch(() => {
-    // No response at all — the backend is down or unreachable. Leave the
-    // session alone rather than destroying a valid token over a network blip;
-    // api()'s own 401 handler still covers a genuinely rejected token.
-    if (lock) lock.classList.add('hidden');
-    document.body.classList.remove('locked');
+    // No answer at all — backend down or unreachable. Show the lock: with no
+    // session confirmed there is nothing to protect by hiding it, and the PIN
+    // entry will tell the user the backend is unreachable.
+    relock();
   });
 })();
 
@@ -4464,11 +4585,17 @@ function handleTabActivation(tabName) {
     }
     if (!_supplyChainData) initHeatmap();
   } else if (tabName === 'research') {
-    if (!document.getElementById('research-leaderboard').innerHTML.trim()) {
+    // First open, or a research batch finished while this tab was hidden
+    // (_rsListStale, set by the change feed).
+    if (!document.getElementById('research-leaderboard').innerHTML.trim() || _rsListStale) {
       withLoader('research-leaderboard', loadResearchLeaderboard, { tier: 'table', n: 8 }).catch(quiet);
     }
   } else if (tabName === 'intraday') {
-    intradayLoadDashboard();
+    // Four fetches with nothing on screen until all four landed. withLoader
+    // paints a table skeleton into the positions region after 300ms; the
+    // function fills that region on every success path, and its own catch
+    // paints the failure there (below) — so a skeleton can never be stranded.
+    withLoader('intraday-positions', intradayLoadDashboard, { tier: 'table', n: 3 }).catch(quiet);
   } else if (tabName === 'fno-backtest') {
     // Select a segment explicitly on open, otherwise the F&O panel shows
     // (correct by default markup) with no button highlighted — the control
@@ -4478,9 +4605,15 @@ function handleTabActivation(tabName) {
   } else if (tabName === 'paper') {
     loadPaperTradingStatus();
   } else if (tabName === 'pnl-chart') {
-    if (cachedTrades) {
-      refreshPnLChart(cachedTrades);
-    }
+    // Fetch fresh rather than re-render the cache. The 5s poll only runs in
+    // market hours, so a trade closed after hours (manual close, Telegram
+    // close, the day's last auto-close) would otherwise not reach this chart
+    // until Paper Trading was opened or Refresh clicked. Read-only on purpose:
+    // loadPaperTradingStatus() also runs the trailing-stop/auto-close write
+    // chain, which is not something viewing a chart should trigger.
+    api('/api/paper-trading/status')
+      .then(d => { cachedTrades = d.trades || []; refreshPnLChart(cachedTrades); })
+      .catch(() => { if (cachedTrades) refreshPnLChart(cachedTrades); });
   } else if (tabName === 'alerts') {
     loadTelegramStatus();
     loadNLPStatus();
@@ -4976,7 +5109,7 @@ async function saveSchedulerSettings() {
 let _cfgSettings = [];
 
 const CFG_GROUPS = [
- { prefix: 'paper.cap.', name: 'Paper Trading Capital (per model)' },
+ { prefix: 'paper.', name: 'Paper Trading (Capital & Confidence)' },
  { prefix: 'prediction.', name: ' Prediction Weights (Strategy)' },
  { prefix: 'cost.', name: ' Trading Costs (Equity)' },
  { prefix: 'fno.lot.', name: ' F&O Lot Sizes' },
@@ -5595,38 +5728,46 @@ function toast(msg, opts) {
 function showToast(msg, level) { return toast(msg, level || 'info'); }
 
 // ── API helpers ───────────────────────────────────
+// GETs parked while the page is locked, keyed by path, so a poller that
+// ticks three times before the PIN goes in is released as one request, not
+// three. Writes are never merged: each waits on its own (see api()).
+const _parkedGets = new Map();
+
 async function api(path, opts) {
-  try {
-    // The server now requires X-Device-Token on every request that isn't
-    // GET/HEAD/OPTIONS (app.py's _block_cross_origin_mutations) — proof the
-    // PIN was actually entered, not just that the page was. Safe methods
-    // don't carry it since they can't change anything.
-    const method = ((opts && opts.method) || 'GET').toUpperCase();
-    const needsToken = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-    const token = needsToken ? sessionStorage.getItem('device_token') : null;
+  const method = ((opts && opts.method) || 'GET').toUpperCase();
+  const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
 
-    // No token yet? Don't send a request that CANNOT succeed.
-    //
-    // Previously this fell through and fired the request with no header, so
-    // the server 401'd it by definition. Pollers start on page load, before
-    // the PIN has been entered, so every load produced a burst of guaranteed
-    // 401s (live-prices, update-trailing-stops, auto-close/check,
-    // portfolio-review) that looked like a broken backend but was just an
-    // un-unlocked session racing the timers.
-    //
-    // Failing here instead is both quieter and more honest: callers get a
-    // labelled error, and the server never sees a request it was always
-    // going to reject. Deliberately does NOT clear pin_ok/device_token or
-    // re-lock — there is no stale session to invalidate, the user simply
-    // hasn't unlocked yet, and re-locking would fight the unlock flow.
-    if (needsToken && !token) {
-      const err = new Error('Locked — waiting for PIN');
-      err.locked = true;
-      throw err;
+  // Locked (or not yet known): park the request instead of sending it into
+  // a 401. It leaves the browser the moment the gate opens (_setUnlocked),
+  // and this function runs again from the top with the state now 'unlocked'.
+  // The only writes that can reach here while locked are the ones the page
+  // makes on its own — the boot-time portfolio review, the paper loop's
+  // recompute POSTs — none of which place orders (the UI for anything that
+  // does is under the lock). Each waits on its own; the loops' busy guards
+  // keep it to one apiece.
+  if (_sessionState !== 'unlocked') {
+    if (isWrite) {
+      await _whenUnlocked();
+      return api(path, opts);
     }
+    if (_parkedGets.has(path)) return _parkedGets.get(path);
+    // The entry is dropped at release, before the request runs: from then on
+    // the page is unlocked and callers make their own requests, and if the
+    // gate closes again mid-flight a new caller must not be handed the tail
+    // of an old one.
+    const released = _whenUnlocked().then(() => { _parkedGets.delete(path); return api(path, opts); });
+    _parkedGets.set(path, released);
+    return released;
+  }
 
-    const finalOpts = token
-      ? { ...opts, headers: { ...(opts && opts.headers), 'X-Device-Token': token } }
+  try {
+    // The session is an HttpOnly cookie the browser attaches on its own
+    // (auth_session.py); this code never handles a credential. Writes carry
+    // X-Requested-With — the server refuses state-changing calls without it,
+    // and a page on another origin cannot add a custom header without a
+    // preflight the browser blocks (CSRF, alongside SameSite=Lax).
+    const finalOpts = isWrite
+      ? { ...opts, headers: { ...(opts && opts.headers), 'X-Requested-With': 'XMLHttpRequest' } }
       : opts;
     const r = await fetch(API + path, finalOpts);
     const contentType = (r.headers.get('content-type') || '').toLowerCase();
@@ -5650,21 +5791,20 @@ async function api(path, opts) {
     // idempotency key. A thrown error with NO .status means we got no response
     // at all, so nothing whatsoever is known about the request's fate.
     if (!r.ok) {
-      // A 401 on a token-carrying request means this session's device_token
-      // is missing or not accepted. Without this the dashboard stays visibly
-      // "unlocked" while every mutating call fails — GETs render fine, so it
-      // reads as a broken backend rather than an unauthenticated session.
-      // Re-locking makes the next PIN entry re-fetch the token from
-      // /api/unlock. Only touches auth state and the lock screen's
-      // visibility — no styling.
-      if (r.status === 401 && needsToken) {
-        sessionStorage.removeItem('pin_ok');
-        sessionStorage.removeItem('device_token');
+      // 401 means the server no longer has a live session for this browser
+      // (idle or absolute timeout, logout elsewhere, restart before the table
+      // existed). The request only got here because the page believed it was
+      // unlocked, so this is the session expiring under you: show the lock
+      // and close the gate, so the next poller parks instead of 401-ing too.
+      // The next PIN entry mints a fresh session. Only touches the lock
+      // screen's visibility — no styling.
+      if (r.status === 401) {
         const lock = document.getElementById('pin-lock');
         if (lock && lock.classList.contains('hidden')) {
           lock.classList.remove('hidden');
           document.body.classList.add('locked');
         }
+        _setLocked();
       }
       const err = new Error(d.error || 'Request failed');
       err.status = r.status;
@@ -5677,7 +5817,10 @@ async function api(path, opts) {
     }
     return d;
   } catch (e) {
-    toast('Error: ' + e.message, 4000);
+    // A 401 is answered by the lock screen, not a toast: with the gate
+    // closed above, the in-flight requests of that instant would otherwise
+    // each pop "Error: locked" over the PIN pad.
+    if (e.status !== 401) toast('Error: ' + e.message, 4000);
     throw e;
   }
 }
@@ -5969,6 +6112,19 @@ function parseNumber(value, fallback = 0) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+// A stored null must read as "missing", not as a real zero. Number(null) === 0,
+// which is finite, so parseNumber(null, fallback) returns 0 and never reaches the
+// fallback — that silently valued every trade with "net_pnl": null at exactly ₹0.
+// Returns the first genuinely numeric value, or null when there is no data at all.
+function pickNumber(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return null;
+}
+
 function roundNumber(value, decimals = 2) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 0;
@@ -6002,6 +6158,16 @@ function isClosedTrade(trade) {
 }
 
 function estimatePaperTradeCharges(trade, exitPrice = null) {
+  // Prefer the server's figure: it comes from costs.py — the same model that
+  // prices the exit — and is product- and size-aware. The flat rate below
+  // under-reported real CNC charges by ~6x on a Rs45k position and ~17x on a
+  // Rs7.7k one, because brokerage (~Rs20/order) and DP (~Rs16) do not scale
+  // with size. On BRITANNIA at Rs5,050 that showed NET PROFIT +Rs71.76 on a
+  // position actually down Rs65.54. Kept only as a fallback for a payload
+  // served before this field existed.
+  const served = pickNumber(trade?.charges_estimate);
+  if (served !== null) return served;
+
   const entryPrice = parseNumber(trade?.entry_price, 0);
   const quantity = getTradeQuantity(trade);
   const resolvedExitPrice = parseNumber(exitPrice, getTradeExitPrice(trade));
@@ -6028,17 +6194,15 @@ function getTradeGrossPnlAmount(trade, markPrice = null) {
 
 function getTradeNetPnlAmount(trade, markPrice = null) {
   if ((markPrice === null || markPrice === undefined) && isClosedTrade(trade)) {
-    const storedNet = parseNumber(trade?.post_trade?.net_pnl ?? trade?.net_pnl, null);
+    const storedNet = pickNumber(trade?.post_trade?.net_pnl, trade?.net_pnl);
     if (storedNet !== null) return storedNet;
   }
 
   const grossPnl = getTradeGrossPnlAmount(trade, markPrice);
   const charges = (markPrice !== null && markPrice !== undefined) || !isClosedTrade(trade)
     ? estimatePaperTradeCharges(trade, getTradeExitPrice(trade, markPrice))
-    : parseNumber(
-        trade?.post_trade?.total_charges ?? trade?.total_charges,
-        estimatePaperTradeCharges(trade, getTradeExitPrice(trade))
-      );
+    : (pickNumber(trade?.post_trade?.total_charges, trade?.total_charges)
+        ?? estimatePaperTradeCharges(trade, getTradeExitPrice(trade)));
 
   return grossPnl - charges;
 }
@@ -6810,7 +6974,7 @@ async function addToWatchlist() {
       btn.classList.remove('is-holding');
       btn.classList.add('is-armed');       // block a second fire mid-request
       timer = null; held = null;
-      if (isCloseAll) closeAllOpenTrades(new Event('hold'));
+      if (isCloseAll) closeAllOpenTrades(btn);
       else removeFromWatchlist(btn.dataset.symbol);
     }, ms);
   }
@@ -6857,23 +7021,42 @@ async function addToWatchlist() {
   });
 })();
 
+// Remove = erase. The server deletes everything it holds about the stock in
+// one transaction (symbol_purge.py); the confirm shows the real footprint
+// first, and the toast reports what actually went and what was kept.
 async function removeFromWatchlist(symbol) {
-  if (!confirm(`Remove ${symbol} from watchlist and delete all price data?`)) return;
+  const row = document.getElementById(`wl-row-${symbol}`);
+  const btn = row && row.querySelector('.wl-remove');
+  let fp = null;
+  try { fp = await api(`/api/watchlist/${symbol}/footprint`); }
+  catch (e) { if (btn) btn.classList.remove('is-armed'); return; }   // api() already toasted
+  if (fp.open_positions && fp.open_positions.length) {
+    toast(`${symbol} still has an open position (${fp.open_positions.join(', ')}). Close it first.`, 5000);
+    if (btn) btn.classList.remove('is-armed');
+    return;
+  }
+  const fmt = o => Object.entries(o || {}).map(([k, v]) => `${v.toLocaleString()} ${k}`).join(', ');
+  const lines = [`Erase ${symbol} from the watchlist and everything stored about it?`, ''];
+  lines.push('Deletes: ' + (fmt(fp.delete) || 'nothing stored') + (fp.files && fp.files.length ? `, ${fp.files.length} model file${fp.files.length === 1 ? '' : 's'}` : ''));
+  if (fp.keep && Object.keys(fp.keep).length) lines.push('Keeps: ' + fmt(fp.keep) + ' (trade records and your theses are never deleted)');
+  if (fp.unclassified && Object.keys(fp.unclassified).length) lines.push('Untouched, unknown table: ' + fmt(fp.unclassified));
+  lines.push('', 'This cannot be undone.');
+  if (!confirm(lines.join('\n'))) { if (btn) btn.classList.remove('is-armed'); return; }
 
   // Optimistic: hide the row immediately so the UI responds instantly, and
   // put it back if the server rejects the delete.
-  const row = document.getElementById(`wl-row-${symbol}`);
   const prevDisplay = row ? row.style.display : null;
   if (row) row.style.display = 'none';
-
   try {
-    await api(`/api/watchlist/remove/${symbol}`, { method: 'DELETE' });
+    const r = await api(`/api/watchlist/remove/${symbol}`, { method: 'DELETE' });
     if (row) row.remove();
-    toast(`${symbol} removed and price data deleted`);
+    const rep = (r && r.report) || {};
+    const kept = fmt(rep.kept);
+    toast(`${symbol} erased — ${fmt(rep.deleted) || 'no rows'}${rep.files && rep.files.length ? `, ${rep.files.length} file${rep.files.length === 1 ? '' : 's'}` : ''}${kept ? `. Kept: ${kept}` : ''}`, 7000);
     loadWatchlist();
   } catch (e) {
-    if (row) row.style.display = prevDisplay;   // rollback
-    toast(` Error: ${e.message}`);
+    if (row) row.style.display = prevDisplay;   // rollback; api() toasted the reason (409 = open position)
+    if (btn) btn.classList.remove('is-armed');
   }
 }
 
@@ -6989,6 +7172,11 @@ let _bfSamples = [];   // {t, c} samples for ETA estimation
 async function refreshBackfillStatus() {
   // Raw fetch (not api()) — a missing/erroring status endpoint must NEVER
   // toast an error or block the dashboard; we silently fail open.
+  // Locked page: answer from the cache rather than 401 (or park — this is a
+  // 30 s poller with no busy guard, and parked ticks would pile up behind
+  // the PIN and fire together). The one boot-time call below waits instead,
+  // so a fresh status lands the moment the gate opens.
+  if (_sessionState !== 'unlocked') return _backfillStatus;
   try {
     const r = await fetch(API + '/api/tijori/backfill-status');
     if (r.ok && (r.headers.get('content-type') || '').includes('application/json')) {
@@ -7075,7 +7263,7 @@ setInterval(async () => {
     if (eta) eta.textContent = mins ? `${st.pct || 0}% · about ${mins} min left` : `${st.pct || 0}% complete`;
   }
 }, 30000);
-refreshBackfillStatus();
+_whenUnlocked().then(refreshBackfillStatus);
 
 // Builds the complete stock-analysis view from a /api/watchlist/<sym>/analysis
 // payload. Shared by the Watchlist tab and the Portfolio holding detail so both
@@ -8247,6 +8435,12 @@ async function loadDataHealth() {
     : `${n} dataset(s) below expected coverage — click for details`;
   const body = document.getElementById('data-health-body');
   if (body && document.getElementById('data-health-panel').style.display !== 'none') {
+    // Not while the FYERS paste box is in use. This runs every 5 s (1 s
+    // during training) and replaces the whole panel, which destroys the
+    // input under the user's finger — on a phone the paste menu never
+    // landed on a live element. The box closes itself on success or
+    // Cancel, and the next poll repaints.
+    if (_fyersPasteOpen) return;
     body.innerHTML = renderDataHealth(_dataHealth);
   }
 }
@@ -8274,6 +8468,12 @@ function _healthSubBar(s) {
 // compliance, so renewal needs a human login. Clicking opens FYERS's login
 // in a new tab; the redirect lands on /fyers_callback which completes the
 // exchange server-side, so there's nothing to copy back.
+// Paste-back state survives the panel re-rendering every 5 min, so a phone
+// user mid-paste doesn't lose the box or what they typed.
+let _fyersPasteOpen = false;
+let _fyersPasteDraft = '';
+let _fyersPollTimer = null;
+
 function _renderTokenRow(t) {
   if (!t) return '';
   const secs = t.seconds_remaining || 0;
@@ -8305,29 +8505,104 @@ function _renderTokenRow(t) {
                    color:${valid ? 'var(--text)' : '#fff'}">
       ${valid ? 'Reconnect FYERS' : 'Reconnect now'}
     </button>
+    <div id="fyers-paste" ${_fyersPasteOpen ? '' : 'hidden'} style="margin-top:8px">
+      <div style="font-size:10px;color:var(--muted);line-height:1.4">
+        Logged in but nothing happened? FYERS sends the browser to this Mac's
+        <b>127.0.0.1</b>, which a phone can't open. Copy the address of that
+        failed page and paste it here.
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <input id="fyers-paste-input" type="text" inputmode="url" autocomplete="off" autocapitalize="off"
+               spellcheck="false" placeholder="http://127.0.0.1:8000/fyers_callback?…auth_code=…"
+               aria-label="FYERS redirect address or auth code" value="${_fyersPasteDraft.replace(/"/g, '&quot;')}"
+               oninput="_fyersPasteDraft = this.value"
+               onkeydown="if (event.key === 'Enter') submitFyersCode(this.nextElementSibling)"
+               style="flex:1;min-width:0;min-height:32px;font-size:11px;padding:6px 8px;border:.5px solid var(--border);
+                      border-radius:8px;background:var(--surface);color:var(--text)">
+        <button type="button" onclick="submitFyersCode(this)" aria-label="Finish FYERS login with the pasted address"
+                title="Exchanges the pasted auth code for a token, the same as the automatic redirect does"
+                style="min-height:32px;font-size:11px;font-weight:600;cursor:pointer;border:.5px solid var(--border);
+                       border-radius:8px;padding:6px 10px;background:var(--text);color:var(--bg,#fff);white-space:nowrap">
+          Connect
+        </button>
+      </div>
+      <button type="button" onclick="closeFyersPaste()" aria-label="Close the FYERS paste box"
+              title="Hides this box; the panel resumes refreshing"
+              style="margin-top:6px;font-size:10px;color:var(--muted);background:none;border:none;padding:0;cursor:pointer;text-decoration:underline">
+        Cancel
+      </button>
+    </div>
   </div>`;
 }
 
-function connectFyers() {
-  const t = _fyersToken;
-  if (!t || !t.login_url) { toast('Login URL unavailable'); return; }
-  window.open(t.login_url, '_blank', 'noopener');
-  // Poll for the callback completing so the row updates without a manual
-  // refresh. Gives up after ~2 min so a cancelled login doesn't poll forever.
+// While the box is open the panel stops repainting (see loadDataHealth), so
+// closing it is what hands the panel back.
+function closeFyersPaste() {
+  _fyersPasteOpen = false; _fyersPasteDraft = '';
+  if (_fyersPollTimer) { clearInterval(_fyersPollTimer); _fyersPollTimer = null; }
+  loadDataHealth();
+}
+
+function _fyersPollForToken() {
+  // Poll for the login completing (via the redirect on the Mac, or the
+  // paste-back from a phone) so the row updates without a manual refresh.
+  // Gives up after ~5 min: a phone login means switching apps, 2FA and
+  // copying an address, which is longer than the 2 min this used to allow.
+  if (_fyersPollTimer) clearInterval(_fyersPollTimer);
   let tries = 0;
-  const iv = setInterval(async () => {
+  _fyersPollTimer = setInterval(async () => {
     tries++;
     const before = _fyersToken && _fyersToken.expires_at;
     await loadFyersToken();
     const after = _fyersToken && _fyersToken.expires_at;
     if (after && after !== before) {
-      clearInterval(iv);
+      clearInterval(_fyersPollTimer); _fyersPollTimer = null;
+      _fyersPasteOpen = false; _fyersPasteDraft = '';
       toast('FYERS reconnected');
       loadDataHealth();
-    } else if (tries > 40) {
-      clearInterval(iv);
+    } else if (tries > 100) {
+      clearInterval(_fyersPollTimer); _fyersPollTimer = null;
     }
   }, 3000);
+}
+
+function connectFyers() {
+  const t = _fyersToken;
+  if (!t || !t.login_url) { toast('Login URL unavailable'); return; }
+  // Open synchronously inside the click, before any await, or iOS Safari
+  // treats it as a popup and blocks it.
+  window.open(t.login_url, '_blank', 'noopener');
+  // Reveal the paste-back box straight away rather than only on failure:
+  // on a phone the redirect *always* dead-ends, and there is no signal we
+  // could wait for. On the Mac it simply disappears when the callback lands.
+  _fyersPasteOpen = true;
+  const box = document.getElementById('fyers-paste');
+  if (box) box.hidden = false;
+  _fyersPollForToken();
+}
+
+async function submitFyersCode(btn) {
+  const input = document.getElementById('fyers-paste-input');
+  const code = (input ? input.value : _fyersPasteDraft).trim();
+  if (!code) { toast('Paste the address FYERS sent you to (or the auth code) first'); return; }
+  await withBusy(btn, 'fyers-paste', async () => {
+    try {
+      const r = await api('/api/fyers/complete-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      if (!r || !r.ok) throw new Error((r && r.error) || 'FYERS rejected the code');
+      _fyersPasteOpen = false; _fyersPasteDraft = '';
+      if (_fyersPollTimer) { clearInterval(_fyersPollTimer); _fyersPollTimer = null; }
+      toast(`FYERS reconnected · valid until ${r.expires_at_human || 'tomorrow 06:00'}`);
+      await loadFyersToken();
+      loadDataHealth();
+    } catch (e) {
+      // api() has already toasted the reason. Keep the box and the text: a
+      // wrong paste is fixed by pasting again, not by starting over.
+    }
+  });
 }
 
 let _fyersToken = null;
@@ -10203,50 +10478,57 @@ function toggleJournalDetail(id) {
   }
 }
 
+// The one way the dashboard closes a journal trade. The card's "Close Trade"
+// button and "Close All Open" both come through here, so closing five trades
+// at once is exactly five of the closes you would have done by hand — same
+// endpoint, same exit_reason, same report.
+function _closeJournalTradeRequest(tradeId) {
+  return api(`/api/journal/${tradeId}/close`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ exit_reason: 'manual' }) });
+}
+
 async function closeJournalTrade(tradeId) {
   if (!confirm('Close this trade and generate the post-trade report?')) return;
   try {
-    await api(`/api/journal/${tradeId}/close`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ exit_reason: 'manual' }) });
+    await _closeJournalTradeRequest(tradeId);
     toast('Trade closed — post-trade report generated');
     loadJournal();
   } catch(e) { toast('Failed to close trade: ' + e.message); }
 }
 
-async function closeAllOpenTrades(evt) {
-  if (!confirm('Close ALL open trades and generate post-trade reports? This action cannot be undone.')) return;
-  // Disable BEFORE the first await — the fetch below takes time, and the
-  // button was previously still live during it, so a second click started a
-  // whole second close loop.
-  // currentTarget is the element the handler is bound to; evt.target is the
-  // deepest clicked node, which breaks as soon as the button contains an icon.
-  const btn = evt.currentTarget || evt.target;
+// `btn` is the Close All button itself, handed over by the hold handler.
+// (It used to receive a synthetic `new Event('hold')`, which has no target,
+// so the first line threw and nothing was ever closed.)
+async function closeAllOpenTrades(btn) {
+  const label = btn.querySelector('.wl-remove-label') || btn;
+  const prevLabel = label.textContent;
+  const done = () => {
+    // Every path, including "no open trades" and a thrown error — and the
+    // hold handler's is-armed (pointer-events:none), which nothing else
+    // removes on this static button. Without this one hold made it dead
+    // until a page reload.
+    btn.disabled = false;
+    btn.classList.remove('is-armed');
+    label.textContent = prevLabel;
+  };
+  if (!confirm('Close ALL open trades and generate post-trade reports? This action cannot be undone.')) { done(); return; }
   btn.disabled = true;
-  const _prevLabel = btn.textContent;
-  btn.textContent = 'Closing…';
+  label.textContent = 'Closing…';
   try {
     const openTrades = await api('/api/journal/open');
     if (!openTrades.length) { toast('No open trades to close'); return; }
-    btn.textContent = 'Closing ' + openTrades.length + '...';
-    let closed = 0;
+    let closed = 0; const failed = [];
     for (const trade of openTrades) {
-      try {
-        await api(`/api/journal/${trade.trade_id}/close`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ exit_reason: 'manual_batch' }) });
-        closed++;
-        btn.textContent = 'Closing ' + (openTrades.length - closed) + '...';
-      } catch(e) { console.error('Failed to close trade ' + trade.trade_id, e); }
+      label.textContent = `Closing ${closed + 1} of ${openTrades.length}…`;
+      try { await _closeJournalTradeRequest(trade.trade_id); closed++; }
+      catch (e) { failed.push(trade.symbol || trade.trade_id); }
     }
-    await new Promise(r => setTimeout(r, 500));
-    toast(`Closed ${closed}/${openTrades.length} trades — post-trade reports generated`);
+    toast(failed.length ? `Closed ${closed} of ${openTrades.length}; failed: ${failed.join(', ')}`
+                        : `Closed ${closed} trade${closed === 1 ? '' : 's'} — post-trade reports generated`);
     loadJournal();
-  } catch(e) {
+  } catch (e) {
     toast('Failed to close all trades: ' + e.message);
   } finally {
-    // Restore on EVERY path, including the "no open trades" early return —
-    // otherwise the button stays disabled until a page reload.
-    if (btn && btn.isConnected) {
-      btn.disabled = false;
-      btn.textContent = _prevLabel || 'Close All Open';
-    }
+    done();
   }
 }
 
@@ -11510,24 +11792,45 @@ function dismissBootOverlay() {
   // After 12s offer an escape hatch so the loader can never trap the user
   setTimeout(() => { const b = document.getElementById('boot-continue'); if (b) b.style.display = 'inline-block'; }, 12000);
 
+  // "Is the server awake?" must be asked at an address that answers BEFORE
+  // the PIN. This used to ask /api/tijori/backfill-status through api(),
+  // which since the session gate answers 401 to a locked page — and the loop
+  // could not tell "locked" from "not up yet", so it retried for 90 s and
+  // then declared the backend dead while the PIN screen hid it. /api/session
+  // is public: any HTTP answer at all means the server is up; only a network
+  // failure (connection refused, timeout) means keep waiting. Raw fetch, not
+  // api(): api() toasts on non-2xx and this runs while the page is locked.
   const t0 = Date.now();
-  let status = null;
-  for (let i = 0; i < 45 && !status; i++) {   // retry ~90s while app.py boots
+  let session = null;
+  for (let i = 0; i < 45 && !session; i++) {   // retry ~90s while app.py boots
     try {
-      status = await api('/api/tijori/backfill-status');
+      const r = await fetch(location.origin + '/api/session', { cache: 'no-store' });
+      // Only the app answers this address with JSON. Anything else (a static
+      // file server, a proxy's error page, a 404 from something that is not
+      // app.py) is "not up yet", not "up".
+      const isJson = (r.headers.get('content-type') || '').includes('application/json');
+      if (!isJson) throw new Error('not the app');
+      session = await r.json().catch(() => ({}));
     } catch (e) {
       if (statusEl) statusEl.textContent = 'Starting trading engine' + '.'.repeat((i % 3) + 1);
       await new Promise(r => setTimeout(r, 2000));
     }
   }
 
-  if (!status) {
+  if (!session) {
     if (statusEl) statusEl.textContent = 'Backend not responding — check that app.py is running, then refresh.';
     return;  // keep overlay up; Continue anyway is available
   }
 
-  _backfillStatus = status;
-  if (statusEl) statusEl.textContent = 'Loading your dashboard…';
+  // The supply-chain collection check is a locked read; only ask when this
+  // browser already holds a session. A locked page gets it from the 30 s
+  // poller (refreshBackfillStatus, fails open) once the PIN is entered, and
+  // the blocked tabs are guarded per click by guardBackfill() regardless.
+  let status = null;
+  if (session.authenticated) {
+    status = await refreshBackfillStatus();
+  }
+  if (statusEl) statusEl.textContent = session.authenticated ? 'Loading your dashboard…' : 'Ready';
 
   // Keep the loader up a moment so the first data paints behind it
   const minShow = 2500 - (Date.now() - t0);
@@ -11536,7 +11839,7 @@ function dismissBootOverlay() {
 
   // Coverage below threshold with active collection → hand off to the
   // blocking supply-chain loader (Portfolio/Deep Analysis stay locked)
-  if (status.running) setTimeout(showBackfillOverlay, 400);
+  if (status && status.running) setTimeout(showBackfillOverlay, 400);
 })();
 
 (async function init() {
@@ -12057,6 +12360,9 @@ let _fbtDatesLoaded = false;
 
 // Load all available instruments on Startup
 async function fbtLoadInstruments() {
+  // Called once at boot, before the PIN: wait for the session gate rather
+  // than 401 and log "No instruments available" against a locked page.
+  await _whenUnlocked();
   try {
     const r = await fetch(API + '/api/fno/backtest/instruments');
     const data = await r.json();
@@ -13186,6 +13492,14 @@ async function intradayLoadDashboard() {
     intradayLoadAutoLog();
   } catch (e) {
     logger.error('Intraday dashboard load error', e);
+    // Paint it. This catch swallows the error, so withLoader above never sees
+    // a rejection and would otherwise leave its skeleton in place forever.
+    // Same shape withLoader itself uses for its error state.
+    const el = document.getElementById('intraday-positions');
+    if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">
+      Couldn't load intraday positions — ${e.message || 'request failed'}.
+      <button class="btn" style="margin-left:8px;padding:3px 10px;font-size:11px" onclick="intradayLoadDashboard()">Retry</button>
+    </div>`;
   }
 }
 
@@ -13509,7 +13823,7 @@ async function runSingleResearch() {
   document.getElementById('research-report').innerHTML = '';
   try {
     const data = await api(`/api/research/${sym}/refresh`, { method: 'POST' });
-    renderResearchReport(document.getElementById('research-report'), data);
+    _showResearchReport(data);
   } catch (e) {
     document.getElementById('research-report').innerHTML = `<div class="card" style="color:var(--red)">Research failed: ${e.message}</div>`;
   } finally {
@@ -13518,24 +13832,80 @@ async function runSingleResearch() {
 }
 
 async function runAllResearch() {
-  toast('Research batch started for all stocks...', 3000);
   try {
     await api('/api/research/all', { method: 'POST' });
-    toast('Research running in background — check leaderboard in a few minutes', 4000);
+    // The leaderboard header shows "ranking n of N" while it runs (the
+    // endpoint reports batch progress) and reloads itself on completion
+    // via the change feed, so there is nothing to come back and check.
+    loadResearchLeaderboard();
   } catch (e) { toast('' + e.message, 3000); }
 }
 
-async function loadResearchLeaderboard() {
+// A running batch is re-polled so the "n of N" line moves; bounded to the
+// batch itself — the timer is not re-armed once `running` is false or the
+// tab is no longer showing the list.
+let _rsPollTimer = null;
+let _rsListStale = false;
+
+// keepReport: a background refresh (batch progress, change feed) must not
+// wipe a report the user is reading; the Leaderboard button and tab-open
+// path still clear it, as they always did.
+async function loadResearchLeaderboard(keepReport) {
+  if (_rsPollTimer) { clearTimeout(_rsPollTimer); _rsPollTimer = null; }
   document.getElementById('research-loading').style.display = 'block';
-  document.getElementById('research-report').innerHTML = '';
+  if (keepReport !== true) document.getElementById('research-report').innerHTML = '';
+  _rsListStale = false;
   try {
     const data = await api('/api/research/leaderboard');
-    renderResearchLeaderboard(document.getElementById('research-leaderboard'), data.leaderboard || []);
+    renderResearchLeaderboard(document.getElementById('research-leaderboard'), data.leaderboard || [],
+                              { generatedAt: data.generated_at, batch: data.batch });
+    const panel = document.getElementById('research');
+    if (data.batch && data.batch.running && panel.classList.contains('active') && !panel.classList.contains('rs-detail')) {
+      _rsPollTimer = setTimeout(() => loadResearchLeaderboard(true), 10000);
+    }
   } catch (e) {
     document.getElementById('research-leaderboard').innerHTML = `<div class="card" style="color:var(--muted)">${e.message}</div>`;
   } finally {
     document.getElementById('research-loading').style.display = 'none';
   }
+}
+
+// Research timestamps are utcnow() without a zone; parsing them as-is reads
+// them as local time, 5h30 early here. The data-health panel does the same
+// (+'Z').
+function _rsDate(s) {
+  if (!s) return null;
+  const d = new Date(/Z|[+-]\d\d:\d\d$/.test(s) ? s : s + 'Z');
+  return isNaN(d) ? null : d;
+}
+function _rsAge(s) {
+  const d = _rsDate(s); if (!d) return '';
+  const m = Math.max(0, Math.round((Date.now() - d) / 60000));
+  return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+}
+
+// Phone: the report replaces the list (see .rs-detail in the mobile CSS) and
+// the page goes to the top of it. Desktop: unchanged — stacked, scrolled to.
+let _rsListScrollY = 0;
+function _showResearchReport(data) {
+  const panel = document.getElementById('research');
+  const report = document.getElementById('research-report');
+  renderResearchReport(report, data);
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    if (!panel.classList.contains('rs-detail')) _rsListScrollY = window.scrollY;
+    panel.classList.add('rs-detail');
+    window.scrollTo(0, 0);
+  } else {
+    report.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function researchBack() {
+  const panel = document.getElementById('research');
+  panel.classList.remove('rs-detail');
+  document.getElementById('research-report').innerHTML = '';
+  if (_rsListStale) loadResearchLeaderboard();   // a batch finished while the report was open
+  window.scrollTo(0, _rsListScrollY);
 }
 
 function _alphaColor(score) {
@@ -13553,11 +13923,24 @@ function _verdictBadge(v) {
   return `<span style="background:${c}15;color:${c};padding:3px 10px;border-radius:6px;font-weight:600;font-size:12px">${v.stance_label || v.stance}</span>`;
 }
 
+// "FAST_MOVING_CONSUMER_GOODS" reads as FMCG; everything else is the engine's
+// upper-case key as a word: underscores to spaces, first letter up.
+function _sectorLabel(sector) {
+  if (!sector) return '';
+  if (sector === 'FAST_MOVING_CONSUMER_GOODS') return 'FMCG';
+  return String(sector).toLowerCase().replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase());
+}
+
+const _REGIME_LABELS = { TRENDING_UP: 'Up-trend', TRENDING_DOWN: 'Down-trend', RANGE_BOUND: 'Range',
+  BREAKOUT_IMMINENT: 'Breakout soon', BREAKDOWN_IMMINENT: 'Breakdown soon' };
 function _regimeBadge(r) {
   const colors = { TRENDING_UP: 'var(--accent)', TRENDING_DOWN: 'var(--red)',
     RANGE_BOUND: 'var(--muted)', BREAKOUT_IMMINENT: 'var(--accent)', BREAKDOWN_IMMINENT: 'var(--red)' };
-  const c = colors[r] || 'var(--muted)';
-  return `<span style="background:${c}12;color:${c};padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600">${r.replace(/_/g,' ')}</span>`;
+  const key = String(r || '');
+  const c = colors[key] || 'var(--muted)';
+  const full = key.replace(/_/g, ' ').toLowerCase();
+  const label = _REGIME_LABELS[key] || (full ? full[0].toUpperCase() + full.slice(1) : '—');
+  return `<span title="${full}" style="background:${c}12;color:${c};padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap">${label}</span>`;
 }
 
 function _dimBar(label, score, maxScore=100) {
@@ -13571,9 +13954,39 @@ function _dimBar(label, score, maxScore=100) {
   </div>`;
 }
 
-function renderResearchLeaderboard(container, lb) {
+// A factor the engine did not measure is drawn as a dash, not as a bar at 50.
+// The engine sends `score: 50, factors: {note: ...}` when a source is missing;
+// `factor || 50` was turning that note into five confident-looking bars.
+function _factorBar(label, value) {
+  if (value == null || isNaN(value)) {
+    return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <span style="width:100px;font-size:13px;color:var(--muted)">${label}</span>
+      <div style="flex:1;height:6px;background:var(--border);border-radius:3px;opacity:.5"></div>
+      <span style="width:30px;text-align:right;font-size:13px;color:var(--muted)">—</span>
+    </div>`;
+  }
+  return _dimBar(label, Number(value));
+}
+
+// One factor card. A <details> so a phone can fold it to its header; desktop
+// renders it open, which is visually the card it always was.
+function _factorCard(title, scoreHtml, body, isPhone) {
+  return `<details class="card rr-dim"${isPhone ? '' : ' open'}>
+    <summary class="card-title" style="display:flex;justify-content:space-between">
+      <span>${title}</span>${scoreHtml}
+    </summary>
+    ${body}
+  </details>`;
+}
+
+function renderResearchLeaderboard(container, lb, meta) {
+  meta = meta || {};
+  const b = meta.batch || {};
+  const running = b.running ? `Ranking ${b.done || 0} of ${b.total || '?'} stocks…` : '';
   if (!lb || !lb.length) {
-    container.innerHTML = '<div class="card" style="color:var(--muted);text-align:center;padding:30px">No leaderboard data yet. Click <b>Run All</b> to generate research for all stocks.</div>';
+    container.innerHTML = `<div class="card" style="color:var(--muted);text-align:center;padding:30px">${
+      running ? running + ' The list appears when the batch finishes.'
+              : 'No leaderboard in the last 2 days. <b>Run All</b> ranks every tracked stock; it takes several minutes.'}</div>`;
     return;
   }
 
@@ -13583,14 +13996,21 @@ function renderResearchLeaderboard(container, lb) {
   const shown = lb.slice(0, LB_LIMIT);
   const hiddenCount = lb.length - shown.length;
 
+  const age = _rsAge(meta.generatedAt);
   let html = `<div class="card" style="margin-bottom:14px">
-    <div class="card-title"> Alpha Score Leaderboard — ${lb.length} Stocks Ranked</div>
-    <div style="color:var(--muted);font-size:11px;margin-bottom:10px">Same algorithm, every stock. Ranked by composite Alpha Score.</div>
+    <div class="card-title"> Alpha Score Leaderboard — ${lb.length} Stocks Ranked${age ? ' · ' + age : ''}</div>
+    <div style="color:var(--muted);font-size:11px;margin-bottom:10px">${
+      running ? running + ' This list updates itself when it finishes.'
+              : 'Same algorithm, every stock. Ranked by composite Alpha Score.'}</div>
     <div class="lb-table-wrap">
-    <table class="table" style="width:100%;border-collapse:collapse"><thead>
+    <table class="table lb-table" style="width:100%;border-collapse:collapse"><thead>
       <tr style="font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-        <th style="padding:6px 4px">#</th><th>Stock</th><th>Sector</th><th>Alpha</th><th>Conviction</th>
-        <th>Verdict</th><th>Regime</th><th>Tech</th><th>Fund</th><th>Inst</th><th>Sent</th><th>Risk</th>
+        <th class="lb-col-rank">#</th><th class="lb-col-stock">Stock</th><th class="lb-col-sector">Sector</th>
+        <th class="lb-col-alpha lb-num">Alpha</th><th class="lb-col-conv lb-num">Conviction</th>
+        <th class="lb-col-verdict">Verdict</th><th class="lb-col-regime">Regime</th>
+        <th class="lb-col-dim lb-num">Tech</th><th class="lb-col-dim lb-num">Fund</th><th class="lb-col-dim lb-num">Inst</th>
+        <th class="lb-col-dim lb-num">Sent</th><th class="lb-col-dim lb-num">Risk</th>
+        <th class="lb-col-dims-compact lb-num" title="Tech · Fund · Inst · Sent · Risk">T·F·I·S·R</th>
       </tr></thead><tbody>`;
 
   // Dimension scores default to 50 when absent — that is a placeholder, not a
@@ -13602,8 +14022,10 @@ function renderResearchLeaderboard(container, lb) {
     const rank = i + 1;
     const alphaC = _alphaColor(s.alpha_score);
     const cell = v => v == null
-      ? '<td style="font-size:11px;color:var(--muted)">—</td>'
-      : `<td style="font-size:11px;color:${_alphaColor(v)}">${v.toFixed(0)}</td>`;
+      ? '<td class="lb-col-dim lb-num" style="font-size:11px;color:var(--muted)">—</td>'
+      : `<td class="lb-col-dim lb-num" style="font-size:11px;color:${_alphaColor(v)}">${v.toFixed(0)}</td>`;
+    const num = v => v == null ? '<span style="color:var(--muted)">—</span>' : `<span style="color:${_alphaColor(v)}">${v.toFixed(0)}</span>`;
+    const sectorName = _sectorLabel(s.sector);
     // The Detail column is gone: its button called loadResearchDetail with the
     // same argument the row's own onclick already passes. Pure width, no
     // added capability. role/tabindex/keydown make the row itself the
@@ -13613,18 +14035,19 @@ function renderResearchLeaderboard(container, lb) {
         style="border-bottom:1px solid var(--border);cursor:pointer"
         onclick="loadResearchDetail('${s.symbol}')"
         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadResearchDetail('${s.symbol}');}">
-      <td style="padding:6px 4px;font-weight:700;color:var(--muted)">${rank}</td>
-      <td style="font-weight:700">${s.symbol}<br><span style="font-size:10px;color:var(--muted)">${s.company_name||''}</span></td>
-      <td style="font-size:11px;color:var(--muted)">${s.sector||''}</td>
-      <td style="font-weight:800;font-size:15px;color:${alphaC}">${s.alpha_score.toFixed(0)}</td>
-      <td style="font-size:12px;color:var(--text)">${s.conviction.toFixed(0)}%</td>
-      <td>${_verdictBadge(s.verdict)}</td>
-      <td>${_regimeBadge(s.regime)}</td>
+      <td class="lb-col-rank" style="font-weight:700;color:var(--muted)">${rank}</td>
+      <td class="lb-col-stock" style="font-weight:700" title="${(s.company_name||'').replace(/"/g,'&quot;')}${sectorName ? ' · ' + sectorName : ''}">${s.symbol}<span class="lb-company">${s.company_name||''}<span class="lb-sub-sector">${sectorName ? ' · ' + sectorName : ''}</span></span></td>
+      <td class="lb-col-sector" style="font-size:11px;color:var(--muted)">${sectorName}</td>
+      <td class="lb-col-alpha lb-num" style="font-weight:800;font-size:15px;color:${alphaC}">${s.alpha_score.toFixed(0)}<span class="lb-sub-conv" title="conviction">${s.conviction.toFixed(0)}%</span></td>
+      <td class="lb-col-conv lb-num" style="font-size:12px;color:var(--text)">${s.conviction.toFixed(0)}%</td>
+      <td class="lb-col-verdict">${_verdictBadge(s.verdict)}</td>
+      <td class="lb-col-regime">${_regimeBadge(s.regime)}</td>
       ${cell(dim(dims.technical?.score))}
       ${cell(dim(dims.fundamental?.score))}
       ${cell(dim(dims.institutional?.score))}
       ${cell(dim(dims.sentiment?.score))}
       ${cell(dim(dims.risk?.score))}
+      <td class="lb-col-dims-compact lb-num" style="font-size:11px">${[dims.technical, dims.fundamental, dims.institutional, dims.sentiment, dims.risk].map(d => num(dim(d?.score))).join('<span style="color:var(--border)"> · </span>')}</td>
     </tr>`;
   });
 
@@ -13651,7 +14074,7 @@ function renderResearchLeaderboard(container, lb) {
         <span class="lb-sym">${s.symbol}</span>
         <span class="lb-alpha" style="color:${alphaC}">${s.alpha_score.toFixed(0)}</span>
       </div>
-      <div class="lb-card-sub">${s.company_name || ''}${s.sector ? ' · ' + s.sector : ''}</div>
+      <div class="lb-card-sub">${s.company_name || ''}${s.sector ? ' · ' + _sectorLabel(s.sector) : ''}</div>
       <div class="lb-card-badges">${_verdictBadge(s.verdict)}${_regimeBadge(s.regime)}
         <span class="lb-conv">${s.conviction.toFixed(0)}% conviction</span></div>
       <div class="lb-dims">
@@ -13680,8 +14103,7 @@ async function loadResearchDetail(symbol) {
   document.getElementById('research-report').innerHTML = '';
   try {
     const data = await api(`/api/research/${symbol}`);
-    renderResearchReport(document.getElementById('research-report'), data);
-    document.getElementById('research-report').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    _showResearchReport(data);
   } catch (e) {
     document.getElementById('research-report').innerHTML = `<div class="card" style="color:var(--red)">Failed: ${e.message}</div>`;
   } finally {
@@ -13715,11 +14137,11 @@ function renderResearchReport(container, r) {
       </div>
       <div class="rr-stat rr-stat-alpha" style="text-align:center">
         <div class="rr-stat-val" style="font-size:38px;font-weight:900;color:${_alphaColor(r.alpha_score)};line-height:1">${r.alpha_score.toFixed(0)}</div>
-        <div class="rr-stat-lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Alpha Score</div>
+        <div class="rr-stat-lbl" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Alpha Score</div>
       </div>
       <div class="rr-stat" style="text-align:center">
         <div class="rr-stat-val" style="font-size:20px;font-weight:700;color:var(--text)">${r.conviction.toFixed(0)}%</div>
-        <div class="rr-stat-lbl" style="font-size:10px;color:var(--muted)">Conviction</div>
+        <div class="rr-stat-lbl" style="font-size:11px;color:var(--muted)">Conviction</div>
       </div>
       <div class="rr-badge">${_verdictBadge(v)}</div>
       <div class="rr-badge">${_regimeBadge(r.regime)}</div>
@@ -13730,12 +14152,12 @@ function renderResearchReport(container, r) {
     </div>
 
     <!-- Five dimension bars -->
-    ${_dimBar('Technical', tech.score||50)}
-    ${_dimBar('Fundamental', fund.score||50)}
-    ${_dimBar('Institutional', inst.score||50)}
-    ${_dimBar('Sentiment', sent.score||50)}
-    ${_dimBar('Risk (safety)', risk.score||50)}
-    <div style="font-size:10px;color:var(--muted);margin-top:6px">Generated: ${r.generated_at ? new Date(r.generated_at).toLocaleString() : '—'} (${r.elapsed_seconds||'?'}s)</div>
+    ${_factorBar('Technical', tech.score)}
+    ${_factorBar('Fundamental', fund.score)}
+    ${_factorBar('Institutional', inst.score)}
+    ${_factorBar('Sentiment', sent.score)}
+    ${_factorBar('Risk (safety)', risk.score)}
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Generated ${_rsDate(r.generated_at) ? _rsDate(r.generated_at).toLocaleString() + ' · ' + _rsAge(r.generated_at) : '—'}</div>
   </div>`;
 
   // ── Risk-Reward ───────────────────────────────────────────────────────
@@ -13752,7 +14174,14 @@ function renderResearchReport(container, r) {
   }
 
   // ── Catalysts ─────────────────────────────────────────────────────────
-  if (cats.length) {
+  // An empty list still gets a line: a report with no catalysts card reads
+  // as "not loaded", not as "nothing is driving this stock right now".
+  if (!cats.length) {
+    html += `<div class="card" style="margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:4px">Active Catalysts</div>
+      <div style="font-size:12px;color:var(--muted)">None on file — the verdict rests on price, flows and positioning alone.</div>
+    </div>`;
+  } else {
     html += `<div class="card" style="margin-bottom:14px">
       <div class="card-title"> Active Catalysts (${cats.length})</div>`;
     cats.forEach(c => {
@@ -13784,87 +14213,69 @@ function renderResearchReport(container, r) {
   // the track collapse to the container on a narrow screen.
   html += '<div class="rr-dims" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px;margin-bottom:14px">';
 
+  const isPhone = window.matchMedia('(max-width: 768px)').matches;
+  const scoreOf = d => `<span style="font-weight:800;color:${d.score == null ? 'var(--muted)' : _alphaColor(d.score)}">${d.score == null ? '—' : Number(d.score).toFixed(0)}</span>`;
+  const signals = (d, color) => (d.signals || []).map(x => `<div style="font-size:11px;margin-top:3px${color ? ';color:' + color : ''}">• ${x}</div>`).join('');
+  const fmt = v => (v == null ? '—' : v);
+  // The engine explains a missing source in factors.note; show it where the
+  // bars would have been rather than five dashes with no reason.
+  const note = d => (d.factors && d.factors.note) ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">${d.factors.note}</div>` : '';
+
   // Technical
   const tf = tech.factors || {};
-  html += `<div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between">
-      <span>Technical Structure</span><span style="font-weight:800;color:${_alphaColor(tech.score||50)}">${(tech.score||50).toFixed(0)}</span>
-    </div>
-    ${_dimBar('Trend', tf.trend_strength||50)}
-    ${_dimBar('Momentum', tf.momentum||50)}
-    ${_dimBar('Mean Reversion', tf.mean_reversion||50)}
-    ${_dimBar('Volume Profile', tf.volume_profile||50)}
-    ${_dimBar('Breakout', tf.breakout_proximity||50)}
+  html += _factorCard('Technical Structure', scoreOf(tech), `
+    ${_factorBar('Trend', tf.trend_strength)}
+    ${_factorBar('Momentum', tf.momentum)}
+    ${_factorBar('Mean Reversion', tf.mean_reversion)}
+    ${_factorBar('Volume Profile', tf.volume_profile)}
+    ${_factorBar('Breakout', tf.breakout_proximity)}
     <div style="font-size:11px;color:var(--muted);margin-top:6px">
-      ADX: <b>${tf.adx||'—'}</b> • RSI: <b>${tf.rsi||'—'}</b> • Z: <b>${tf.z_score||'—'}</b> • RelVol: <b>${tf.relative_volume||'—'}</b> • CMF: <b>${tf.cmf||'—'}</b>
-    </div>
-    ${(tech.signals||[]).map(s => `<div style="font-size:11px;margin-top:3px">• ${s}</div>`).join('')}
-  </div>`;
+      ADX: <b>${fmt(tf.adx)}</b> • RSI: <b>${fmt(tf.rsi)}</b> • Z: <b>${fmt(tf.z_score)}</b> • RelVol: <b>${fmt(tf.relative_volume)}</b> • CMF: <b>${fmt(tf.cmf)}</b>
+    </div>${note(tech)}${signals(tech)}`, isPhone);
 
   // Fundamental
   const ff = fund.factors || {};
-  html += `<div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between">
-      <span>Fundamental Quality</span>
-      <span><span style="font-weight:800;color:${_alphaColor(fund.score||50)}">${(fund.score||50).toFixed(0)}</span>
-      <span style="font-size:12px;font-weight:700;margin-left:4px;padding:1px 5px;border-radius:3px;background:var(--surface)">${fund.grade||'—'}</span></span>
-    </div>
-    ${_dimBar('Earnings', ff.earnings_quality||50)}
-    ${_dimBar('Balance Sheet', ff.balance_sheet||50)}
-    ${_dimBar('Efficiency', ff.capital_efficiency||50)}
-    ${_dimBar('Growth', ff.growth_trajectory||50)}
-    ${_dimBar('Valuation', ff.valuation||50)}
+  html += _factorCard('Fundamental Quality',
+    `<span>${scoreOf(fund)}<span style="font-size:12px;font-weight:700;margin-left:4px;padding:1px 5px;border-radius:3px;background:var(--surface)">${fund.grade||'—'}</span></span>`, `
+    ${_factorBar('Earnings', ff.earnings_quality)}
+    ${_factorBar('Balance Sheet', ff.balance_sheet)}
+    ${_factorBar('Efficiency', ff.capital_efficiency)}
+    ${_factorBar('Growth', ff.growth_trajectory)}
+    ${_factorBar('Valuation', ff.valuation)}
     <div style="font-size:11px;color:var(--muted);margin-top:6px">
-      PE: <b>${ff.pe_ratio||'—'}</b> • ROE: <b>${ff.roe||'—'}%</b> • ROCE: <b>${ff.roce||'—'}%</b> • D/E: <b>${ff.debt_to_equity||'—'}</b> • PEG: <b>${ff.peg_ratio||'—'}</b>
-    </div>
-    ${(fund.signals||[]).map(s => `<div style="font-size:11px;margin-top:3px">• ${s}</div>`).join('')}
-  </div>`;
+      PE: <b>${fmt(ff.pe_ratio)}</b> • ROE: <b>${ff.roe == null ? '—' : ff.roe + '%'}</b> • ROCE: <b>${ff.roce == null ? '—' : ff.roce + '%'}</b> • D/E: <b>${fmt(ff.debt_to_equity)}</b> • PEG: <b>${fmt(ff.peg_ratio)}</b>
+    </div>${note(fund)}${signals(fund)}`, isPhone);
 
   // Institutional
   const inf = inst.factors || {};
-  html += `<div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between">
-      <span>Institutional Flow</span><span style="font-weight:800;color:${_alphaColor(inst.score||50)}">${(inst.score||50).toFixed(0)}</span>
-    </div>
-    ${_dimBar('FII Trend', inf.fii_trend||50)}
-    ${_dimBar('DII Trend', inf.dii_trend||50)}
-    ${_dimBar('Promoter', inf.promoter_signal||50)}
-    ${_dimBar('Retail Squeeze', inf.retail_squeeze||50)}
+  html += _factorCard('Institutional Flow', scoreOf(inst), `
+    ${_factorBar('FII Trend', inf.fii_trend)}
+    ${_factorBar('DII Trend', inf.dii_trend)}
+    ${_factorBar('Promoter', inf.promoter_signal)}
+    ${_factorBar('Retail Squeeze', inf.retail_squeeze)}
     <div style="font-size:11px;color:var(--muted);margin-top:6px">
       FII: <b>${inf.fii_pct!=null?inf.fii_pct.toFixed(1)+'%':'—'}</b> • DII: <b>${inf.dii_pct!=null?inf.dii_pct.toFixed(1)+'%':'—'}</b> • Promoter: <b>${inf.promoter_pct!=null?inf.promoter_pct.toFixed(1)+'%':'—'}</b>
-    </div>
-    ${(inst.signals||[]).map(s => `<div style="font-size:11px;margin-top:3px">• ${s}</div>`).join('')}
-  </div>`;
+    </div>${note(inst)}${signals(inst)}`, isPhone);
 
   // Sentiment
   const sf = sent.factors || {};
-  html += `<div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between">
-      <span>Sentiment & Narrative</span><span style="font-weight:800;color:${_alphaColor(sent.score||50)}">${(sent.score||50).toFixed(0)}</span>
-    </div>
-    ${_dimBar('News Flow', sf.news_flow||50)}
-    ${_dimBar('News Volume', sf.news_volume||50)}
-    ${_dimBar('Commodity', sf.commodity_alignment||50)}
-    ${_dimBar('Sector Rotation', sf.sector_momentum||50)}
+  html += _factorCard('Sentiment & Narrative', scoreOf(sent), `
+    ${_factorBar('News Flow', sf.news_flow)}
+    ${_factorBar('News Volume', sf.news_volume)}
+    ${_factorBar('Commodity', sf.commodity_alignment)}
+    ${_factorBar('Sector Rotation', sf.sector_momentum)}
     <div style="font-size:11px;color:var(--muted);margin-top:6px">
       Articles: <b>${sf.article_count||0}</b> (14 days)
-    </div>
-    ${(sent.signals||[]).map(s => `<div style="font-size:11px;margin-top:3px">• ${s}</div>`).join('')}
-  </div>`;
+    </div>${note(sent)}${signals(sent)}`, isPhone);
 
   // Risk
   const rf = risk.factors || {};
-  html += `<div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between">
-      <span>Risk Profile</span><span style="font-weight:800;color:${_alphaColor(risk.score||50)}">${(risk.score||50).toFixed(0)}</span>
-    </div>
-    ${_dimBar('Volatility', rf.volatility||50)}
-    ${_dimBar('Drawdown', rf.drawdown||50)}
-    ${_dimBar('Liquidity', rf.liquidity||50)}
-    ${_dimBar('Leverage', rf.leverage||50)}
-    ${_dimBar('Earnings Risk', rf.earnings_risk||50)}
-    ${(risk.signals||[]).map(s => `<div style="font-size:11px;margin-top:3px;color:var(--red)">${s}</div>`).join('')}
-  </div>`;
+  html += _factorCard('Risk Profile', scoreOf(risk), `
+    ${_factorBar('Volatility', rf.volatility)}
+    ${_factorBar('Drawdown', rf.drawdown)}
+    ${_factorBar('Liquidity', rf.liquidity)}
+    ${_factorBar('Leverage', rf.leverage)}
+    ${_factorBar('Earnings Risk', rf.earnings_risk)}${note(risk)}${signals(risk, 'var(--red)')}`, isPhone);
 
   // Long-term (if available)
   if (lt.available) {
@@ -13884,7 +14295,7 @@ function renderResearchReport(container, r) {
 
   // ── Regime-Adaptive Weights ───────────────────────────────────────────
   const w = r.weights_used || {};
-  html += `<div class="card" style="margin-bottom:14px">
+  html += `<div class="card rr-weights" style="margin-bottom:14px">
     <div class="card-title">Regime-Adaptive Weights (${r.regime ? r.regime.replace(/_/g,' ') : '—'})</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">
       <span>Technical: <b>${((w.technical||0)*100).toFixed(0)}%</b></span>
@@ -13902,8 +14313,8 @@ async function runResearchRefresh(symbol) {
   document.getElementById('research-loading').style.display = 'block';
   try {
     const data = await api(`/api/research/${symbol}/refresh`, { method: 'POST' });
-    renderResearchReport(document.getElementById('research-report'), data);
-    toast(` Research refreshed for ${symbol}`, 2000);
+    _showResearchReport(data);
+    toast(`Research refreshed for ${symbol}`, 2000);
   } catch (e) {
     toast('' + e.message, 3000);
   } finally {
@@ -14194,9 +14605,13 @@ function displayTradesWithStats(trades, livePrices = {}, priceSources = {}) {
   // Display trades
   displayPaperTrades(allTrades, livePrices, priceSources);
   
-  // Refresh P&L chart if tab is visible (use cached data, no server call!)
+  // Refresh P&L chart if its tab is visible (use cached data, no server call!)
+  // Panels are shown via `.tab-panel.active`; this tested for a `hidden` class
+  // that is never applied, so it was permanently true and re-rendered the
+  // hidden canvas on every 5s poll. Off-screen, the tab fetches fresh when
+  // opened (see handleTabActivation), so nothing is missed.
   const pnlChartTab = document.getElementById('pnl-chart');
-  if (pnlChartTab && !pnlChartTab.classList.contains('hidden')) {
+  if (pnlChartTab && pnlChartTab.classList.contains('active')) {
     refreshPnLChart(allTrades);
   }
 }
@@ -16992,13 +17407,16 @@ document.addEventListener('DOMContentLoaded', function() {
   // Load paper trading toggle state
   loadPaperTradingToggle();
   
-  // Load paper trades on startup with timeout
-  const startupTimeout = setTimeout(() => {
-    console.warn('Paper trades loading timed out on startup');
-    toast('Paper trades loading is slow - try manual refresh');
-  }, 15000);
-  
-  loadPaperTradingStatus().finally(() => clearTimeout(startupTimeout));
+  // Load paper trades on startup with timeout. The clock starts when the
+  // gate opens, not at page load: the request is parked until the PIN goes
+  // in, and fifteen seconds of PIN entry is not a slow load.
+  _whenUnlocked().then(() => {
+    const startupTimeout = setTimeout(() => {
+      console.warn('Paper trades loading timed out on startup');
+      toast('Paper trades loading is slow - try manual refresh');
+    }, 15000);
+    loadPaperTradingStatus().finally(() => clearTimeout(startupTimeout));
+  });
   
   // Update market hours badge
   function updateMarketHoursBadge() {
@@ -17087,7 +17505,127 @@ document.addEventListener('DOMContentLoaded', function() {
       isRefreshing = false;
     }
   }, 5000);
+
+  startChangeFeed();
 });
+
+// ── Change feed ───────────────────────────────────────────────────────────
+//
+// One EventSource on /api/events (see change_feed.py). The server says
+// *that* something changed — a trade file, the journal file, a config key —
+// and the dashboard re-reads the tab on screen through the same endpoints
+// it always used. Nothing is polled for this: outside market hours the
+// paper loops above are idle and the journal only ever loaded once, so a
+// close from Telegram or from the 5-second monitor after 15:30 used to sit
+// unseen until the tab was reopened.
+//
+// Refreshes are read-only by construction. The paper tab uses
+// refreshPaperSummaryLive(), never loadPaperTradingStatus(): the latter
+// runs the trailing-stop/auto-close write chain, and a write that changes
+// the file would emit another event and refresh again — a loop through a
+// money path is exactly what this must not become.
+let _feed = null;
+let _feedDropped = false;
+let _feedTimer = null;
+let _feedBusy = false;
+let _feedPending = null;
+
+function startChangeFeed() {
+  if (!window.EventSource || _feed) return;
+  // /api/events needs the session cookie, and EventSource does not retry a
+  // non-200: opened on a locked page it dies at once. Wait for the gate
+  // instead. The re-check after the wait matters — pinKey() also calls this
+  // at unlock, and only one of the two may open the stream.
+  if (_sessionState !== 'unlocked') {
+    _whenUnlocked().then(() => { if (!_feed) startChangeFeed(); });
+    return;
+  }
+  _feed = new EventSource(API + '/api/events');
+  ['trades', 'journal', 'config', 'research'].forEach(topic => {
+    _feed.addEventListener(topic, ev => {
+      let d = {};
+      try { d = JSON.parse(ev.data || '{}'); } catch (e) { /* topic alone is enough */ }
+      _feedOnChange(topic, d);
+    });
+  });
+  _feed.onopen = () => {
+    // A reconnect means events may have been missed while the connection
+    // was down (server restart, phone asleep): refresh once to catch up.
+    if (_feedDropped) { _feedDropped = false; _feedOnChange('reconnect', {}); }
+  };
+  // EventSource reconnects on its own (retry: 3000 from the server); only
+  // remember that it dropped so onopen knows to catch up.
+  _feed.onerror = () => { _feedDropped = true; };
+}
+
+// iOS closes the socket when Safari is backgrounded. EventSource usually
+// reconnects on its own when the tab returns; if the browser gave up
+// (readyState CLOSED), open a fresh one.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_feed) return;
+  if (_feed.readyState === 2) { _feed = null; _feedDropped = true; startChangeFeed(); }
+});
+
+// Coalesce: one close touches both watched files within the same second,
+// and the DB row a moment later. 400ms turns that burst into one refresh;
+// a burst that lands mid-refresh queues exactly one more.
+function _feedOnChange(topic, detail) {
+  if (topic === 'config') {
+    const key = detail && detail.key;
+    // Only the keys something on screen shows. Scheduler bookkeeping keys
+    // change all day and would otherwise re-render for nothing.
+    if (!['paper_trading', 'cash_auto_trade_enabled', 'fno_auto_trade_enabled'].includes(key)) return;
+  }
+  _feedPending = topic;
+  if (_feedTimer) clearTimeout(_feedTimer);
+  _feedTimer = setTimeout(_feedRefresh, 400);
+}
+
+async function _feedRefresh() {
+  _feedTimer = null;
+  if (_feedBusy) { _feedTimer = setTimeout(_feedRefresh, 400); return; }
+  const topic = _feedPending; _feedPending = null;
+  if (!topic) return;
+  _feedBusy = true;
+  try {
+    const active = document.querySelector('.tab-panel.active');
+    const tab = active ? active.id : null;
+    if (topic === 'config' || topic === 'reconnect') {
+      // Header chip + paper-tab toggle + Settings switches, wherever shown.
+      await Promise.all([
+        _syncCashAutoTradeHeader(),
+        (typeof loadPaperTradingToggle === 'function' ? loadPaperTradingToggle() : null),
+        (tab === 'settings' && typeof renderMasterSwitches === 'function' ? renderMasterSwitches() : null),
+      ].filter(Boolean));
+      if (topic === 'config') return;
+    }
+    if (topic === 'research') {
+      // A batch finished. Reload the list if it is on screen; if a report is
+      // open on a phone, leave it alone and reload when the user goes back.
+      if (tab === 'research' && !document.getElementById('research').classList.contains('rs-detail')) {
+        await loadResearchLeaderboard(true);
+      } else {
+        _rsListStale = true;   // reload when the list is next on screen
+      }
+      return;
+    }
+    // trades / journal / reconnect: re-read whatever trade view is on screen.
+    if (tab === 'paper') {
+      await refreshPaperSummaryLive();
+    } else if (tab === 'pnl-chart') {
+      const d = await api('/api/paper-trading/status');
+      cachedTrades = d.trades || [];
+      refreshPnLChart(cachedTrades);
+    } else if (tab === 'journal') {
+      await loadJournal();
+    }
+    // Other tabs show nothing trade-shaped; they load fresh when opened.
+  } catch (e) {
+    // api() has already toasted a failed read; the next event retries.
+  } finally {
+    _feedBusy = false;
+  }
+}
 
 // Read-only refresh of the Paper Trader's live numbers.
 //
@@ -17144,19 +17682,13 @@ function getPnLWindowTrades(trades) {
 
   if (!closedTrades.length) return [];
 
-  const minutes = Number(document.getElementById('pnl-timerange')?.value || 0);
-  if (!Number.isFinite(minutes) || minutes <= 0) return closedTrades;
+  // The window is a trade count, not a duration. This chart plots closed trades,
+  // which arrive days or months apart — the old minute-based cutoff (30m..24h)
+  // left every option showing only the newest one or two of them.
+  const count = Number(document.getElementById('pnl-timerange')?.value || 0);
+  if (!Number.isFinite(count) || count <= 0) return closedTrades;
 
-  const latestExitTs = new Date(getTradeExitTime(closedTrades[closedTrades.length - 1]) || 0).getTime();
-  if (!Number.isFinite(latestExitTs)) return closedTrades;
-
-  const cutoff = latestExitTs - (minutes * 60 * 1000);
-  const filtered = closedTrades.filter(trade => {
-    const exitTs = new Date(getTradeExitTime(trade) || 0).getTime();
-    return Number.isFinite(exitTs) && exitTs >= cutoff;
-  });
-
-  return filtered.length ? filtered : closedTrades.slice(-Math.min(closedTrades.length, 40));
+  return closedTrades.slice(-count);
 }
 
 // Calculate cumulative net P&L from trades (CLIENT-SIDE - no server call!)
@@ -17166,27 +17698,47 @@ function calculatePnLFromTrades(trades) {
 
   let totalCapitalInvested = 0;
   let cumulativeNetPnL = 0;
+  let cumulativeGrossPnL = 0;
   let cumulativeCharges = 0;
-  let peakNetPnL = Number.NEGATIVE_INFINITY;
+  // Peak line = cumulative sum of each trade's OWN best GROSS P&L, from the
+  // highest candle it lived through (server-computed peak_price). Gross, so it
+  // sits in the same column as the Gross line and is always at or above it;
+  // the net-at-peak is carried alongside for the tooltip. It was the running
+  // max of the realised net curve — a step that only moves at a close and so
+  // could never show what a trade reached before it was exited.
+  let cumulativePeakGrossPnL = 0;
+  let cumulativePeakNetPnL = 0;
+  let peaksFromCandles = 0;
   let troughNetPnL = Number.POSITIVE_INFINITY;
   let winners = 0;
   let losses = 0;
+  let tradeNo = 0;
   const pnlData = [];
 
   for (const trade of closedTrades) {
+    tradeNo += 1;
     const entryValue = parseNumber(trade.entry_price, 0) * getTradeQuantity(trade);
     const exitPrice = getTradeExitPrice(trade);
     const netPnl = getTradeNetPnlAmount(trade);
     const grossPnl = getTradeGrossPnlAmount(trade);
-    const charges = parseNumber(
-      trade?.post_trade?.total_charges ?? trade?.total_charges,
-      estimatePaperTradeCharges(trade, exitPrice)
-    );
+    const charges = pickNumber(trade?.post_trade?.total_charges, trade?.total_charges)
+      ?? estimatePaperTradeCharges(trade, exitPrice);
 
     totalCapitalInvested += entryValue;
     cumulativeNetPnL += netPnl;
+    cumulativeGrossPnL += grossPnl;
     cumulativeCharges += charges;
-    peakNetPnL = Math.max(peakNetPnL, cumulativeNetPnL);
+    // No candle coverage -> assume it peaked where it closed (no upside
+    // claimed), and count it so the UI can say how many are real.
+    const peakNet = pickNumber(trade?.peak_net_pnl);
+    const peakPx = pickNumber(trade?.peak_price);
+    const entryPx = parseNumber(trade.entry_price, 0);
+    const peakGross = peakPx !== null
+      ? (getTradeSide(trade) === 'SELL' ? (entryPx - peakPx) : (peakPx - entryPx)) * getTradeQuantity(trade)
+      : grossPnl;
+    if (peakNet !== null) peaksFromCandles += 1;
+    cumulativePeakGrossPnL += peakGross;
+    cumulativePeakNetPnL += (peakNet !== null ? peakNet : netPnl);
     troughNetPnL = Math.min(troughNetPnL, cumulativeNetPnL);
 
     if (netPnl > 0) winners += 1;
@@ -17199,6 +17751,8 @@ function calculatePnLFromTrades(trades) {
     const mins = String(exitDt.getMinutes()).padStart(2, '0');
 
     pnlData.push({
+      trade_index: tradeNo,
+      trade_total: closedTrades.length,
       timestamp: getTradeExitTime(trade),
       time: `${month}-${date} ${hours}:${mins}`,
       symbol: trade.symbol,
@@ -17208,7 +17762,12 @@ function calculatePnLFromTrades(trades) {
       charges: roundNumber(charges, 2),
       entry_value: roundNumber(entryValue, 2),
       cumulative_pnl_amount: roundNumber(cumulativeNetPnL, 2),
-      peak_pnl_amount: roundNumber(peakNetPnL, 2),
+      cumulative_gross_amount: roundNumber(cumulativeGrossPnL, 2),
+      peak_pnl_amount: roundNumber(cumulativePeakGrossPnL, 2),
+      peak_net_cumulative: roundNumber(cumulativePeakNetPnL, 2),
+      peak_gross_pnl: roundNumber(peakGross, 2),
+      peak_net_pnl: peakNet,
+      peak_price: peakPx,
       cumulative_pnl_pct: totalCapitalInvested > 0 ? roundNumber((cumulativeNetPnL / totalCapitalInvested) * 100, 2) : 0,
       total_capital_invested: roundNumber(totalCapitalInvested, 2),
       total_charges: roundNumber(cumulativeCharges, 2),
@@ -17221,8 +17780,13 @@ function calculatePnLFromTrades(trades) {
     pnl_data: pnlData,
     statistics: {
       current_pnl_amount: finalData.cumulative_pnl_amount,
+      gross_pnl_amount: finalData.cumulative_gross_amount,
       current_pnl_pct: finalData.cumulative_pnl_pct,
-      peak_pnl_amount: roundNumber(peakNetPnL, 2),
+      gross_pnl_pct: totalCapitalInvested > 0 ? roundNumber((cumulativeGrossPnL / totalCapitalInvested) * 100, 2) : 0,
+      peak_pnl_amount: roundNumber(cumulativePeakGrossPnL, 2),
+      peak_pnl_pct: totalCapitalInvested > 0 ? roundNumber((cumulativePeakGrossPnL / totalCapitalInvested) * 100, 2) : 0,
+      peak_net_amount: roundNumber(cumulativePeakNetPnL, 2),
+      peaks_from_candles: peaksFromCandles,
       trough_pnl_amount: roundNumber(troughNetPnL, 2),
       total_trades_closed: closedTrades.length,
       total_capital_invested: finalData.total_capital_invested,
@@ -17252,26 +17816,32 @@ async function refreshPnLChart(trades) {
     // Update stats
     if (pnlResult.statistics) {
       const currentEl = document.getElementById('pnl-current');
+      const grossEl = document.getElementById('pnl-gross');
       const peakEl = document.getElementById('pnl-peak');
-      const percentEl = document.getElementById('pnl-percent');
       const tradesEl = document.getElementById('pnl-trades');
+      const st = pnlResult.statistics;
+      // Amount with its % alongside; all three share one denominator (total
+      // capital invested across the window) so they are comparable.
+      const amtPct = (amt, pct) => `${formatSignedMoney(amt, 2)} (${pct >= 0 ? '+' : ''}${Number(pct).toFixed(2)}%)`;
       
       if (currentEl) {
-        const curr = pnlResult.statistics.current_pnl_amount;
-        currentEl.textContent = formatSignedMoney(curr, 2);
-        currentEl.style.color = curr >= 0 ? 'var(--green)' : 'var(--red)';
+        currentEl.textContent = amtPct(st.current_pnl_amount, st.current_pnl_pct);
+        currentEl.style.color = st.current_pnl_amount >= 0 ? 'var(--green)' : 'var(--red)';
+        currentEl.title = `Net of charges. Charges so far: ${formatMoney(st.total_charges, 2)}`;
       }
-      
+
+      if (grossEl) {
+        grossEl.textContent = amtPct(st.gross_pnl_amount, st.gross_pnl_pct);
+        grossEl.style.color = st.gross_pnl_amount >= 0 ? 'var(--green)' : 'var(--red)';
+        grossEl.title = `Before charges. Charges so far: ${formatMoney(st.total_charges, 2)} → net ${formatSignedMoney(st.current_pnl_amount, 2)}`;
+      }
+
       if (peakEl) {
-        const peak = pnlResult.statistics.peak_pnl_amount;
-        peakEl.textContent = formatSignedMoney(peak, 2);
-        peakEl.style.color = peak >= 0 ? 'var(--green)' : 'var(--red)';
-      }
-      
-      if (percentEl) {
-        const pct = pnlResult.statistics.current_pnl_pct;
-        percentEl.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
-        percentEl.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+        const n = st.peaks_from_candles, total = st.total_trades_closed;
+        peakEl.textContent = amtPct(st.peak_pnl_amount, st.peak_pnl_pct);
+        peakEl.style.color = st.peak_pnl_amount >= 0 ? 'var(--green)' : 'var(--red)';
+        peakEl.title = `Gross, at each trade's best candle price. Net at those same prices: ${formatSignedMoney(st.peak_net_amount, 2)}. `
+          + `${n} of ${total} trades have candle coverage` + (n < total ? '; the rest are assumed to have peaked at close' : '');
       }
 
       if (tradesEl) {
@@ -17296,7 +17866,9 @@ function renderCumulativePnLChart(pnlData) {
   let sampledData = pnlData;
   if (pnlData.length > 100) {
     const sampleRate = Math.ceil(pnlData.length / 100);
-    sampledData = pnlData.filter((_, i) => i % sampleRate === 0);
+    // Always keep the final point: it is the chart's end value and sets the
+    // line colour, and "every Nth" only lands on it by coincidence.
+    sampledData = pnlData.filter((_, i) => i % sampleRate === 0 || i === pnlData.length - 1);
   }
   
   const labels = sampledData.map(d => {
@@ -17309,17 +17881,109 @@ function renderCumulativePnLChart(pnlData) {
   
   const cumulativePnL = sampledData.map(d => d.cumulative_pnl_amount);
   const peakPnL = sampledData.map(d => d.peak_pnl_amount);
+  const grossPnL = sampledData.map(d => d.cumulative_gross_amount);
   
-  const minPnL = Math.min(...cumulativePnL, 0);
-  const maxPnL = Math.max(...peakPnL, 0);
-  const rangePnL = maxPnL - minPnL;
-  const padding = Math.max(1, rangePnL * 0.15);
+  // No pinned min/max: the axis autoscales to whichever lines are VISIBLE,
+  // so clicking gross and peak off in the legend rescales to the net line
+  // alone. With three lines on one axis the net line (±₹500) sits in a
+  // ₹5,000 range and reads as flat; this is the way to zoom in on it.
+  // beginAtZero keeps the zero line in view; grace is the breathing room the
+  // old 15% padding provided.
 
   // Determine color based on final P&L
   const finalPnL = cumulativePnL[cumulativePnL.length - 1];
   const isProfit = finalPnL >= 0;
   const primaryColor = isProfit ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)';
   const primaryColorLight = isProfit ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)';
+
+  // Tooltip positioner that keeps the box OFF every visible line.
+  //
+  // Chart.js's built-in positioners anchor to a data point, so with three
+  // lines the box always covers something — worst at the top right, where
+  // the peak and gross lines are highest and the cursor sits among them.
+  // This one looks before it lands: it reads every visible line as a pixel
+  // polyline, tries candidate spots nearest the cursor first (above-right,
+  // above-left, below-right, below-left, then slots down the right edge and
+  // the left edge of the plot), rejects any spot a line passes through, and
+  // takes the first clean one. Hovering the top right therefore slides the
+  // box left, into the blank space over the flat early part of the chart.
+  // If no spot is fully clean it takes the least-covered. Registered once;
+  // `this` is the tooltip, so width/height are from the previous frame (a
+  // fixed estimate on the very first hover).
+  if (window.Chart && Chart.Tooltip && !Chart.Tooltip.positioners.clear) {
+    Chart.Tooltip.positioners.clear = function(items, eventPosition) {
+      if (!items || !items.length || !eventPosition) return false;
+      const chart = this.chart, A = chart.chartArea;
+      // Previous frame's size; on the very first hover, an estimate that is
+      // never wider than the plot (a phone plot is ~340px).
+      const plotW = A.right - A.left;
+      const W = this.width || Math.min(360, plotW * 0.6), H = this.height || 92, M = 12;
+      const cx = eventPosition.x, cy = eventPosition.y;
+      const caret = (this.options.caretSize || 0) + (this.options.caretPadding || 0);
+
+      const lines = [];
+      chart.data.datasets.forEach((_, i) => {
+        if (!chart.isDatasetVisible(i)) return;
+        const pts = chart.getDatasetMeta(i).data.map(p => ({ x: p.x, y: p.y })).filter(p => Number.isFinite(p.y));
+        if (pts.length > 1) lines.push(pts);
+      });
+
+      // y of a polyline at pixel x, linearly between its points.
+      const yAt = (pts, x) => {
+        if (x < pts[0].x || x > pts[pts.length - 1].x) return null;
+        let lo = 0, hi = pts.length - 1;
+        while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid].x <= x) lo = mid; else hi = mid; }
+        const a = pts[lo], b = pts[hi], t = b.x === a.x ? 0 : (x - a.x) / (b.x - a.x);
+        return a.y + t * (b.y - a.y);
+      };
+      // Sampled count of line pixels inside a rect (0 = fully clear).
+      const overlap = (r) => {
+        let n = 0;
+        for (let x = r.left; x <= r.right; x += 8)
+          for (const pts of lines) { const y = yAt(pts, x); if (y !== null && y >= r.top && y <= r.bottom) n++; }
+        return n;
+      };
+      const clamp = (c) => {
+        const left = Math.max(A.left, Math.min(c.left, A.right - W));
+        const top = Math.max(A.top, Math.min(c.top, A.bottom - H));
+        return { left, top, right: left + W, bottom: top + H };
+      };
+
+      const cands = [
+        { left: cx + M,     top: cy - H - M },   // above-right
+        { left: cx - W - M, top: cy - H - M },   // above-left
+        { left: cx + M,     top: cy + M },       // below-right
+        { left: cx - W - M, top: cy + M },       // below-left
+      ];
+      // Then sweep OUTWARD from the cursor, alternating left and right in
+      // half-box steps, trying a few heights at each step — so the first
+      // clean spot found is the nearest one, not a far corner.
+      const span = A.right - A.left;
+      for (let dx = W / 2; dx <= span; dx += W / 2) {
+        for (const sign of [-1, 1]) {
+          const left = sign < 0 ? cx - dx - W : cx + dx;
+          cands.push({ left, top: cy - H - M });     // level with, above the cursor
+          cands.push({ left, top: A.top });          // top of the plot
+          cands.push({ left, top: cy + M });         // level with, below the cursor
+          cands.push({ left, top: A.bottom - H });   // bottom of the plot
+        }
+      }
+
+      let best = null, bestScore = Infinity;
+      for (const c of cands) {
+        const r = clamp(c), sc = overlap(r);
+        if (sc < bestScore) { best = r; bestScore = sc; if (sc === 0) break; }
+      }
+
+      // Express the chosen rect as anchor + alignment so the caret points
+      // back at the cursor. alignY adds caret+padding, so compensate.
+      const xAlign = best.left >= cx ? 'left' : best.right <= cx ? 'right' : 'center';
+      const yAlign = best.bottom <= cy ? 'bottom' : best.top >= cy ? 'top' : 'center';
+      const x = xAlign === 'left' ? best.left : xAlign === 'right' ? best.right : (best.left + best.right) / 2;
+      const y = yAlign === 'bottom' ? best.bottom + caret : yAlign === 'top' ? best.top - caret : (best.top + best.bottom) / 2;
+      return { x, y, xAlign, yAlign };
+    };
+  }
 
   if (!pnlChartInstance) {
     pnlChartInstance = new Chart(ctx, {
@@ -17342,12 +18006,26 @@ function renderCumulativePnLChart(pnlData) {
             pointBorderWidth: 2.5,
           },
           {
-            label: 'Peak Net P&L',
+            label: 'Peak Gross P&L',
             data: peakPnL,
             borderColor: 'rgba(0, 113, 227, 0.35)',
             backgroundColor: 'transparent',
             borderWidth: 1.5,
             borderDash: [5, 5],
+            fill: false,
+            tension: 0.4,
+            pointRadius: 0,
+            pointHoverRadius: 6,
+          },
+          {
+            // Before charges. The vertical distance to the net line is what
+            // charges have taken so far.
+            label: 'Cumulative Gross P&L',
+            data: grossPnL,
+            borderColor: 'rgba(245, 158, 11, 0.55)',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [2, 3],
             fill: false,
             tension: 0.4,
             pointRadius: 0,
@@ -17380,50 +18058,84 @@ function renderCumulativePnLChart(pnlData) {
             bodyColor: '#fff',
             borderColor: primaryColor,
             borderWidth: 1.5,
-            padding: 14,
-            displayColors: true,
+            padding: 12,
+            // One block per point, not one per line. With mode:'index' every
+            // dataset contributed its own entry plus sub-lines — ten lines on
+            // a hover. Keep a single item (the net line) and write the whole
+            // summary from it; no colour swatches since there is one block.
+            filter: (item) => item.datasetIndex === 0,
+            displayColors: false,
+            // 'clear' (custom, registered above) finds a spot no visible line
+            // passes through and returns its own alignment.
+            position: 'clear',
+            caretSize: 5,
+            caretPadding: 4,
             callbacks: {
               title: function(ctx) {
                 const point = ctx[0];
-                const dataIdx = point.dataIndex;
-                const fullData = point.chart.$sampledData?.[dataIdx];
-                return fullData ? fullData.time + ' · ' + fullData.symbol : point.label;
+                const fullData = point.chart.$sampledData?.[point.dataIndex];
+                if (!fullData) return point.label;
+                // Chart.js does not wrap tooltip text: the box is as wide as
+                // its longest line. On a phone the laptop layout (~60 chars,
+                // ~400px) is wider than the plot itself, so every position
+                // covers everything. Narrow charts get short lines instead.
+                const compact = point.chart.width < 600;
+                return compact
+                  ? `#${fullData.trade_index}/${fullData.trade_total} · ${fullData.time} · ${fullData.symbol}`
+                  : `Trade ${fullData.trade_index}/${fullData.trade_total} · ${fullData.time} · ${fullData.symbol}`;
               },
               label: function(ctx) {
-                const dataIdx = ctx.dataIndex;
-                const fullData = ctx.chart.$sampledData?.[dataIdx];
-                const value = ctx.parsed.y;
-                const label = ctx.dataset.label;
-                
-                if (label.includes('Cumulative') && fullData) {
-                  return [
-                    `${label}: ${formatSignedMoney(value, 2)}`,
-                    `Net Return: ${fullData.cumulative_pnl_pct >= 0 ? '+' : ''}${fullData.cumulative_pnl_pct.toFixed(2)}%`,
+                const d = ctx.chart.$sampledData?.[ctx.dataIndex];
+                if (!d) return '';
+                const compact = ctx.chart.width < 600;   // see title callback
+                const hasPeak = d.peak_price !== null && d.peak_price !== undefined;
+                const gave = hasPeak ? Math.max(0, d.peak_gross_pnl - d.gross_pnl) : 0;
+                if (compact) {
+                  // ≤ ~30 chars a line so the box stays well inside a phone plot.
+                  const lines = [
+                    `net ${formatSignedMoney(d.net_pnl, 2)} · gross ${formatSignedMoney(d.gross_pnl, 2)}`,
+                    `charges ${formatMoney(d.charges, 2)}`,
+                    hasPeak ? `peak ₹${d.peak_price} · gave ${formatMoney(gave, 0)}` : `peak: no candle data`,
                   ];
+                  const ep0 = ctx.chart.tooltip && ctx.chart.tooltip._eventPosition;
+                  let near0 = null, nd0 = Infinity;
+                  if (ep0) ctx.chart.data.datasets.forEach((ds, i) => {
+                    if (!ctx.chart.isDatasetVisible(i)) return;
+                    const el = ctx.chart.getDatasetMeta(i).data[ctx.dataIndex];
+                    if (el && Math.abs(el.y - ep0.y) < nd0) { nd0 = Math.abs(el.y - ep0.y); near0 = ds.label; }
+                  });
+                  const m0 = (label, txt) => (near0 === label ? '▸' : '') + txt;
+                  lines.push(`run ${m0('Cumulative Net P&L', formatSignedMoney(d.cumulative_pnl_amount, 0))} · ${m0('Cumulative Gross P&L', formatSignedMoney(d.cumulative_gross_amount, 0))} · ${m0('Peak Gross P&L', formatSignedMoney(d.peak_pnl_amount, 0))}`);
+                  return lines;
                 }
-                
-                return `${label}: ${formatSignedMoney(value, 2)}`;
+                const lines = [
+                  `This trade   ${formatSignedMoney(d.net_pnl, 2)} net · ${formatSignedMoney(d.gross_pnl, 2)} gross · ${formatMoney(d.charges, 2)} charges`,
+                ];
+                if (hasPeak) {
+                  lines.push(`Peaked at    ₹${d.peak_price} · gave back ${formatMoney(gave, 2)}`);
+                } else {
+                  lines.push(`Peaked at    no candle data — assumed at close`);
+                }
+                // Which line is the cursor nearest? _eventPosition is the tooltip's
+                // current mouse position (set before callbacks run).
+                const ep = ctx.chart.tooltip && ctx.chart.tooltip._eventPosition;
+                let near = null, nd = Infinity;
+                if (ep) ctx.chart.data.datasets.forEach((ds, i) => {
+                  if (!ctx.chart.isDatasetVisible(i)) return;
+                  const el = ctx.chart.getDatasetMeta(i).data[ctx.dataIndex];
+                  if (el && Math.abs(el.y - ep.y) < nd) { nd = Math.abs(el.y - ep.y); near = ds.label; }
+                });
+                const mark = (label, txt) => (near === label ? '▸ ' : '') + txt;
+                lines.push(`Running      ${mark('Cumulative Net P&L', formatSignedMoney(d.cumulative_pnl_amount, 2) + ' net')} · ${mark('Cumulative Gross P&L', formatSignedMoney(d.cumulative_gross_amount, 2) + ' gross')} · ${mark('Peak Gross P&L', formatSignedMoney(d.peak_pnl_amount, 2) + ' peak')}`);
+                return lines;
               },
-              afterLabel: function(ctx) {
-                const dataIdx = ctx.dataIndex;
-                const fullData = ctx.chart.$sampledData?.[dataIdx];
-                
-                if (ctx.dataset.label.includes('Cumulative') && fullData) {
-                  const totalCapital = fullData.total_capital_invested || 0;
-                  return [
-                    `Gross P&L: ${formatSignedMoney(fullData.gross_pnl, 2)}`,
-                    `Charges: ${formatMoney(fullData.charges, 2)}`,
-                    `Capital Invested: ${formatMoney(totalCapital, 2)}`,
-                  ];
-                }
-              }
             }
           }
         },
         scales: {
           y: {
-            min: minPnL - padding,
-            max: maxPnL + padding,
+            beginAtZero: true,
+            grace: '8%',
             ticks: {
               color: 'var(--muted)',
               font: { size: 11, weight: '500' },
@@ -17459,10 +18171,9 @@ function renderCumulativePnLChart(pnlData) {
     pnlChartInstance.data.datasets[0].backgroundColor = primaryColorLight;
     pnlChartInstance.data.datasets[0].pointBackgroundColor = primaryColor;
     pnlChartInstance.data.datasets[1].data = peakPnL;
+    pnlChartInstance.data.datasets[2].data = grossPnL;
 
     pnlChartInstance.options.plugins.tooltip.borderColor = primaryColor;
-    pnlChartInstance.options.scales.y.min = minPnL - padding;
-    pnlChartInstance.options.scales.y.max = maxPnL + padding;
 
     pnlChartInstance.update('none');
   }
@@ -17476,26 +18187,28 @@ function clearPnLChart() {
     pnlChartInstance = null;
   }
   const currentEl = document.getElementById('pnl-current');
+  const grossEl = document.getElementById('pnl-gross');
   const peakEl = document.getElementById('pnl-peak');
-  const percentEl = document.getElementById('pnl-percent');
   const tradesEl = document.getElementById('pnl-trades');
   if (currentEl) currentEl.textContent = '₹0';
+  if (grossEl) grossEl.textContent = '₹0';
   if (peakEl) peakEl.textContent = '₹0';
-  if (percentEl) percentEl.textContent = '0.00%';
   if (tradesEl) tradesEl.textContent = '0 / 0';
 }
 
 // ── Logout Function ────────────────────────────
 function logoutUser() {
   if (!confirm('Are you sure you want to logout?')) return;
-  // This cleared localStorage.auth_token and redirected to /login. Two
-  // problems: the gate this dashboard actually uses is the PIN lock, which
-  // reads sessionStorage.pin_ok and was left untouched — so nothing re-locked
-  // — and /login serves the multi-user auth page, which is still a stub.
-  // Clearing the PIN session and reloading returns to the lock screen.
+  // This used to clear localStorage.auth_token and redirect to /login (the
+  // multi-user auth page, still a stub). The gate this dashboard actually
+  // uses is the PIN session; end it and return to the lock screen in place.
   localStorage.removeItem('auth_token');
-  sessionStorage.removeItem('pin_ok');
-  sessionStorage.removeItem('device_token');
+  // Revoke the session server-side; the cookie is HttpOnly so only the server
+  // can end it. Fire-and-forget: the lock below is the user-visible outcome
+  // either way, and a revoked-or-expired session answers 401 from then on.
+  api('/api/logout', { method: 'POST' }).catch(() => {});
+  // The live stream was authenticated when it connected; end it with the session.
+  if (typeof _feed !== 'undefined' && _feed) { _feed.close(); _feed = null; }
 
   // Re-lock in place instead of location.reload(). The reload did return to
   // the lock screen and did replay the intro — but only after refetching this
@@ -17509,6 +18222,9 @@ function logoutUser() {
   const lock = document.getElementById('pin-lock');
   lock.className = '';
   document.body.classList.add('locked');
+  // Close the gate AFTER the logout POST above has left: closed first, that
+  // call would park and fire at the next unlock — revoking the new session.
+  _setLocked();
   _pinBuf = '';
   _pinUpdateDots();
   runLockIntro();

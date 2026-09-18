@@ -379,7 +379,7 @@ def _build_news_narrative(articles, stock_info):
 
 def _build_fundamental_narrative(symbol, fund_data):
     """Build narrative from fundamental analysis data."""
-    if not fund_data or not isinstance(fund_data, dict) or not fund_data.get("rating"):
+    if not fund_data or not isinstance(fund_data, dict) or not fund_data.get("rating") or fund_data.get("rating") == "N/A":
         return None
 
     parts = []

@@ -316,6 +316,9 @@ class PaperTradeTracker:
                         entry_time=trade.get('entry_time'),
                         exit_price=float(exit_price),
                         exit_reason=journal_exit_reason,
+                        # The moment the trade actually exited, not the moment
+                        # the journal happened to be notified.
+                        exit_time=trade.get('exit_time'),
                     )
                     if journal_entry:
                         logger.info("✓ Synced paper trade closure %s to trade journal", trade_id)

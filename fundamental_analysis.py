@@ -211,12 +211,33 @@ def scrape_annual_financials(symbol):
         return {"years": [], "annual": [], "growth": []}
 
 
+# RETIRED 2026-09-12. Returns {} without touching the network.
+#
+# The regexes below grab the first number after the first occurrence of a
+# label anywhere in Screener's HTML, and the page layout has moved on. Checked
+# against the live page for DIVISLAB: ROCE 33.0 (page: 22.0), book value and
+# "P/B" both 9,322 (that is the share price; book value is 631), ROE / market
+# cap / dividend yield / 52-week range missing, and revenue trend, profit
+# trend, operating cash flow and free cash flow all returning the same number,
+# 373860. Only P/E and promoter holding were right. The rating built from
+# these was therefore built on noise, and the scrape was one of four hits on
+# the same Screener page per symbol per cycle (~1,270/day, 67 rejected 429).
+#
+# The parser is kept below, unreachable, until a replacement source is wired
+# (Tijori `ratios` snapshots already hold P/E, ROE, ROCE, D/E, OPM, market cap,
+# dividend yield and sales, refreshed daily). get_fundamental_analysis()
+# reports rating "N/A" for an empty result instead of scoring it "POOR".
+_SCREENER_RATIOS_RETIRED = True
+
+
 def _scrape_screener(symbol):
     """
     Scrape key financial data from Screener.in.
     Returns dict with revenue, profit, PE, PB, ROE, ROCE, debt_to_equity, 
     promoter_holding, market_cap, dividend_yield, book_value, free_cash_flow, etc.
     """
+    if _SCREENER_RATIOS_RETIRED:
+        return {}
     url = f"https://www.screener.in/company/{symbol}/consolidated/"
     data = {}
     
@@ -492,6 +513,63 @@ def _analyze_financials(screener_data):
     }
 
 
+def _analyze_tijori(f):
+    """
+    Rating from the Tijori snapshot. Each check counts toward max_score only
+    when its input exists, so a bank with no promoter (HDFC Bank) is not
+    marked down for a field that does not apply to it.
+
+      ROE > 15%, ROCE > 15%, D/E < 1, P/E below peer median, promoter > 50%,
+      sales up > 10% YoY, forensic checks mostly green   -> +1 each
+      dividend yield > 0                                   -> +0.5
+    """
+    score, max_score, flags, concerns = 0.0, 0.0, [], []
+
+    def check(value, ok, flag, concern, weight=1.0):
+        nonlocal score, max_score
+        if value is None:
+            return
+        max_score += weight
+        if ok:
+            score += weight
+            if flag: flags.append(flag)
+        elif concern:
+            concerns.append(concern)
+
+    roe, roce, de = f.get("roe"), f.get("roce"), f.get("debt_to_equity")
+    pe, ipe = f.get("pe_ratio"), f.get("industry_pe")
+    prom, yoy, dy = f.get("promoter_holding"), f.get("yoy_sales_growth"), f.get("dividend_yield")
+    fx = f.get("forensics") or {}
+
+    check(roe, roe is not None and roe > 15, f"ROE {roe:.1f}%" if roe is not None else None,
+          f"ROE {roe:.1f}% (below 15%)" if roe is not None else None)
+    check(roce, roce is not None and roce > 15, f"ROCE {roce:.1f}%" if roce is not None else None,
+          f"ROCE {roce:.1f}% (below 15%)" if roce is not None else None)
+    check(de, de is not None and de < 1, f"Low debt (D/E {de:.2f})" if de is not None else None,
+          f"Leveraged (D/E {de:.2f})" if de is not None else None)
+    if pe is not None and ipe:
+        check(pe, pe < ipe, f"P/E {pe:.0f} below peer median {ipe:.0f}", f"P/E {pe:.0f} above peer median {ipe:.0f}")
+    check(prom, prom is not None and prom > 50, f"Promoter holding {prom:.1f}%" if prom is not None else None,
+          f"Promoter holding {prom:.1f}%" if prom is not None and prom < 30 else None)
+    check(yoy, yoy is not None and yoy > 10, f"Sales up {yoy:.0f}% YoY" if yoy is not None else None,
+          f"Sales {yoy:+.0f}% YoY" if yoy is not None and yoy < 0 else None)
+    if fx.get("total"):
+        g, r = fx.get("green", 0), fx.get("red", 0)
+        check(g, g >= 2 * r, f"Forensics {g} green / {r} red", f"Forensics {r} red flags of {fx['total']}")
+    check(dy, dy is not None and dy > 0, f"Dividend yield {dy:.1f}%" if dy is not None else None, None, weight=0.5)
+
+    if not max_score:
+        return {"fundamental_score": 0, "max_score": 0, "fundamental_pct": 0, "fundamental_rating": "N/A",
+                "positive_flags": [], "concerns": [], "fundamental_note": "Snapshot has no usable fields"}
+    pct = score / max_score * 100
+    rating = "STRONG" if pct >= 70 else "MODERATE" if pct >= 50 else "WEAK" if pct >= 30 else "POOR"
+    return {
+        "fundamental_score": round(score, 1), "max_score": max_score, "fundamental_pct": round(pct, 1),
+        "fundamental_rating": rating, "positive_flags": flags, "concerns": concerns,
+        "fundamental_source": "tijori", "fundamental_as_of": f.get("as_of"),
+    }
+
+
 def _fetch_competitor_prices(groww_api, symbol):
     """Fetch LTP of competitors for comparison."""
     peers = _get_competitors(symbol)
@@ -546,7 +624,9 @@ def get_fundamental_analysis(groww_api, symbol):
     # Check DB cache as persistent fallback
     try:
         from db_manager import get_cached
-        db_cached = get_cached(f"fundamentals_{symbol}", ttl_seconds=_CACHE_TTL_SECONDS)
+        # Key versioned when the source changed (Screener -> Tijori) so a
+        # result cached under the old source is never served for its 6h.
+        db_cached = get_cached(f"fundamentals_v2_{symbol}", ttl_seconds=_CACHE_TTL_SECONDS)
         if db_cached:
             with _cache_lock:
                 _cache[symbol] = (db_cached, datetime.now())
@@ -560,12 +640,30 @@ def get_fundamental_analysis(groww_api, symbol):
         "analysis_time": datetime.now().isoformat(),
     }
     
-    # ── 1. Screener financials ───────────────────────────────────────────
-    screener_data = _scrape_screener(symbol)
+    # ── 1. Fundamentals from the daily Tijori snapshot (DB, no network) ──
+    # Same keys the Screener dict used (pe_ratio, roe, roce, debt_to_equity,
+    # promoter_holding, dividend_yield, market_cap) so every downstream reader
+    # - the deep-analysis narrative, portfolio analysis - keeps working.
+    try:
+        import tijori_collector
+        screener_data = tijori_collector.get_fundamentals(symbol) or {}
+    except Exception as e:
+        logger.warning("Tijori fundamentals unavailable for %s: %s", symbol, e)
+        screener_data = {}
     result["financials"] = screener_data
     
     # ── 2. Analyze financials ────────────────────────────────────────────
-    analysis = _analyze_financials(screener_data)
+    # No data is not bad data: an empty result used to score 0/9.5 and rate
+    # "POOR", which the stock panel read out as "Fundamentals are poor - high
+    # risk". "N/A" is the sentinel every reader already treats as absent.
+    if screener_data:
+        analysis = _analyze_tijori(screener_data)
+    else:
+        analysis = {
+            "fundamental_score": 0, "max_score": 0, "fundamental_pct": 0,
+            "fundamental_rating": "N/A", "positive_flags": [], "concerns": [],
+            "fundamental_note": "No Tijori snapshot for this symbol",
+        }
     result.update(analysis)
     
     # ── 3. Live quote data ───────────────────────────────────────────────
@@ -620,7 +718,7 @@ def get_fundamental_analysis(groww_api, symbol):
         _cache[symbol] = (result, datetime.now())
     try:
         from db_manager import set_cached
-        set_cached(f"fundamentals_{symbol}", result, cache_type="fundamentals")
+        set_cached(f"fundamentals_v2_{symbol}", result, cache_type="fundamentals")
     except Exception:
         pass
     

@@ -181,6 +181,94 @@ def _build_tracker_post_trade(trade: Dict[str, Any]) -> Optional[Dict[str, Any]]
     }
 
 
+def _estimate_round_trip_charges(entry_price: Optional[float], quantity: int) -> Optional[float]:
+    """
+    Round-trip charges for this position, from the same cost model that prices
+    the exit (_build_tracker_post_trade above), so an open trade is marked on
+    the same basis it will settle on.
+
+    Priced at the entry price because the exit is unknown while a trade is
+    open. That costs accuracy worth under 3% across a +/-10% swing — against
+    the 6x-17x error the frontend produced carrying its own flat 0.03%/leg
+    formula (a Rs7,736 position: Rs4.64 estimated vs Rs80.41 actual), which
+    rendered an underwater position as NET PROFIT.
+
+    Product is left at the cost model's CNC default deliberately, matching
+    _build_tracker_post_trade: the paper trader is cash-equity only by
+    construction (bot._paper_trade refuses any non-CASH segment), and pinning
+    a different product here would make the open-trade estimate disagree with
+    the close.
+
+    Returns None, never 0, when the model is unavailable — a zero here reads
+    as "free to trade", which is the one answer that is never right.
+    """
+    if not entry_price or not quantity:
+        return None
+    try:
+        import costs
+
+        return round(costs.calculate_costs(entry_price, quantity, sell_price=entry_price).total, 2)
+    except Exception:
+        return None
+
+
+# Per-trade peak, from the candles the trade actually lived through.
+# Keyed by trade_id; a closed trade's window never changes, so once computed
+# it is fixed for the life of the process. Trades with no candle coverage are
+# NOT cached, so they are picked up as soon as a backfill lands.
+_peak_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _peak_net_pnl(trade: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    The best net P&L this trade reached while it was open, from candle data.
+
+    Takes the candles between entry_time and exit_time (1-minute, falling back
+    to 5-second where the 1-minute backfill has not reached), the highest high
+    for a BUY (lowest low for a SELL), and prices the trade at that level with
+    the same cost model that priced its exit. Summed across trades this is the
+    'Peak Net P&L' line on the P&L chart: where the book would have ended had
+    every trade been closed at its own best moment. The gap to realised P&L is
+    what the exits gave back.
+
+    Returns None — never 0 — when no candles cover the window, so a missing
+    figure is visible rather than read as "no upside".
+    """
+    tid = str(trade.get("id") or trade.get("trade_id") or "")
+    entry_price = _as_float(trade.get("entry_price"))
+    quantity = _as_int(trade.get("quantity"), 0)
+    a, b = trade.get("entry_time"), trade.get("exit_time")
+    # Validate before consulting the cache: only a closed, well-formed trade
+    # may ever be served a cached figure.
+    if not (tid and entry_price and quantity and a and b and trade.get("exit_price") is not None):
+        return None
+    if tid in _peak_cache:
+        return _peak_cache[tid]
+    side = _tracker_side(trade)
+    col = "MAX(high)" if side == "BUY" else "MIN(low)"
+    try:
+        import costs
+        from db_manager import get_db
+        from sqlalchemy import text
+        with get_db().Session() as session:
+            for res in ("1", "5S"):
+                px = session.execute(
+                    text(f"SELECT {col} FROM fyers_candles "
+                         "WHERE symbol = :s AND resolution = :r AND ts BETWEEN :a AND :b"),
+                    {"s": trade.get("symbol"), "r": res, "a": a, "b": b},
+                ).scalar()
+                if px is not None:
+                    px = float(px)
+                    net = (costs.net_profit(entry_price, px, quantity) if side == "BUY"
+                           else costs.net_profit(px, entry_price, quantity))["net_profit"]
+                    out = {"peak_price": round(px, 2), "peak_net_pnl": round(net, 2), "peak_source": f"candles_{res}"}
+                    _peak_cache[tid] = out
+                    return out
+    except Exception as exc:
+        LOGGER.debug("peak lookup failed for %s: %s", tid, exc)
+    return None
+
+
 def _normalize_tracker_trade(tracker_trade: Dict[str, Any], matched_entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     side = _tracker_side(tracker_trade)
     pre_trade = _merge_non_null(matched_entry.get("pre_trade") if matched_entry else None, tracker_trade.get("pre_trade"))
@@ -267,6 +355,12 @@ def _normalize_tracker_trade(tracker_trade: Dict[str, Any], matched_entry: Optio
                          or (matched_entry.get("model_source") if matched_entry else None)),
         "trailing_stop": tracker_trade.get("trailing_stop"),
         "entry_value": round((entry_price or 0.0) * quantity, 2),
+        # Server-calculated so the dashboard never needs a charge formula of
+        # its own. See _estimate_round_trip_charges.
+        "charges_estimate": _estimate_round_trip_charges(entry_price, quantity),
+        # Best net P&L the trade reached while open, from candles. Feeds the
+        # chart's Peak line. None when no candles cover the window.
+        **(_peak_net_pnl(tracker_trade) or {"peak_price": None, "peak_net_pnl": None, "peak_source": None}),
         "intraday_candles": tracker_trade.get("intraday_candles") or (matched_entry.get("intraday_candles") if matched_entry else None),
     }
 

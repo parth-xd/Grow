@@ -47,7 +47,8 @@ _CONFIG_DEFAULTS = {
     "tijori.block_below_coverage_pct": ("95", "Lock analysis sections while coverage below this % AND collection is active"),
     "tijori.local_index_ttl_seconds": ("3600", "How long to cache the local company-name→NSE-symbol index"),
     "tijori.max_partner_snapshots_per_run": ("12", "Partner company pages fetched per scheduler run (fills missing supplier/customer data)"),
-    "tijori.partner_retry_days": ("14", "Wait this long before retrying a partner whose page yielded no data"),
+    "tijori.partner_retry_days": ("14", "Wait this long before retrying a partner whose page yielded no data (legacy 6-hourly gap-fill path only; the daily refresh uses max_partner_discovery_per_run instead)"),
+    "tijori.max_partner_discovery_per_run": ("15", "Unresolved partners given a slug search per daily run — rotates oldest-attempt-first, so all are retried over time without a ~500-request daily cost"),
     "tijori.onboard_partner_limit": ("20", "Partner pages fetched immediately when a new stock is added"),
     "tijori.user_agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -370,21 +371,71 @@ def parse_company_page(html):
 _SNAPSHOT_TYPES = ["company_info", "ratios", "peers", "returns", "forensics",
                    "market_share", "corporate_actions"]
 
+# A collection only counts as "done for today" if it produced this block.
+# Requiring the full seven would mark healthy partners as failed, because a
+# page legitimately omits blocks (market_share is absent for many companies);
+# requiring none would let a gated page that parsed to nothing count as
+# collected. `returns` is the block the coverage metric itself counts, so it
+# is the honest minimum.
+_REQUIRED_SNAPSHOT = "returns"
+
+_IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _ist_day_start_utc(now_utc=None):
+    """
+    UTC instant at which the current IST calendar day began.
+
+    scraped_at is stored naive UTC while "today" for a post-close job means an
+    IST day. Between 00:00 and 05:29 IST the two dates differ, and the market
+    is closed then, so a run in that window would otherwise compare against
+    the wrong day. Anchoring both the done-check and the once-a-day marker to
+    this one value keeps them consistent.
+    """
+    now_utc = now_utc or datetime.utcnow()
+    ist_today = (now_utc + _IST_OFFSET).date()
+    return datetime.combine(ist_today, datetime.min.time()) - _IST_OFFSET
+
 
 def _store_snapshots(symbol, parsed, db):
-    """Append new snapshots for each data block that parsed successfully."""
-    from db_manager import CompanyExternalData
+    """
+    Store one snapshot per data block, upserting within the current day.
+
+    Re-collecting a symbol on a day it already has overwrites that day's row
+    rather than appending a second one; a new day inserts a new row, so every
+    previous day is preserved untouched. That is what makes the daily refresh
+    idempotent — a re-run costs requests but never duplicates rows.
+
+    Upsert (not plain insert) is REQUIRED, not merely tidier: the
+    uq_ext_symbol_type_day index makes a same-day second insert raise
+    IntegrityError, and this function is shared by three callers —
+    collect_for_symbol (principals), collect_missing_partner_snapshots
+    (partners) and resolve_pending_connections — any pair of which can land on
+    one symbol on the same day.
+
+    scraped_at is passed explicitly rather than left to the column default so
+    the index's (scraped_at::date) conflict target is computable by Postgres.
+    """
+    from sqlalchemy import text as _sql
     stored = []
+    now = datetime.utcnow()
     with db.Session() as session:
         for dtype in _SNAPSHOT_TYPES:
             data = parsed.get(dtype)
             if not data:
                 continue
             try:
-                session.add(CompanyExternalData(
-                    symbol=symbol, data_type=dtype, source=SOURCE,
-                    payload_json=json.dumps(data, default=str),
-                ))
+                session.execute(_sql("""
+                    INSERT INTO company_external_data
+                        (symbol, data_type, source, payload_json, scraped_at)
+                    VALUES (:sym, :dtype, :src, :payload, :ts)
+                    ON CONFLICT (symbol, data_type, (scraped_at::date))
+                        WHERE data_type <> 'collection_attempt'
+                    DO UPDATE SET payload_json = EXCLUDED.payload_json,
+                                  source       = EXCLUDED.source,
+                                  scraped_at   = EXCLUDED.scraped_at
+                """), {"sym": symbol, "dtype": dtype, "src": SOURCE,
+                       "payload": json.dumps(data, default=str), "ts": now})
                 stored.append(dtype)
             except Exception as e:
                 logger.debug("snapshot store %s/%s failed: %s", symbol, dtype, e)
@@ -667,17 +718,52 @@ def _mark_collection_attempt(symbol, db, reason):
         logger.debug("could not mark collection attempt for %s: %s", symbol, e)
 
 
-def _fetch_partner_html(name, slug, db):
+def _page_is_company(html, expected_symbol=None):
+    """
+    True if `html` is a real Tijori company page (for `expected_symbol`, when
+    one is given).
+
+    Tijori answers HTTP 200 for ANY slug, including ones that do not exist —
+    verified live against several invented slugs, all of which returned 200
+    with no company payload. So a status check cannot distinguish a live
+    company page from a placeholder, and a stale slug would otherwise be
+    accepted as valid. The embedded company_details_data JSON is the reliable
+    signal, and it carries the NSE symbol to verify against.
+    """
+    try:
+        details = _extract_company_details(BeautifulSoup(html, "html.parser"))
+    except Exception:
+        return False
+    if not details:
+        return False
+    if not expected_symbol:
+        return True          # nothing to match against — a real page is enough
+    page_symbol = (details.get("symbol") or "").upper()
+    return bool(page_symbol) and page_symbol == str(expected_symbol).upper()
+
+
+def _fetch_partner_html(name, slug, db, expected_symbol=None):
     """Get a partner's page HTML, preferring a slug we already verified."""
     base = _cfg("tijori.base_url")
     if slug:
         try:
             r = _http_get(f"{base}/company/{slug}/")
-            if r.status_code == 200:
+            if r.status_code == 200 and _page_is_company(r.text, expected_symbol):
                 return r.text, slug
+            # The stored slug no longer resolves to this company. Fall through
+            # and re-resolve rather than returning a page that parses to
+            # nothing — otherwise a slug that changed on Tijori's side leaves
+            # the row retrying a dead URL on every run, for ever, with no
+            # way to self-repair.
+            logger.info("tijori: stored slug %r no longer valid for %s — re-resolving",
+                        slug, expected_symbol or name)
         except Exception as e:
             logger.debug("partner fetch via known slug failed (%s): %s", slug, e)
-    res = resolve_slug(name, db=db)
+    # expected_symbol is passed on so the replacement slug is verified against
+    # the SAME symbol. Without it a re-resolve could return another company's
+    # page, and the write-back below would then persist a wrong slug over a
+    # merely stale one.
+    res = resolve_slug(name, expected_symbol=expected_symbol, db=db)
     html = res.pop("_html", None)
     if html:
         return html, res.get("slug")
@@ -692,12 +778,21 @@ def _fetch_partner_html(name, slug, db):
 
 
 def collect_missing_partner_snapshots(db=None, limit=None, symbols=None):
-    """Fill in performance data for partners we matched but never fetched.
+    """Collect partner performance data, refreshing anything not already done today.
 
     Partners resolved by local name-matching get an NSE symbol without their
     page ever being fetched, so they hold no returns/ratios/forensics. The
     name-resolution queue only covers rows where related_symbol IS NULL, so
     without this pass those partners would never be collected at all.
+
+    Work is split in two, because the costs differ by 5x:
+      - refresh:   partners with a cached slug — ONE request each, all of them
+      - discovery: partners without one — the ~5-request candidate search,
+                   capped at tijori.max_partner_discovery_per_run and rotated
+                   oldest-attempt-first so every one is retried over time
+
+    Anything already holding today's `returns` snapshot is skipped, so a
+    re-run the same day is cheap and a new day refreshes everything.
 
     `symbols` scopes the work to the partners of specific principal companies
     (used when onboarding a newly added stock).
@@ -707,9 +802,10 @@ def collect_missing_partner_snapshots(db=None, limit=None, symbols=None):
     if not _enabled():
         return {"collected": 0, "skipped": "tijori disabled"}
 
+    from sqlalchemy import func
+
     db = db or get_db()
     limit = limit or int(_cfg("tijori.max_partner_snapshots_per_run", 12))
-    retry_days = int(_cfg("tijori.partner_retry_days", 14))
 
     with db.Session() as session:
         # updated_at is selected because Postgres requires ORDER BY columns to
@@ -737,21 +833,44 @@ def collect_missing_partner_snapshots(db=None, limit=None, symbols=None):
 
         keys = list(cand.keys())
         # Two batched lookups — never query per candidate
+        #
+        # `done` is scoped to TODAY (not all time) so a partner collected
+        # yesterday is refreshed again today. That single bound is what turns
+        # this from a one-off gap-filler into a daily refresh. It requires the
+        # snapshot the coverage metric counts, so a gated page that stored
+        # nothing usable does not mark the partner as collected.
+        day_start = _ist_day_start_utc()
         done = {r[0] for r in session.query(CompanyExternalData.symbol).filter(
             CompanyExternalData.symbol.in_(keys),
-            CompanyExternalData.data_type == "returns").distinct().all()}
-        cutoff = datetime.utcnow() - timedelta(days=retry_days)
-        recently_tried = {r[0] for r in session.query(CompanyExternalData.symbol).filter(
+            CompanyExternalData.data_type == _REQUIRED_SNAPSHOT,
+            CompanyExternalData.scraped_at >= day_start).distinct().all()}
+        # Last failure per symbol, used only to rotate the discovery queue
+        # below — NOT as a multi-day cooldown. The discovery quota is the
+        # throttle now; partner_retry_days is deliberately not consulted here.
+        last_attempt = dict(session.query(
+            CompanyExternalData.symbol,
+            func.max(CompanyExternalData.scraped_at)).filter(
             CompanyExternalData.symbol.in_(keys),
-            CompanyExternalData.data_type == "collection_attempt",
-            CompanyExternalData.scraped_at >= cutoff).distinct().all()}
+            CompanyExternalData.data_type == "collection_attempt"
+        ).group_by(CompanyExternalData.symbol).all())
 
-    pending = [s for s in keys if s not in done and s not in recently_tried]
+    outstanding = [s for s in keys if s not in done]
+    # Split by whether we already hold a slug, because the two cost very
+    # different amounts: a cached slug is ONE request, while discovery runs
+    # the candidate search at ~5. Refreshing every known partner daily is
+    # affordable; re-searching every unresolved one daily is not (~500
+    # requests for lookups that have been failing for weeks), so discovery
+    # gets a small rotating quota and the rest wait their turn.
+    refresh = [s for s in outstanding if cand[s][1]]
+    discover = [s for s in outstanding if not cand[s][1]]
+    discover.sort(key=lambda s: last_attempt.get(s) or datetime.min)
+    discovery_quota = int(_cfg("tijori.max_partner_discovery_per_run", 15))
+    pending = refresh + discover[:discovery_quota]
     collected = 0
     for sym in pending[:limit]:
         name, slug = cand[sym]
         try:
-            html, used_slug = _fetch_partner_html(name, slug, db)
+            html, used_slug = _fetch_partner_html(name, slug, db, expected_symbol=sym)
             if not html:
                 _mark_collection_attempt(sym, db, "page not reachable")
             else:
@@ -773,7 +892,11 @@ def collect_missing_partner_snapshots(db=None, limit=None, symbols=None):
                             for r in session.query(CompanyConnection).filter(
                                     CompanyConnection.related_symbol == sym,
                                     CompanyConnection.is_active == True).all():
-                                if not r.related_slug:
+                                # Overwrite, not fill-if-blank: `used_slug` has
+                                # just been verified against this symbol, so a
+                                # stored slug that differs is stale and would
+                                # otherwise never be corrected.
+                                if r.related_slug != used_slug:
                                     r.related_slug = used_slug
                             session.commit()
         except Exception as e:
@@ -1086,6 +1209,113 @@ def collect_stale_symbols(db=None, max_symbols=None):
 
 
 # ── Analysis / read API ──────────────────────────────────────────────────────
+
+def _f(v):
+    """Tijori mixes numeric strings ("84.64") with numbers; None stays None."""
+    try:
+        return None if v in (None, "", "-") else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_fundamentals(symbol, db=None):
+    """
+    The latest fundamentals Tijori holds for `symbol`, as one flat dict — the
+    single source both the stock panel (fundamental_analysis) and the
+    Research engine's Fundamental dimension read, replacing the retired
+    Screener ratio scrapes. Three snapshots, one query, no network:
+
+      ratios        P/E, ROE, ROCE, D/E, operating margin, dividend yield,
+                    market cap, net sales, promoter / institutional / retail %
+      peers         the company's own row carries YoY quarterly sales growth;
+                    the peers' P/Es give an industry median to compare against
+      company_info  PEG and the forensic quick-look (green/red check counts)
+
+    Returns None when the symbol has no `ratios` snapshot at all (six
+    watchlist names Tijori cannot resolve). `as_of` is the snapshot's
+    scraped_at (UTC) so every reader can show how old the numbers are.
+    """
+    from db_manager import get_db, CompanyExternalData
+    db = db or get_db()
+    with db.Session() as session:
+        rows = (session.query(CompanyExternalData)
+                .filter(CompanyExternalData.symbol == symbol,
+                        CompanyExternalData.source == SOURCE,
+                        CompanyExternalData.data_type.in_(["ratios", "peers", "company_info"]))
+                .order_by(CompanyExternalData.scraped_at.desc())
+                .limit(30).all())
+    latest = {}
+    for r in rows:                      # newest first; keep the first of each type
+        if r.data_type not in latest:
+            latest[r.data_type] = r
+    if "ratios" not in latest:
+        return None
+
+    try:
+        ratios = {x.get("name"): x.get("value") for x in json.loads(latest["ratios"].payload_json)}
+    except Exception:
+        return None
+    out = {
+        "source": "tijori",
+        "as_of": latest["ratios"].scraped_at.isoformat() if latest["ratios"].scraped_at else None,
+        "pe_ratio": _f(ratios.get("pe")),
+        "roe": _f(ratios.get("roe")),
+        "roce": _f(ratios.get("roce")),
+        "debt_to_equity": _f(ratios.get("total_debt_equity")),
+        "op_profit_margin": _f(ratios.get("op_profit_margin")),
+        "dividend_yield": _f(ratios.get("dividend_yield")),
+        "market_cap": _f(ratios.get("mcap")),
+        "net_sales": _f(ratios.get("net_sales")),
+        "promoter_holding": _f(ratios.get("tpftotalpromoter")),
+        "institutional_pct": _f(ratios.get("tpinsubtotal")),
+        "retail_pct": _f(ratios.get("tpninindivd1lac")),
+        "num_shareholders": _f(ratios.get("nhgrandtotal")),
+        "peg_ratio": None, "yoy_sales_growth": None, "industry_pe": None,
+        "peer_count": 0, "forensics": None, "is_banking": False,
+    }
+
+    if "peers" in latest:
+        try:
+            blocks = json.loads(latest["peers"].payload_json)
+            data = next((b.get("data") for b in blocks if isinstance(b, dict) and b.get("data")), []) or []
+            own = next((d for d in data if d.get("slug") and d.get("slug") == _slug_of(latest.get("company_info"))), None) or (data[0] if data else None)
+            if own:
+                out["yoy_sales_growth"] = _f(own.get("YoY Qtly Net Sales"))
+                if out["peg_ratio"] is None:
+                    out["peg_ratio"] = _f(own.get("PEG Ratio"))
+            peer_pes = sorted(p for p in (_f(d.get("PE")) for d in data if d is not own) if p is not None and p > 0)
+            if peer_pes:
+                out["industry_pe"] = peer_pes[len(peer_pes) // 2]     # median, robust to one outlier
+                out["peer_count"] = len(peer_pes)
+        except Exception as e:
+            logger.debug("peers block unreadable for %s: %s", symbol, e)
+
+    if "company_info" in latest:
+        try:
+            ci = json.loads(latest["company_info"].payload_json)
+            if _f(ci.get("peg")) is not None:
+                out["peg_ratio"] = _f(ci.get("peg"))
+            # A bank is leveraged by construction and ROCE is not how banks are
+            # judged; both fields are dropped so no reader marks a bank down
+            # for them (HDFC Bank scored "POOR" on D/E 1.01 before this).
+            out["is_banking"] = bool(ci.get("is_banking"))
+            if out["is_banking"]:
+                out["debt_to_equity"] = None
+                out["roce"] = None
+            counts = ((ci.get("quick_look") or {}).get("count") or {})
+            if counts.get("total"):
+                out["forensics"] = {k: int(counts.get(k) or 0) for k in ("green", "red", "neutral", "total")}
+        except Exception as e:
+            logger.debug("company_info block unreadable for %s: %s", symbol, e)
+    return out
+
+
+def _slug_of(company_info_row):
+    try:
+        return json.loads(company_info_row.payload_json).get("slug") if company_info_row else None
+    except Exception:
+        return None
+
 
 def _latest_two_snapshots(session, symbol, data_type):
     from db_manager import CompanyExternalData

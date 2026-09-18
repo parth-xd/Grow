@@ -15,6 +15,88 @@ import pytz
 
 logger = logging.getLogger(__name__)
 
+IST = pytz.timezone("Asia/Kolkata")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# END-OF-DAY EXIT FREEZE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# After the cutoff (default 15:15 IST) NO automated path may close a position
+# — not the trailing stop, not the hard stop loss, not a model signal reversal.
+# Only a human can close a trade after that point.
+#
+# WHY A HARD FREEZE RATHER THAN A TIGHTER RULE:
+# The last 15 minutes of the session are the thinnest and most volatile part
+# of the day. A stop triggered at 15:22 on a one-tick wick exits at whatever
+# the book offers, and the system has no way to distinguish that from a real
+# move. The product here is CNC (delivery), so a position that is not closed
+# simply carries overnight rather than being force-squared — holding is a
+# legitimate outcome, not a failure.
+#
+# THE RISK THIS ACCEPTS, STATED PLAINLY:
+# Blocking the stop loss means a position can keep falling after 15:15 with
+# nothing automated protecting it, and can gap further overnight. That is a
+# deliberate trade-off chosen by the operator, not an oversight. It is why
+# this is config-driven and why the manual path is always left open.
+#
+# Manual closes bypass this entirely — see is_manual_exit().
+
+_DEFAULT_CUTOFF = "15:15"
+
+
+def _exit_freeze_config():
+    """(enabled, cutoff_hhmm). Never raises: a config failure must not decide
+    whether money can be protected, so it falls back to the documented
+    default rather than silently disabling the freeze."""
+    enabled, cutoff = True, _DEFAULT_CUTOFF
+    try:
+        from db_manager import get_config
+        raw_on = get_config("trade.no_auto_exit_enabled")
+        if raw_on is not None and str(raw_on).strip() != "":
+            enabled = str(raw_on).strip().lower() in ("1", "true", "yes", "on")
+        raw_cut = get_config("trade.no_auto_exit_after")
+        if raw_cut and str(raw_cut).strip():
+            cutoff = str(raw_cut).strip()
+    except Exception as e:
+        logger.debug("Exit-freeze config unavailable (%s) — using defaults", e)
+    return enabled, cutoff
+
+
+def is_manual_exit(exit_reason):
+    """A close initiated by a person. These are never frozen."""
+    return "manual" in str(exit_reason or "").lower()
+
+
+def automated_exits_allowed(now=None):
+    """
+    (allowed: bool, reason: str) — may an AUTOMATED path close a position now?
+
+    Consulted by every automated exit path. Manual closes do not call this.
+    """
+    enabled, cutoff = _exit_freeze_config()
+    if not enabled:
+        return True, "freeze disabled"
+
+    now = now or datetime.now(IST)
+    if now.tzinfo is None:
+        now = IST.localize(now)
+
+    try:
+        hh, mm = [int(x) for x in cutoff.split(":")]
+    except Exception:
+        logger.warning("Bad trade.no_auto_exit_after=%r — using %s", cutoff, _DEFAULT_CUTOFF)
+        hh, mm = 15, 15
+
+    # Weekends and pre-open are not "frozen" — there is simply no session.
+    # The freeze is specifically about the tail of a live trading day.
+    if now.weekday() >= 5:
+        return True, "non-trading day"
+
+    if (now.hour, now.minute) >= (hh, mm):
+        return False, f"exit freeze active after {hh:02d}:{mm:02d} IST (now {now:%H:%M})"
+    return True, "within trading window"
+
+
 ist = pytz.timezone('Asia/Kolkata')
 
 def calculate_breakeven_price(entry_price, signal, quantity,
@@ -171,7 +253,16 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
     """
     if live_prices is None:
         live_prices = {}
-    
+
+    # EXIT FREEZE: this is the main automated close path (scheduler every 5s,
+    # plus the dashboard's own poll). Gated here rather than at the callers so
+    # no caller can forget — the endpoints in app.py are hit automatically by
+    # the browser and are not "manual" despite being HTTP requests.
+    _allowed, _why = automated_exits_allowed()
+    if not _allowed:
+        logger.info("Auto-close skipped — %s", _why)
+        return []
+
     filepath = os.path.join('/Users/parthsharma/Desktop/Grow', paper_trades_file)
     
     try:
@@ -280,10 +371,36 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
             # OPEN in both journal stores.
             try:
                 import trade_journal
+                # Keyword args, deliberately. This was three POSITIONAL args
+                # into a function with seven required ones, so every call
+                # raised TypeError: missing a required argument: 'quantity' —
+                # and the blanket except below logged it as a warning and moved
+                # on. It never once succeeded: 25 of 26 trades closed through
+                # this module and 0 of them ever reached the journal, which is
+                # why TITAN/HINDUNILVR read CLOSED in paper_trades.json and
+                # OPEN in both journal stores. Read from `trade` rather than
+                # the loop locals so this mirrors paper_trader.close_trade's
+                # call exactly.
                 trade_journal.close_matching_paper_trade(
-                    trade['id'], round(current_price, 2), exit_reason)
+                    trade_id=trade['id'],
+                    symbol=trade.get('symbol'),
+                    side=trade.get('side') or trade.get('signal'),
+                    quantity=trade.get('quantity'),
+                    entry_price=trade.get('entry_price'),
+                    entry_time=trade.get('entry_time'),
+                    exit_price=round(current_price, 2),
+                    exit_reason=exit_reason,
+                    # The moment the trade actually exited, not the moment the
+                    # journal happened to be notified.
+                    exit_time=trade.get('exit_time'),
+                )
             except Exception as _je:
-                logger.warning("journal sync failed for %s: %s", trade.get('id'), _je)
+                # ERROR + traceback, not a one-line warning: a signature error
+                # here is a code defect, not a transient hiccup, and logging it
+                # quietly is what hid this for 25 trades. Still swallowed — the
+                # exit has already happened and must not be unwound by a
+                # bookkeeping failure — but it must be impossible to miss.
+                logger.error("journal sync FAILED for %s: %s", trade.get('id'), _je, exc_info=True)
 
             closed_trades.append({
                 'id': trade['id'],
@@ -468,10 +585,36 @@ def check_and_close_trades_on_loss(paper_trades_file='paper_trades.json', live_p
             # OPEN in both journal stores.
             try:
                 import trade_journal
+                # Keyword args, deliberately. This was three POSITIONAL args
+                # into a function with seven required ones, so every call
+                # raised TypeError: missing a required argument: 'quantity' —
+                # and the blanket except below logged it as a warning and moved
+                # on. It never once succeeded: 25 of 26 trades closed through
+                # this module and 0 of them ever reached the journal, which is
+                # why TITAN/HINDUNILVR read CLOSED in paper_trades.json and
+                # OPEN in both journal stores. Read from `trade` rather than
+                # the loop locals so this mirrors paper_trader.close_trade's
+                # call exactly.
                 trade_journal.close_matching_paper_trade(
-                    trade['id'], round(current_price, 2), exit_reason)
+                    trade_id=trade['id'],
+                    symbol=trade.get('symbol'),
+                    side=trade.get('side') or trade.get('signal'),
+                    quantity=trade.get('quantity'),
+                    entry_price=trade.get('entry_price'),
+                    entry_time=trade.get('entry_time'),
+                    exit_price=round(current_price, 2),
+                    exit_reason=exit_reason,
+                    # The moment the trade actually exited, not the moment the
+                    # journal happened to be notified.
+                    exit_time=trade.get('exit_time'),
+                )
             except Exception as _je:
-                logger.warning("journal sync failed for %s: %s", trade.get('id'), _je)
+                # ERROR + traceback, not a one-line warning: a signature error
+                # here is a code defect, not a transient hiccup, and logging it
+                # quietly is what hid this for 25 trades. Still swallowed — the
+                # exit has already happened and must not be unwound by a
+                # bookkeeping failure — but it must be impossible to miss.
+                logger.error("journal sync FAILED for %s: %s", trade.get('id'), _je, exc_info=True)
 
             closed_trades.append({
                 'id': trade['id'],
@@ -566,6 +709,17 @@ def manage_loss_positions(paper_trades_file='paper_trades.json', live_prices=Non
     """
     if live_prices is None:
         live_prices = {}
+
+    # EXIT FREEZE. This is the SECOND automated closer in this module — it
+    # closes CRITICAL (< -1.5%) positions outright — and app.py calls it back
+    # to back with check_and_close_trades_on_loss. Gating only that one would
+    # have left this wide open, which is exactly the kind of gap a "we added
+    # the guard" claim hides.
+    _allowed, _why = automated_exits_allowed()
+    if not _allowed:
+        logger.info("Loss-position management skipped — %s", _why)
+        return {'closed': [], 'reversed': [], 'held': [], 'scaled_out': [],
+                'skipped': _why}
     
     filepath = os.path.join('/Users/parthsharma/Desktop/Grow', paper_trades_file)
     

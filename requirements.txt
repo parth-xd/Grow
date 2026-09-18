@@ -14,3 +14,32 @@ alembic
 PyJWT
 werkzeug
 yfinance
+
+# ── FYERS market-data WebSocket (fyers_ws_client.py) ────────────────────────
+# Runtime deps of fyers-apiv3, declared here because it is installed WITHOUT
+# its own dependency metadata (see below).
+#   setuptools<81      — data_ws.py imports pkg_resources, removed in 81+
+#   aws-lambda-powertools>=3.0 — used by fyers_logger; v3 needs only jmespath
+#                        + typing-extensions, avoiding the boto3/botocore
+#                        chain that the SDK's pinned 1.25.5 would drag in
+websocket-client==1.6.1
+aws-lambda-powertools>=3.0
+setuptools<81
+
+# fyers-apiv3 is NOT listed above. It is installed by start-all.sh as:
+#
+#     pip install -q --no-deps fyers-apiv3==3.1.17
+#
+# It cannot be an active line here: it hard-pins requests==2.31.0 and
+# aiohttp==3.9.3, while growwapi (line 1) needs requests>=2.32.3 and
+# aiohttp>=3.11.18. Both intersections are empty, so pip returns
+# ResolutionImpossible and start-all.sh aborts.
+#
+# The conflict is metadata-only for us: the WebSocket imports requests
+# (data_ws.py:8) but never aiohttp — that belongs to fyersModel.py, the SDK's
+# REST client, which we do not use. aiohttp's real consumer here is growwapi.
+# Runtime-verified with requests 2.34.2 / aiohttp 3.14.3: FYERS REST, FYERS
+# WebSocket (full SymbolUpdate), and Groww auth/margin/positions all work.
+#
+# `pip check` will therefore always report two unsatisfied fyers-apiv3 pins.
+# That is expected. Do NOT "fix" it by downgrading requests — that breaks Groww.

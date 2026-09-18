@@ -1432,7 +1432,30 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
     Record a simulated paper trade using the unified paper_trader system.
     Integrates with paper_trader.py for trailing stop management.
     ALSO syncs to trade_journal for complete trade history.
+
+    CASH EQUITY ONLY. fno_trader.place_fno_buy/sell used to route option paper
+    trades into this same tracker with segment="FNO", product="NRML".
+    record_entry() stores no segment, so those landed in paper_trades.json
+    indistinguishable from a cash trade — and were then costed as equity
+    INTRADAY on entry (calculate_costs treats any non-CNC product as intraday)
+    and equity DELIVERY on exit (close_trade calls net_profit() with its CNC
+    default): two different wrong charge models on one option.
+
+    Refused here rather than in the caller so the rule lives in one place and
+    binds every caller, present and future. Raising rather than returning an
+    error dict is deliberate — place_fno_buy/sell already convert an exception
+    into {"error": ...} without falling through to the live order, and an
+    exception cannot be mistaken for a recorded trade the way a dict can.
+
+    With F&O fenced out, every record in this store is cash equity CNC, which
+    is what makes costs.net_profit()'s CNC default correct for all of them.
     """
+    seg = str(segment or "").upper()
+    if seg != "CASH":
+        raise ValueError(
+            f"Paper trader is cash-equity only; refusing {seg or 'UNKNOWN'} order for {symbol}"
+        )
+
     from paper_trader import PaperTradeTracker
     import trade_journal
     
@@ -1561,7 +1584,7 @@ def _paper_trade(symbol, side, quantity, price, segment="CASH", product="CNC", r
         )
         logger.info(f"✓ Synced paper trade {trade['id']} to trade journal as {journal_entry.get('trade_id')}")
     except Exception as e:
-        logger.warning(f"Failed to sync paper trade to journal: {e}")
+        logger.error(f"Failed to sync paper trade to journal: {e}")
 
     # Telegram alert for paper trade
     try:
@@ -1851,6 +1874,20 @@ def monitor_and_update_trailing_stops():
     Should be called periodically (e.g., every 1-5 minutes) to check current prices.
     Returns a summary of actions taken.
     """
+    # EXIT FREEZE: a trailing stop must not close a position in the last
+    # minutes of the session. Updating the stop LEVEL is still fine and still
+    # happens — only the close is blocked — so the stop is current and correct
+    # when the next session opens.
+    try:
+        from trailing_stop import automated_exits_allowed
+        _allowed, _why = automated_exits_allowed()
+    except Exception as e:
+        logger.error("Exit-freeze check failed (%s) — refusing to auto-close", e)
+        _allowed, _why = False, "freeze check unavailable"
+    if not _allowed:
+        logger.info("Trailing-stop monitor skipped — %s", _why)
+        return {"updated": 0, "closed": 0, "events": [], "skipped": _why}
+
     from paper_trader import PaperTradeTracker
     
     tracker = PaperTradeTracker()
@@ -1990,7 +2027,45 @@ def auto_trade(skip_new_entries=False):
         }
 
     actions = []
-    predictions = scan_watchlist()
+
+    # ── WHICH MODELS MAY TRADE ──────────────────────────────────────────
+    # Both models are now symmetrically toggleable from config_settings.
+    # Previously only XGB had a switch (XGB_LIVE_TRADING) and GBC ran
+    # unconditionally — there was no way to run XGB alone, which is exactly
+    # what a head-to-head comparison needs.
+    #
+    # Reads live from the DB rather than a module constant, so flipping a
+    # model on or off in Settings takes effect on the next 5s cycle with no
+    # restart. Defaults keep today's behaviour if the keys are absent.
+    #
+    # Fails CLOSED: if the config read fails we trade with NEITHER model
+    # rather than guessing. A scan that silently reverts to "both on" is how
+    # a model you deliberately disabled starts placing orders again.
+    try:
+        from db_manager import get_config as _gc
+        def _on(key, default):
+            v = _gc(key)
+            if v is None or str(v).strip() == "":
+                return default
+            return str(v).strip().lower() in ("1", "true", "yes", "on")
+        gbc_on = _on("model.gbc_cash_enabled", True)
+        xgb_on = _on("model.xgb_cash_enabled", XGB_LIVE_TRADING)
+    except Exception as e:
+        logger.error("SAFETY: model-enable config unreadable (%s) — skipping this "
+                     "scan rather than trading with unknown model state", e)
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "actions": [],
+            "predictions": [],
+            "trailing_stop_summary": trailing_stop_summary,
+            "error": "model_enable_config_unreadable",
+        }
+
+    predictions = []
+    if gbc_on:
+        predictions = scan_watchlist()
+    else:
+        logger.debug("GradientBoosting cash disabled (model.gbc_cash_enabled=false)")
 
     # Append the independent cash XGBoost signals. GBC predictions come
     # first, so when both models signal the same symbol the existing
@@ -2002,11 +2077,14 @@ def auto_trade(skip_new_entries=False):
     # Gated by XGB_LIVE_TRADING (default off): the models are trained and
     # evaluated but do not place trades until their backtest is available,
     # per the "evaluation-only until compared against GBC" requirement.
-    if XGB_LIVE_TRADING:
+    if xgb_on:
         try:
             predictions = predictions + scan_watchlist_xgb()
         except Exception as e:
-            logger.warning("XGB scan failed, continuing with GradientBoosting only: %s", e)
+            logger.warning("XGB scan failed: %s", e)
+
+    if not predictions and not (gbc_on or xgb_on):
+        logger.info("No cash model enabled — no new entries will be scanned")
 
     # Check current positions.
     # SAFETY: open_symbols is the ONLY thing enforcing both the no-duplicate-entry
@@ -2079,9 +2157,19 @@ def auto_trade(skip_new_entries=False):
         signal = pred["signal"]
         confidence = pred.get("confidence", 0)
 
-        # Skip low-confidence signals (lower threshold in paper mode to get more trades)
-        min_conf = 0.40 if is_paper_mode() else CONFIDENCE_THRESHOLD
-        if confidence < min_conf:
+        # Skip low-confidence signals. Applies identically to every prediction
+        # in this list regardless of model_source — GBC and XGBoost signals
+        # are already merged into `predictions` above, so one threshold here
+        # covers both models with no per-model branch needed.
+        if is_paper_mode():
+            from db_manager import get_config as _gc
+            try:
+                min_conf = float(_gc("paper.min_confidence") or 0.50)
+            except (TypeError, ValueError):
+                min_conf = 0.50
+        else:
+            min_conf = CONFIDENCE_THRESHOLD
+        if confidence <= min_conf:
             actions.append({"symbol": symbol, "action": "SKIP", "reason": f"Low confidence ({confidence})"})
             continue
 
@@ -2202,6 +2290,15 @@ def auto_trade(skip_new_entries=False):
 
         elif signal == "SELL" and symbol in open_symbols:
             try:
+                # EXIT FREEZE: a model signal reversal is an automated exit and
+                # is frozen after the cutoff like any other. The position simply
+                # carries — CNC delivery, so nothing is force-squared.
+                from trailing_stop import automated_exits_allowed
+                _ok, _why = automated_exits_allowed()
+                if not _ok:
+                    actions.append({"symbol": symbol, "action": "SKIP",
+                                    "reason": f"exit frozen — {_why}"})
+                    continue
                 # QUANTITY: broker first, then OPEN PAPER positions.
                 #
                 # current_positions is the BROKER's list, which is empty in
@@ -2356,7 +2453,7 @@ def analyze_portfolio():
     Run full AI analysis on every holding/position in the Groww portfolio.
     No trades are placed — purely read-only.
     Gracefully handles errors by returning empty analysis.
-    
+
     Enhanced with fresh intraday candles for accurate daily predictions.
     """
     try:
@@ -2392,7 +2489,7 @@ def analyze_portfolio():
                 "portfolio": [],
                 "summary": {}
             }
-        
+
         return result
         
     except ImportError as ie:

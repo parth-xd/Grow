@@ -24,6 +24,7 @@ a full institutional-grade breakdown any analyst could act on.
 import logging
 import math
 import re
+import threading
 import time
 import numpy as np
 import pandas as pd
@@ -34,6 +35,25 @@ from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
+
+# How long a cached report / leaderboard is served. The batch runs every 4h
+# (scheduler: research_engine, 14400s); db_manager.get_cached's 600s default
+# meant the leaderboard was visible for 10 minutes out of every 240 and every
+# stock tap outside that window regenerated the report live (screener scrape
+# + FYERS + news, 1-10s). Serve the latest batch and let the UI show its age.
+CACHE_TTL_SECONDS = 2 * 86400
+
+# Progress of the running batch, for the UI. One batch at a time: a second
+# generate_research_all() while one is running returns immediately instead
+# of doubling the scraping and FYERS load.
+_batch_lock = threading.Lock()
+_batch = {"running": False, "done": 0, "total": 0, "started_at": None}
+
+
+def batch_progress():
+    """Snapshot of the batch state: running, done, total, started_at."""
+    with _batch_lock:
+        return dict(_batch)
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -191,8 +211,21 @@ def _load_commodity_data(symbol):
         session.close()
 
 
+# RETIRED 2026-09-12 (same reason as fundamental_analysis._scrape_screener):
+# the ratio regexes read the wrong cells on today's Screener page - ROCE 33.0
+# where the page says 22.0, "book value" 9,322 which is the share price, ROE
+# and market cap missing - and the batch's 73 requests were among ~1,270
+# Screener hits a day, 67 of which came back 429. The annual P&L trends this
+# parser produced were correct, so the code stays below for the day a
+# replacement source is chosen; until then _score_fundamental() gets {} and
+# reports "No fundamental data available", exactly as it did on a 429.
+_SCREENER_RATIOS_RETIRED = True
+
+
 def _scrape_screener_ratios(symbol):
     """Quick scrape — key ratios + annual P&L from Screener.in."""
+    if _SCREENER_RATIOS_RETIRED:
+        return {}
     url = f"https://www.screener.in/company/{symbol}/consolidated/"
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=12)
@@ -604,6 +637,7 @@ def _score_fundamental(screener_data):
         result["signals"].append("Company is loss-making")
 
     # OPM stability
+    opm_now = screener_data.get("op_profit_margin")
     if opm_trend and len(opm_trend) >= 3:
         valid_opm = [x for x in opm_trend if x is not None]
         if valid_opm:
@@ -614,7 +648,21 @@ def _score_fundamental(screener_data):
                 result["signals"].append(f"Stable high margins (OPM ~{opm_mean:.0f}%)")
             elif opm_mean < 8:
                 earnings_sub -= 5
+    elif opm_now is not None:
+        # Tijori gives the current margin, not a history: level only, no
+        # stability credit.
+        if opm_now > 25:
+            earnings_sub += 10
+            result["signals"].append(f"High operating margin ({opm_now:.0f}%)")
+        elif opm_now > 15:
+            earnings_sub += 5
+        elif opm_now < 8:
+            earnings_sub -= 8
+            result["signals"].append(f"Thin operating margin ({opm_now:.0f}%)")
 
+    # Measured or not: with no profit history and no margin, this sub-factor
+    # has nothing behind it and is reported as such, not as a neutral 50.
+    earnings_measured = bool(net_profit_trend) or bool(opm_trend) or opm_now is not None
     earnings_sub = _clamp(earnings_sub)
 
     # ── B. Balance Sheet ─────────────────────────────────────────────────
@@ -707,6 +755,20 @@ def _score_fundamental(screener_data):
         growing_eps = sum(1 for i in range(1, len(valid_eps)) if valid_eps[i] > valid_eps[i - 1])
         growth_sub += (growing_eps / (len(valid_eps) - 1) - 0.5) * 20
 
+    # Tijori: latest quarter's sales vs the same quarter a year ago. One
+    # reading, so the same thresholds as the CAGR but capped tighter.
+    yoy = screener_data.get("yoy_sales_growth")
+    if len(valid_rev) < 3 and yoy is not None:
+        if yoy > 20:
+            growth_sub += 15
+            result["signals"].append(f"Sales up {yoy:.0f}% YoY (latest quarter)")
+        elif yoy > 10:
+            growth_sub += 8
+        elif yoy < 0:
+            growth_sub -= 12
+            result["signals"].append(f"Sales down {abs(yoy):.0f}% YoY (latest quarter)")
+
+    growth_measured = len(valid_rev) >= 3 or len(valid_eps) >= 3 or yoy is not None
     growth_sub = _clamp(growth_sub)
 
     # ── E. Valuation ─────────────────────────────────────────────────────
@@ -757,13 +819,17 @@ def _score_fundamental(screener_data):
     valuation_sub = _clamp(valuation_sub)
 
     # ── COMPOSITE FUNDAMENTAL SCORE ──────────────────────────────────────
-    composite = (
-        earnings_sub * 0.25 +
-        balance_sub * 0.20 +
-        efficiency_sub * 0.20 +
-        growth_sub * 0.20 +
-        valuation_sub * 0.15
-    )
+    # Only measured sub-factors carry weight; an unmeasured one is reported
+    # as None (the UI draws a dash) instead of a neutral 50 that would pull
+    # every company toward the middle.
+    balance_measured = de is not None or icr is not None or fcf is not None
+    efficiency_measured = roce is not None or roe is not None
+    valuation_measured = pe is not None or peg is not None or dy is not None
+    parts = [(earnings_sub, 0.25, earnings_measured), (balance_sub, 0.20, balance_measured),
+             (efficiency_sub, 0.20, efficiency_measured), (growth_sub, 0.20, growth_measured),
+             (valuation_sub, 0.15, valuation_measured)]
+    total_w = sum(w for _, w, m in parts if m)
+    composite = sum(v * w for v, w, m in parts if m) / total_w if total_w else 50.0
 
     # Grade
     if composite >= 80:
@@ -784,17 +850,22 @@ def _score_fundamental(screener_data):
     result["score"] = round(_clamp(composite), 1)
     result["grade"] = grade
     result["factors"] = {
-        "earnings_quality": round(earnings_sub, 1),
-        "balance_sheet": round(balance_sub, 1),
-        "capital_efficiency": round(efficiency_sub, 1),
-        "growth_trajectory": round(growth_sub, 1),
-        "valuation": round(valuation_sub, 1),
+        "earnings_quality": round(earnings_sub, 1) if earnings_measured else None,
+        "balance_sheet": round(balance_sub, 1) if balance_measured else None,
+        "capital_efficiency": round(efficiency_sub, 1) if efficiency_measured else None,
+        "growth_trajectory": round(growth_sub, 1) if growth_measured else None,
+        "valuation": round(valuation_sub, 1) if valuation_measured else None,
         "pe_ratio": pe,
         "roe": roe,
         "roce": roce,
         "debt_to_equity": de,
         "peg_ratio": peg,
+        "industry_pe": industry_pe,
+        "source": screener_data.get("source"),
+        "as_of": screener_data.get("as_of"),
     }
+    if not total_w:
+        result["factors"]["note"] = "No fundamental data available"
 
     return result
 
@@ -1575,8 +1646,19 @@ def generate_research(symbol):
         commodity = _load_commodity_data(symbol)
 
     def _load_scr():
+        # Fundamentals come from the daily Tijori snapshots in the DB (see
+        # tijori_collector.get_fundamentals) - one query, no network. The
+        # variable keeps its name because _score_fundamental reads the same
+        # keys the Screener dict used (pe_ratio, roe, roce, debt_to_equity,
+        # peg_ratio, dividend_yield, market_cap, industry_pe) plus two Tijori
+        # adds: op_profit_margin and yoy_sales_growth.
         nonlocal screener
-        screener = _scrape_screener_ratios(symbol)
+        try:
+            import tijori_collector
+            screener = tijori_collector.get_fundamentals(symbol) or {}
+        except Exception as e:
+            logger.warning("Tijori fundamentals unavailable for %s: %s", symbol, e)
+            screener = {}
 
     def _load_meta():
         nonlocal stock_meta
@@ -1695,28 +1777,64 @@ def generate_research_all():
     finally:
         session.close()
 
+    with _batch_lock:
+        if _batch["running"]:
+            logger.info("Research batch already running (%d/%d) — not starting another",
+                        _batch["done"], _batch["total"])
+            return []
+        _batch.update(running=True, done=0, total=len(symbols),
+                      started_at=datetime.utcnow().isoformat())
+
     logger.info("🔬 Research batch: %d stocks", len(symbols))
     results = []
-    for i, sym in enumerate(symbols):
+
+    def _active(sym):
+        # The batch runs for minutes over a list captured at its start; a
+        # stock purged meanwhile must not get a fresh report or a rank
+        # (seen 2026-09-12: VODAFONEIDEA re-cached 25s after its purge).
         try:
-            report = generate_research(sym)
-            results.append(report)
-            # Persist to cache
-            _cache_report(sym, report)
-        except Exception as e:
-            logger.warning("Research failed for %s: %s", sym, e)
+            from db_manager import get_db, Stock
+            with get_db().Session() as s:
+                return s.query(Stock.symbol).filter_by(symbol=sym, is_active=True).first() is not None
+        except Exception:
+            return True   # unknown: keep the batch going rather than skip on a blip
 
-        # Rate-limit Screener.in scraping
-        if i < len(symbols) - 1:
-            time.sleep(2)
+    try:
+        for i, sym in enumerate(symbols):
+            if not _active(sym):
+                logger.info("Research batch: %s left the watchlist, skipping", sym)
+                continue
+            try:
+                report = generate_research(sym)
+                results.append(report)
+                # Persist to cache
+                _cache_report(sym, report)
+            except Exception as e:
+                logger.warning("Research failed for %s: %s", sym, e)
+            with _batch_lock:
+                _batch["done"] = i + 1
 
-    # Sort by alpha score descending
-    results.sort(key=lambda r: r.get("alpha_score", 0), reverse=True)
+            # Rate-limit Screener.in scraping
+            if i < len(symbols) - 1:
+                time.sleep(2)
 
-    # Persist the ranked summary
-    _cache_ranked_summary(results)
+        # Sort by alpha score descending
+        results.sort(key=lambda r: r.get("alpha_score", 0), reverse=True)
+
+        # Persist the ranked summary — of stocks still on the watchlist
+        results = [r for r in results if _active(r.get("symbol"))]
+        _cache_ranked_summary(results)
+    finally:
+        with _batch_lock:
+            _batch["running"] = False
 
     logger.info("🔬 Research batch complete: %d/%d stocks", len(results), len(symbols))
+    # Open dashboards reload the leaderboard on this (change_feed / /api/events).
+    try:
+        import change_feed
+        change_feed.notify("research", done=len(results), total=len(symbols))
+    except Exception:
+        pass
     return results
 
 
@@ -1759,19 +1877,19 @@ def _cache_ranked_summary(results):
 
 
 def get_cached_report(symbol):
-    """Get a previously cached research report."""
+    """The latest cached report for a symbol (see CACHE_TTL_SECONDS), or None."""
     try:
         from db_manager import get_cached
-        return get_cached(f"research_{symbol}")
+        return get_cached(f"research_{symbol}", ttl_seconds=CACHE_TTL_SECONDS)
     except Exception:
         return None
 
 
 def get_cached_leaderboard():
-    """Get the cached ranked summary."""
+    """The latest cached ranked summary (see CACHE_TTL_SECONDS), or None."""
     try:
         from db_manager import get_cached
-        return get_cached("research_leaderboard")
+        return get_cached("research_leaderboard", ttl_seconds=CACHE_TTL_SECONDS)
     except Exception:
         return None
 

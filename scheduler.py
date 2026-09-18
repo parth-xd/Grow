@@ -18,11 +18,13 @@ from config import APP_DEVICE_TOKEN
 
 logger = logging.getLogger(__name__)
 
-# app.py now requires X-Device-Token on every mutating request, including
-# these same-machine calls to its own API — see app.py's
-# _block_cross_origin_mutations for why "no Origin header" is no longer
-# treated as automatically trusted.
-_DEVICE_HEADERS = {'X-Device-Token': APP_DEVICE_TOKEN} if APP_DEVICE_TOKEN else {}
+# Loopback calls into this same process authenticate with the per-process
+# service token (auth_session.SERVICE_TOKEN), accepted only from 127.0.0.1;
+# X-Requested-With satisfies the CSRF header check on writes.
+def _service_headers():
+    from auth_session import SERVICE_TOKEN
+    return {'X-Service-Token': SERVICE_TOKEN, 'X-Requested-With': 'scheduler'}
+_DEVICE_HEADERS = _service_headers()
 
 # ── Task definitions ─────────────────────────────────────────────────────────
 
@@ -571,6 +573,55 @@ def _task_tijori_refresh():
         logger.info("Tijori refresh: %s", result)
     except Exception as e:
         logger.warning("Tijori refresh failed: %s", e)
+
+
+def _task_tijori_daily_partners():
+    """
+    Refresh every partner company once a day, after the market closes.
+
+    Runs the whole pass on its OWN daemon thread rather than in the scheduler
+    pool. The pass takes ~45 minutes at the 6s pacing, and the pool has only
+    MAX_WORKERS threads shared with the four 5-second trading tasks — holding
+    one for that long is exactly the "long jobs must not stack" problem in
+    CLAUDE.md rule 5. Dispatching and returning immediately keeps the pool
+    free; the daily marker below is what stops it launching twice.
+    """
+    try:
+        import threading
+        import tijori_collector
+        from db_manager import get_config, set_config
+
+        if _boot_warmup_active():
+            return
+        from fno_trader import _is_market_open
+        market_open, _ = _is_market_open()
+        if market_open:
+            return                      # post-close only
+
+        # One pass per IST day. Anchored to the same IST day boundary the
+        # collector uses for its done-check, so the marker and the data can
+        # never disagree about which day it is.
+        today = (tijori_collector._ist_day_start_utc() + tijori_collector._IST_OFFSET).date()
+        if get_config("tijori.last_partner_refresh") == str(today):
+            return
+        if any(t.name == "tijori-daily-partners" and t.is_alive()
+               for t in threading.enumerate()):
+            return                      # previous pass still running
+
+        def _run():
+            try:
+                # limit high enough not to truncate the pass — the discovery
+                # quota inside is what bounds the expensive lookups.
+                result = tijori_collector.collect_missing_partner_snapshots(limit=10_000)
+                logger.info("Tijori daily partner refresh: %s", result)
+                set_config("tijori.last_partner_refresh", str(today))
+            except Exception as e:
+                logger.warning("Tijori daily partner refresh failed: %s", e)
+
+        threading.Thread(target=_run, daemon=True,
+                         name="tijori-daily-partners").start()
+    except Exception as e:
+        logger.warning("Tijori daily partner refresh could not start: %s", e)
 
 
 def _task_geopolitical_collect():
@@ -1298,7 +1349,9 @@ def start_scheduler():
 
     # Tier 6: 120s — heavy compute / rare tasks
     _register("deep_analysis",   _task_deep_analysis, 1800, initial_delay=120)
-    _register("market_intelligence", _task_market_intelligence, 21600, initial_delay=130)
+    # Shareholding is quarterly data and the source is a scraped site that
+    # blocked us at 6h x 7 pages/stock; one paced page per stock, once a day.
+    _register("market_intelligence", _task_market_intelligence, 86400, initial_delay=130)
     _register("research_engine",     _task_research_engine, 14400, initial_delay=140)
     # ── Model retraining: STAGGERED, not concurrent ──────────────────────
     # Measured durations: GBC ~25 min (73 symbols), cash XGB ~4 min (65 x ~3s),
@@ -1329,6 +1382,9 @@ def start_scheduler():
     # Tijori supply-chain/fundamentals: check every 6h, refreshes only symbols
     # whose data is older than tijori.refresh_interval_days (config-driven)
     _register("tijori_refresh",      _task_tijori_refresh, 21600, initial_delay=180)
+    # Ticks every 30 min but no-ops until the market is closed and the day's
+    # pass has not run — so it fires once, shortly after close.
+    _register("tijori_daily_partners", _task_tijori_daily_partners, 1800, initial_delay=195)
 
     thread = threading.Thread(target=_scheduler_loop, daemon=True, name="master-scheduler")
     thread.start()

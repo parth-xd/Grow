@@ -10,14 +10,86 @@ Every trade gets:
 Reports are stored in-memory and persisted to a JSON file for history.
 """
 
+import functools
 import json
 import os
 import logging
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import costs
 from config import TARGET_PCT
+
+# Journal timestamps are stored NAIVE (local IST, i.e. whatever datetime.now()
+# produces here). paper_trades.json stores them TZ-AWARE (+05:30). Subtracting
+# one from the other raises TypeError, and every caller of the close path wraps
+# it in a blanket except — so such an error surfaces as a log line and a trade
+# that stays OPEN forever. Normalise on the way in instead.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+# One lock around every read-modify-write of _journal. The list is a module
+# global mutated from the scheduler thread (entries), Flask request threads
+# (manual closes) and the 5-second auto-close task — with nothing serialising
+# them, _save() could iterate the list while another thread appended to it,
+# and the losing write simply vanished. Reentrant because the public functions
+# nest (create_pre_trade_report -> _save).
+_journal_lock = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _journal_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _naive_local(value) -> Optional[datetime]:
+    """
+    Parse a timestamp (str or datetime) into NAIVE local IST, or None.
+
+    Every timestamp the journal holds must be in this one representation.
+    The tracker writes tz-aware "+05:30" strings; a DB round-trip strips the
+    zone; datetime.now() is naive. Mixing any two raises TypeError on
+    subtraction — which close_trade_report does to compute duration. That
+    exception is caught by every caller and became a silently-unclosed
+    journal entry whenever a trade was opened and closed in the same process.
+    """
+    if value is None:
+        return None
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_IST).replace(tzinfo=None)
+    return dt
+
+
+def _resolve_exit_dt(exit_time=None) -> datetime:
+    """
+    The single source of truth for when a trade exited.
+
+    Pass the exit_time recorded on the trade; omit it only when closing at this
+    instant. Every timestamp in the post-trade record derives from the value
+    returned here — the report's exit_time, post_trade.exit_time, the duration,
+    and the narrative header — so they can never disagree with each other again.
+
+    This existed as four independent datetime.now() reads. A journal backfill
+    then stamped the repair time onto three trades that had closed days earlier,
+    and because the DB column was written from a different one of those reads,
+    the column looked correct while the record the dashboard renders did not.
+
+    Returns naive local time to match how the journal stores timestamps.
+    """
+    if exit_time is None:
+        return datetime.now()
+    dt = _naive_local(exit_time)
+    if dt is None:
+        logger.warning("Unparseable exit_time %r — falling back to now()", exit_time)
+        return datetime.now()
+    return dt
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +101,17 @@ _journal: list = []  # list of TradeReport dicts
 _loaded = False
 
 
+@_locked
 def _load():
-    """Load journal from DB first, fall back to disk."""
+    """Load journal from DB first, fall back to disk.
+
+    _loaded flips to True only once something was actually loaded. It used to
+    be set before the attempt, so a transient failure on first use left the
+    process holding an empty journal for its whole lifetime.
+    """
     global _journal, _loaded
     if _loaded:
         return
-    _loaded = True
     try:
         from db_manager import get_db, TradeJournalEntry
         db = get_db()
@@ -42,6 +119,7 @@ def _load():
             rows = session.query(TradeJournalEntry).order_by(TradeJournalEntry.created_at).all()
             if rows:
                 _journal = [r.to_dict() for r in rows]
+                _loaded = True
                 logger.info(f"Loaded {len(_journal)} trades from database")
                 return
     except Exception as e:
@@ -51,26 +129,47 @@ def _load():
         try:
             with open(JOURNAL_FILE, "r") as f:
                 _journal = json.load(f)
+                _loaded = True
                 logger.info(f"Loaded {len(_journal)} trades from JSON file")
         except Exception as e:
             logger.warning(f"Failed to load trade journal: {e}")
             _journal = []
     else:
+        # A genuinely empty journal (fresh install) is a successful load.
         _journal = []
+        _loaded = True
 
 
-def _save():
-    """Persist journal to DB and disk."""
-    # Always save to disk as backup
-    try:
-        with open(JOURNAL_FILE, "w") as f:
-            json.dump(_journal, f, indent=2, default=str)
-        logger.info(f"Trade journal saved to disk ({len(_journal)} trades)")
-    except Exception as e:
-        logger.warning("Failed to save trade journal to file: %s", e)
-    # Persist ALL trades to DB (not just latest) to avoid status loss on restart
+@_locked
+def _save(entry=None):
+    """Persist to the DB, then mirror to disk.
+
+    `entry` is the one report that changed; pass it and only that row is
+    written. Omit it to write every row (repair / reconcile).
+
+    Order and failure semantics are deliberate, and are what stop a trade
+    from silently going missing:
+
+    * Refuses to run before a successful _load(). Saving from an unloaded
+      process would rewrite the file with whatever fragment is in memory.
+    * DB first. A DB failure RAISES — every caller already sits in a
+      try/except, so nothing new can crash, but a half-success can no longer
+      return as success. Previously the file was written first and the DB
+      error was logged and swallowed; the caller then printed "Synced", and
+      on the next restart the file was rewritten from the DB without the
+      entry. That is how GRASIM vanished from both stores.
+    * Because the in-memory entry survives the raise, the next save retries
+      it automatically; reconcile_with_tracker() covers a restart in between.
+    * One row per save also means one bad row elsewhere can no longer fail
+      the batch that carries a new trade.
+    * The file is a mirror of what the DB accepted, so file failure stays a
+      warning.
+    """
+    if not _loaded:
+        raise RuntimeError("trade journal never loaded; refusing to save")
     if not _journal:
         return
+    targets = [entry] if entry is not None else list(_journal)
     try:
         from db_manager import get_db, TradeJournalEntry
         db = get_db()
@@ -84,7 +183,7 @@ def _save():
             # since the auto-close path now syncs the journal, that put it on
             # the 5-second trade loop. 23 trades meant 23 queries where one
             # suffices, and it grew with the journal.
-            _ids = [t["trade_id"] for t in _journal if t.get("trade_id")]
+            _ids = [t["trade_id"] for t in targets if t.get("trade_id")]
             _existing_by_id = {}
             if _ids:
                 _existing_by_id = {
@@ -93,7 +192,7 @@ def _save():
                                     .filter(TradeJournalEntry.trade_id.in_(_ids))
                                     .all()
                 }
-            for trade in _journal:
+            for trade in targets:
                 existing = _existing_by_id.get(trade["trade_id"])
                 if existing:
                     # Keep the DB row aligned with the latest in-memory trade state.
@@ -153,10 +252,18 @@ def _save():
             logger.info(f"Trade journal saved to database ({saved_count} trades)")
     except Exception as e:
         logger.error("DB save for trade journal failed: %s", e)
+        raise
+    # Mirror to disk only after the DB accepted it.
+    try:
+        with open(JOURNAL_FILE, "w") as f:
+            json.dump(_journal, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning("Failed to mirror trade journal to file: %s", e)
 
 
 # ── Pre-Trade Report ─────────────────────────────────────────────────────────
 
+@_locked
 def create_pre_trade_report(
     symbol: str,
     side: str,
@@ -186,12 +293,9 @@ def create_pre_trade_report(
     """
     _load()
 
-    now = datetime.now()
-    if entry_time:
-        try:
-            now = datetime.fromisoformat(str(entry_time).replace("Z", "+00:00"))
-        except ValueError:
-            pass
+    # Normalise to naive local on the way in, so the in-memory entry matches
+    # what a DB reload would produce. See _naive_local.
+    now = _naive_local(entry_time) or datetime.now()
     trade_id = trade_id or f"{symbol}-{side[0]}-{now.strftime('%Y%m%d%H%M%S%f')}"
 
     existing = next((report for report in _journal if report["trade_id"] == trade_id), None)
@@ -246,7 +350,7 @@ def create_pre_trade_report(
         "model_source": model_source or (prediction or {}).get("model_source") or "GradientBoosting",
 
         # ── Timing ────────────────────────────────
-        "entry_time": entry_time or now.isoformat(),
+        "entry_time": now.isoformat(),
         "entry_price": entry_price,
         "exit_time": None,
         "exit_price": None,
@@ -325,7 +429,7 @@ def create_pre_trade_report(
     }
 
     _journal.append(report)
-    _save()
+    _save(report)
 
     return report
 
@@ -415,11 +519,13 @@ def _build_reasoning_narrative(symbol, side, price, prediction, ml, news, ctx, i
 
 # ── Post-Trade Report ────────────────────────────────────────────────────────
 
+@_locked
 def close_trade_report(
     trade_id: str,
     exit_price: float,
     exit_reason: str = "manual",
     current_indicators: Optional[dict] = None,
+    exit_time=None,
 ) -> Optional[dict]:
     """
     Complete a trade report with post-trade analysis.
@@ -442,7 +548,7 @@ def close_trade_report(
         logger.warning("Trade %s not found or already closed", trade_id)
         return None
 
-    now = datetime.now()
+    now = _resolve_exit_dt(exit_time)
     pre = report["pre_trade"]
     entry_price = report["entry_price"]
     quantity = report["quantity"]
@@ -477,11 +583,11 @@ def close_trade_report(
     match_analysis = _build_match_analysis(
         report, exit_price, exit_reason, move_pct, net_pnl,
         prediction_correct, ml_correct, news_correct, market_correct,
-        current_indicators
+        current_indicators, now, gross_pnl, total_charges
     )
 
     # Duration
-    entry_dt = datetime.fromisoformat(report["entry_time"])
+    entry_dt = _naive_local(report.get("entry_time")) or now
     duration_minutes = round((now - entry_dt).total_seconds() / 60, 1)
 
     post_trade = {
@@ -539,10 +645,11 @@ def close_trade_report(
     else:
         report["status"] = "CLOSED"
 
-    _save()
+    _save(report)
     return report
 
 
+@_locked
 def close_matching_paper_trade(
     trade_id: str,
     symbol: str,
@@ -553,9 +660,10 @@ def close_matching_paper_trade(
     exit_price: float,
     exit_reason: str = "manual",
     current_indicators: Optional[dict] = None,
+    exit_time=None,
 ) -> Optional[dict]:
     """Close a paper trade even if a legacy journal entry used a mismatched ID."""
-    report = close_trade_report(trade_id, exit_price, exit_reason, current_indicators)
+    report = close_trade_report(trade_id, exit_price, exit_reason, current_indicators, exit_time)
     if report is not None:
         return report
 
@@ -608,7 +716,77 @@ def close_matching_paper_trade(
         trade_id,
         matched_trade_id,
     )
-    return close_trade_report(matched_trade_id, exit_price, exit_reason, current_indicators)
+    return close_trade_report(matched_trade_id, exit_price, exit_reason, current_indicators, exit_time)
+
+
+@_locked
+def reconcile_with_tracker() -> dict:
+    """
+    Bring the journal into agreement with paper_trades.json, the tracker.
+
+    Two rules, both idempotent because the functions they call skip work that
+    is already done:
+      1. every tracker trade has a journal entry;
+      2. every tracker-closed trade is closed in the journal.
+
+    Runs once at app start (app.py). It is the automated form of the manual
+    repair that closed TITAN, HINDUNILVR, BRITANNIA and recreated GRASIM: a
+    write that fails, followed by a restart before the next save, would
+    otherwise leave a permanent gap that only a human could notice and fix.
+
+    Each trade is handled in its own try so one bad record cannot stop the
+    rest. Never raises.
+    """
+    from paper_trade_reconciliation import load_tracker_trades
+    _load()
+    created = closed = failed = 0
+    for t in load_tracker_trades():
+        tid = t.get("id")
+        if not tid:
+            continue
+        try:
+            entry = next((r for r in _journal if r.get("trade_id") == tid), None)
+            if entry is None:
+                pre = t.get("pre_trade") or {}
+                create_pre_trade_report(
+                    symbol=t.get("symbol"),
+                    side=t.get("side") or t.get("signal"),
+                    quantity=t.get("quantity"),
+                    entry_price=t.get("entry_price"),
+                    prediction={
+                        "sources": {
+                            "ml": {"signal": pre.get("ml_signal"), "confidence": pre.get("ml_confidence")},
+                            "news": {"signal": pre.get("news_signal"), "score": pre.get("news_score")},
+                            "market_context": {"signal": pre.get("market_signal")},
+                        },
+                        "costs": {}, "indicators": {},
+                        "confidence": t.get("confidence", 0),
+                        "combined_score": pre.get("combined_score", 0),
+                        "reason": pre.get("reason_summary", "Reconciled from tracker"),
+                    },
+                    trigger="auto", is_paper=True, trade_id=tid,
+                    model_source=t.get("model_source"), entry_time=t.get("entry_time"),
+                )
+                created += 1
+                entry = next((r for r in _journal if r.get("trade_id") == tid), None)
+            tracker_closed = str(t.get("status") or "").upper() != "OPEN" and t.get("exit_price") is not None
+            if entry is not None and entry.get("status") == "OPEN" and tracker_closed:
+                close_matching_paper_trade(
+                    trade_id=tid, symbol=t.get("symbol"),
+                    side=t.get("side") or t.get("signal"), quantity=t.get("quantity"),
+                    entry_price=t.get("entry_price"), entry_time=t.get("entry_time"),
+                    exit_price=float(t["exit_price"]),
+                    exit_reason=t.get("exit_reason") or "manual",
+                    exit_time=t.get("exit_time"),
+                )
+                closed += 1
+        except Exception as e:
+            failed += 1
+            logger.warning("reconcile: could not sync %s: %s", tid, e)
+    if created or closed or failed:
+        logger.info("Trade journal reconciled with tracker: %d created, %d closed, %d failed",
+                    created, closed, failed)
+    return {"created": created, "closed": closed, "failed": failed}
 
 
 def _source_was_correct(source_signal, side, trade_was_profitable):
@@ -629,7 +807,7 @@ def _source_was_correct(source_signal, side, trade_was_profitable):
 
 def _build_match_analysis(report, exit_price, exit_reason, move_pct, net_pnl,
                           prediction_correct, ml_correct, news_correct, market_correct,
-                          current_indicators):
+                          current_indicators, exit_dt, gross_pnl, total_charges):
     """Build a plain-English post-trade analysis comparing expectation vs reality."""
     pre = report["pre_trade"]
     entry = report["entry_price"]
@@ -638,7 +816,7 @@ def _build_match_analysis(report, exit_price, exit_reason, move_pct, net_pnl,
 
     lines.append("═══════════════════════════════════════════")
     lines.append(f"POST-TRADE ANALYSIS: {report['symbol']} ({side})")
-    lines.append(f"Exit Time: {datetime.now().strftime('%d %b %Y, %I:%M %p')} IST")
+    lines.append(f"Exit Time: {exit_dt.strftime('%d %b %Y, %I:%M %p')} IST")
     lines.append("═══════════════════════════════════════════")
     lines.append("")
 
@@ -646,8 +824,16 @@ def _build_match_analysis(report, exit_price, exit_reason, move_pct, net_pnl,
     result_emoji = "PROFIT" if net_pnl > 0 else "LOSS"
     lines.append(f"Result: {result_emoji}")
     lines.append(f"Entry: ₹{entry} → Exit: ₹{exit_price} ({'+' if move_pct > 0 else ''}{move_pct:.2f}%)")
-    lines.append(f"Gross P&L: ₹{(exit_price - entry) * report['quantity']:.2f}")
-    lines.append(f"Charges: ₹{pre.get('est_total_charges', 0):.2f}")
+    # Gross and charges are passed in, not recomputed here. Two defects lived
+    # in this block: `Charges` printed pre.est_total_charges — the estimate made
+    # at ENTRY, against a Net computed from the ACTUAL charges, so the three
+    # lines did not add up (301.50 - 164.43 = 137.07, printed as 136.75). And
+    # `Gross` was recomputed inline as (exit - entry) * qty, which is inverted
+    # for a SELL: close_trade_report already branches on side to get it right.
+    # Both are settled numbers by the time we get here; recomputing them could
+    # only ever disagree.
+    lines.append(f"Gross P&L: ₹{gross_pnl:.2f}")
+    lines.append(f"Charges: ₹{total_charges:.2f}")
     lines.append(f"Net P&L: ₹{net_pnl:.2f}")
     lines.append(f"Exit Reason: {exit_reason}")
     lines.append("")
@@ -712,7 +898,10 @@ def _build_match_analysis(report, exit_price, exit_reason, move_pct, net_pnl,
             reasons.append("Daily and intraday trends were not aligned at entry")
 
         # Check if cost drag was the issue
-        if net_pnl < 0 and (exit_price - entry) * report["quantity"] > 0:
+        # gross_pnl, not a recomputed (exit - entry) * qty: that form is
+        # inverted for a SELL, so a winning short eaten by charges went
+        # unflagged while a losing short was flagged wrongly.
+        if net_pnl < 0 and gross_pnl > 0:
             reasons.append("Trade was profitable in price terms but charges made it a net loss")
 
         # Check RSI extremes

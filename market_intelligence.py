@@ -93,7 +93,7 @@ def scrape_shareholding(symbol):
             resp = requests.get(url, headers=_HEADERS, timeout=12)
         if resp.status_code != 200:
             logger.warning("Screener returned %d for %s shareholding", resp.status_code, symbol)
-            return []
+            return {"refused": True} if resp.status_code in (403, 429, 503) else []
 
         html = resp.text
         sh_idx = html.find('id="shareholding"')
@@ -168,6 +168,11 @@ def scrape_shareholding(symbol):
         logger.info("Scraped %d quarters of shareholding for %s", len(results), symbol)
         return results
 
+    except requests.RequestException as e:
+        # Connection refused / max retries = the host is blocking us; say so,
+        # so the batch stops instead of hammering the next 60 symbols.
+        logger.warning("Failed to fetch Screener.in for %s: %s", symbol, e)
+        return {"refused": True}
     except Exception as e:
         logger.warning("Failed to scrape shareholding for %s: %s", symbol, e)
         return []
@@ -383,11 +388,24 @@ def analyze_institutional_trend(symbol):
 # 2.  PEER COMPARISON — fetch key ratios for sector peers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# RETIRED 2026-09-12. Same regex family as the two retired ratio scrapers
+# (ROCE/ROE/book value read from the wrong cells on today's Screener page),
+# and the most expensive Screener consumer in the app: it fetched the stock
+# AND up to five peers - six pages per stock, ~470 per run, no delay - which
+# is what got the host blocked. The stock panel already shows a peers table
+# from the daily Tijori snapshot (P/E, PEG, market cap, promoter, YoY sales,
+# ROCE, ROE per peer), so nothing on screen depends on this. Parser kept
+# below, unreachable.
+_PEER_RATIOS_RETIRED = True
+
+
 def _scrape_peer_ratios(symbol):
     """
     Scrape key financial ratios from Screener.in for a single stock.
     Returns dict: {pe, pb, roe, roce, debt_equity, market_cap, dividend_yield, opm}
     """
+    if _PEER_RATIOS_RETIRED:
+        return {}
     url = f"https://www.screener.in/company/{symbol}/consolidated/"
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=10)
@@ -795,7 +813,9 @@ def collect_all_intelligence(symbol):
     # 1. Shareholding pattern
     try:
         sh_data = scrape_shareholding(symbol)
-        if sh_data:
+        if isinstance(sh_data, dict) and sh_data.get("refused"):
+            results["shareholding"] = {"quarters": 0, "refused": True}
+        elif sh_data:
             stored = store_shareholding(symbol, sh_data)
             results["shareholding"] = {"quarters": len(sh_data), "stored": stored}
         else:
@@ -827,12 +847,48 @@ def collect_all_intelligence(symbol):
     return results
 
 
+# Screener is a courtesy, not an API. What got the host blocked on 2026-09-12
+# (59 "max retries exceeded" in minutes, shareholding coming back "No data"):
+# 67 stocks x 7 pages each, back to back, every 6 hours, plus two other
+# scrapers of the same page. Now: one page per stock, a pause between stocks,
+# a stock refreshed today is not fetched again (restarts are free), and the
+# first refusal ends the run - the scheduler comes back at the next interval.
+# The data is quarterly; once a day is generous.
+def _intel_cfg(key, default):
+    try:
+        from db_manager import get_config
+        v = get_config(key)
+        return type(default)(v) if v not in (None, "") else default
+    except Exception:
+        return default
+
+
+def _refreshed_today():
+    """Symbols whose shareholding rows were already updated today (IST)."""
+    try:
+        conn = psycopg2.connect(DB_URL, connect_timeout=3)
+        cur = conn.cursor()
+        cur.execute("""SELECT DISTINCT symbol FROM shareholding_patterns
+                       WHERE (updated_at AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date""")
+        out = {r[0] for r in cur.fetchall()}
+        cur.close(); conn.close()
+        return out
+    except Exception as e:
+        logger.debug("refreshed-today lookup failed: %s", e)
+        return set()
+
+
 def collect_all_watchlist():
-    """Run intelligence collection for all watchlist stocks."""
+    """Run intelligence collection for every ACTIVE watchlist stock, politely."""
+    import time
     try:
         conn = psycopg2.connect(DB_URL, connect_timeout=3)
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM stock_prices")
+        # Membership is the stocks table - the same set the scan, the research
+        # batch, Tijori and Remove use. stock_prices (the old source) is a
+        # legacy table new adds never write to, so newly added stocks were
+        # never scraped and removed ones lingered.
+        cursor.execute("SELECT symbol FROM stocks WHERE is_active = true ORDER BY symbol")
         symbols = [row[0] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
@@ -840,13 +896,25 @@ def collect_all_watchlist():
         logger.error("Failed to get watchlist symbols: %s", e)
         return []
 
+    delay = _intel_cfg("intel.request_delay_seconds", 5.0)
+    done_today = _refreshed_today()
+    todo = [s for s in symbols if s not in done_today]
+    logger.info("Intelligence: %d active stocks, %d already refreshed today, %d to fetch at one page per %.0fs",
+                len(symbols), len(symbols) - len(todo), len(todo), delay)
+
     results = []
-    for symbol in symbols:
+    for i, symbol in enumerate(todo):
         try:
             r = collect_all_intelligence(symbol)
             results.append(r)
             logger.info("Intelligence collected for %s: %s", symbol, r)
+            if r.get("shareholding", {}).get("refused"):
+                logger.warning("Intelligence: Screener refused at %s (%d of %d done) - stopping this run; "
+                               "the rest wait for the next scheduled pass", symbol, i, len(todo))
+                break
         except Exception as e:
             logger.error("Intelligence collection failed for %s: %s", symbol, e)
+        if i < len(todo) - 1:
+            time.sleep(delay)
 
     return results

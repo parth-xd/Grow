@@ -170,6 +170,14 @@ def auto_analyze_watchlist():
         
         # Get all predictions
         predictions = bot.scan_watchlist()
+        # The scan takes ~60s over a symbol list captured at its start. A
+        # stock removed (purged) in that window would be written back here
+        # as a prediction — re-read membership and drop anything gone.
+        try:
+            still_active = set(bot.get_active_watchlist())
+            predictions = [p for p in predictions if p.get("symbol") in still_active]
+        except Exception as e:
+            logger.warning("Could not re-check watchlist membership after scan: %s", e)
         
         # Count signals
         buy_count = sum(1 for p in predictions if p.get("signal") == "BUY")

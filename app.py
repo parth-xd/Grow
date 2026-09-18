@@ -46,7 +46,7 @@ import json
 import pytz
 from datetime import datetime
 from functools import wraps
-from flask import Flask, jsonify, request, send_file, redirect, url_for
+from flask import Flask, jsonify, request, send_file, redirect, url_for, g
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 
@@ -201,6 +201,44 @@ def _block_project_file_exposure():
     logger.warning("Blocked static file request: %s", request.path)
     return jsonify({"error": "Not found"}), 404
 
+
+# ── Session gate: deny by default ───────────────────────────────────────────
+# Everything needs a live session cookie (auth_session.py) unless it is on
+# this short list. Reads included: before this, the PIN screen hid the page
+# while every GET behind it - trades, journal, holdings - answered anyone who
+# knew the URL. A route added tomorrow is locked the day it is written.
+#
+# What stays open, and why:
+#   /               the page itself, which shows the lock screen
+#   /api/unlock     how a client obtains a session
+#   /api/session    "am I logged in" for the boot check (returns a boolean)
+#   /fyers_callback FYERS's browser redirect after login; the session cookie
+#                   rides along (SameSite=Lax allows top-level navigations)
+#   static          only the files _block_project_file_exposure already allows
+#   loopback        the scheduler's own calls, with the per-process service
+#                   token (auth_session.SERVICE_TOKEN), never a cookie
+_PUBLIC_PATHS = {"/", "/api/unlock", "/api/session", "/api/auth/providers", "/fyers_callback"}
+
+
+@app.before_request
+def _require_session():
+    import auth_session
+    if request.method == "OPTIONS" or request.endpoint == "static" or request.path in _PUBLIC_PATHS:
+        return None
+    if auth_session.is_service_call(request):
+        g.session = None
+        g.service_call = True
+        return None
+    sess = auth_session.load(request.cookies.get(auth_session.COOKIE))
+    if sess:
+        g.session = sess
+        g.service_call = False
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "locked", "detail": "Unlock the app with your PIN first."}), 401
+    return redirect("/")
+
+
 # ── Cross-origin policy ──────────────────────────────────────────────────────
 # Previously this was a bare CORS(app), which sends Access-Control-Allow-Origin: *
 # and lets ANY page the operator visits read this API's responses.  Restrict it to
@@ -241,14 +279,11 @@ def _origin_is_allowed(origin: str) -> bool:
 
 
 # ── App lock: PIN check + device token ────────────────────────────────────────
-# The Origin check above stops a stray browser tab from firing a request, but it
-# never asked whether *you* unlocked the app — the PIN screen in index.html
-# compared the hash entirely in JS, so the server had no opinion on it, and a
-# caller with no Origin header (the exact shape of a native app's request) was
-# waved through with no check at all. This closes that: the correct PIN,
-# checked here, is the only way to obtain APP_DEVICE_TOKEN, and
-# _block_cross_origin_mutations below now requires that token on every mutating
-# request — browser or native, Origin present or not.
+# The correct PIN, checked here, is the only way to obtain a session cookie
+# (auth_session.py); _require_session then demands that cookie on every
+# request - reads and writes, browser or native. APP_DEVICE_TOKEN and
+# _device_token_is_valid() below are the previous model (one static token
+# for every device, checked on writes only) and are no longer consulted.
 
 _unlock_attempts = {}   # ip -> [timestamp, ...] of recent failures
 _UNLOCK_MAX_ATTEMPTS = 5
@@ -277,10 +312,49 @@ def unlock():
 
     if pin_hash != APP_PIN_HASH:
         _unlock_attempts.setdefault(ip, []).append(time.time())
+        logger.warning("auth: wrong PIN from %s", ip)
         return jsonify({"error": "Incorrect PIN"}), 401
 
     _unlock_attempts.pop(ip, None)
-    return jsonify({"success": True, "token": APP_DEVICE_TOKEN})
+    import auth_session
+    # A correct PIN always yields a NEW session; any cookie the client already
+    # carried is revoked, so a session fixed on the browser beforehand cannot
+    # be promoted (OWASP: renew the ID on every privilege change).
+    auth_session.revoke(request.cookies.get(auth_session.COOKIE))
+    sid = auth_session.create(1, ip=ip, user_agent=request.headers.get("User-Agent", ""))
+    logger.info("auth: unlocked from %s", ip)
+    resp = jsonify({"success": True})
+    auth_session.set_cookie(resp, sid, secure=auth_session.request_is_secure(request))
+    return resp
+
+
+@app.route("/api/session", methods=["GET"])
+def session_status():
+    """
+    Is this browser logged in? Public on purpose - it returns only a boolean
+    and the clocks, never identity - so the page can decide lock screen vs
+    dashboard before anything else loads.
+    """
+    import auth_session
+    sess = auth_session.load(request.cookies.get(auth_session.COOKIE))
+    if not sess:
+        return jsonify({"authenticated": False})
+    from datetime import timedelta as _td
+    return jsonify({
+        "authenticated": True,
+        "expires_at": sess["expires_at"].isoformat() + "Z",
+        "idle_expires_at": (sess["last_seen_at"] + _td(seconds=auth_session.idle_seconds())).isoformat() + "Z",
+    })
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    """Revoke this browser's session. The next request with the old cookie is refused."""
+    import auth_session
+    auth_session.revoke(request.cookies.get(auth_session.COOKIE))
+    resp = jsonify({"success": True})
+    auth_session.clear_cookie(resp, secure=auth_session.request_is_secure(request))
+    return resp
 
 
 @app.route("/api/session/verify", methods=["POST"])
@@ -334,11 +408,17 @@ def _block_cross_origin_mutations():
             "detail": "This endpoint changes state and may only be called from the dashboard.",
         }), 403
 
-    if not _device_token_is_valid():
-        logger.warning("Blocked %s %s: missing or invalid device token", request.method, request.path)
+    # Session cookies reintroduce CSRF; SameSite=Lax closes it for cross-site
+    # POSTs, and a custom header closes it for everything else - a page on
+    # another origin cannot add one without a preflight the browser refuses.
+    # api() in index.html sends it on every write; the scheduler's loopback
+    # calls send it too. (Replaces the static X-Device-Token check: the
+    # session gate above has already proven the caller unlocked the app.)
+    if not getattr(g, "service_call", False) and not request.headers.get("X-Requested-With"):
+        logger.warning("Blocked %s %s: no X-Requested-With header", request.method, request.path)
         return jsonify({
             "error": "Unauthorized",
-            "detail": "This endpoint requires the app to be unlocked first.",
+            "detail": "State-changing calls must come from the dashboard.",
         }), 401
 
     return None
@@ -671,6 +751,16 @@ try:
         seed_cost_rates()
     except Exception as e:
         logger.warning("⚠️  Cost rates seed failed (non-fatal): %s", e)
+    # Bring the trade journal into agreement with the tracker. Self-heals any
+    # entry or exit whose journal write failed before a restart — see
+    # trade_journal.reconcile_with_tracker. Idempotent; never raises.
+    try:
+        import trade_journal
+        _rec = trade_journal.reconcile_with_tracker()
+        if _rec.get("created") or _rec.get("closed"):
+            logger.info("✓ Trade journal reconciled: %s", _rec)
+    except Exception as e:
+        logger.warning("⚠️  Trade journal reconcile failed (non-fatal): %s", e)
     # Seed default prediction weights
     try:
         from db_manager import get_config, set_config
@@ -704,6 +794,10 @@ try:
              "Rupees the cash XGBoost model may hold across all its open paper positions. "
              "0 = unlimited. Applies only when XGB live trading is on; otherwise the model "
              "is evaluation-only."),
+            ("paper.min_confidence", "0.50",
+             "Minimum confidence (0-1) a signal must EXCEED before the paper trader enters. "
+             "Applies to both GradientBoosting and XGBoost — one shared threshold, no "
+             "per-model split."),
         ]:
             if get_config(key) is None:
                 set_config(key, val, desc)
@@ -772,6 +866,24 @@ try:
             ("news.source.moneycontrol", "true", "Fetch news from Moneycontrol RSS"),
             ("news.source.extra_rss", "true", "Fetch news from the extra RSS feeds"),
             ("news.source.x_posts", "true", "Fetch posts from X/Twitter"),
+            ("fyers.ws_enabled", "true",
+             "Run the FYERS live market-data WebSocket. Observability only — "
+             "no order prices off it yet."),
+            ("fyers.ws_freshness_seconds", "2",
+             "A WebSocket tick older than this counts as STALE. Stale prices are "
+             "never used and never fall back to REST."),
+            ("fyers.ws_watchlist_poll_seconds", "60",
+             "How often the WebSocket re-checks the active watchlist to "
+             "subscribe/unsubscribe changed symbols."),
+            ("fyers.ws_reconnect_retry", "10",
+             "Reconnect attempts the FYERS SDK makes itself before our supervisor "
+             "rebuilds the socket."),
+            ("fyers.ws_backoff_max_seconds", "300",
+             "Ceiling on our own exponential backoff between WebSocket reconnect "
+             "attempts."),
+            ("fyers.ws_stall_seconds", "60",
+             "Rebuild the WebSocket if no tick arrives for this long while the "
+             "market is open. 0 disables the watchdog."),
         ]
         _present = get_configs([k for k, _, _ in _settings_defaults])
         for _k, _v, _d in _settings_defaults:
@@ -789,10 +901,71 @@ except Exception as e:
 
 # ── Pages ────────────────────────────────────────────────────────────────────
 
+def _no_store(resp):
+    """Pages whose content depends on the session must never be cached: a
+    cached landing page shown to someone signed in, or a cached dashboard
+    shown to someone who isn't, is the same bug from two sides."""
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _dashboard_page():
+    return _no_store(app.make_response(send_file("index.html", mimetype="text/html")))
+
+
 @app.route("/")
 def index():
-    """Serve the main trading dashboard."""
-    return send_file("index.html", mimetype="text/html")
+    """
+    The front door. The decision is the server's, made per request from the
+    session cookie — never the page's:
+
+        live session      -> /app (the dashboard)
+        no live session   -> landing.html (sign in / create an account)
+
+    "Live" is auth_session.load()'s judgement: a cookie that is idle-expired,
+    past its absolute limit, revoked or simply made up counts as no session,
+    and is cleared on the way out so the browser stops presenting it.
+
+    Behind auth.landing_enabled (Settings, default off) because until an
+    account sign-in exists the landing page has no working way in: switching
+    it on early would lock out every browser without a cookie. Off, "/" is
+    the dashboard exactly as before, PIN lock and all.
+    """
+    import auth_session
+    from db_manager import get_config
+    if str(get_config("auth.landing_enabled") or "").strip().lower() != "true":
+        return _dashboard_page()
+    if auth_session.load(request.cookies.get(auth_session.COOKIE)):
+        return _no_store(redirect("/app"))
+    resp = _no_store(app.make_response(send_file("landing.html", mimetype="text/html")))
+    if request.cookies.get(auth_session.COOKIE):
+        auth_session.clear_cookie(resp, auth_session.request_is_secure(request))
+    return resp
+
+
+@app.route("/app")
+def dashboard_app():
+    """The dashboard's own address. Not on _PUBLIC_PATHS, so the session gate
+    has already sent anyone without a live session back to "/"."""
+    return _dashboard_page()
+
+
+@app.route("/api/auth/providers")
+def auth_providers():
+    """
+    Which sign-in methods are switched on. Public: the landing page reads it
+    before anyone is signed in, and renders each button live or "opens soon"
+    from the answer, so turning a provider on is a Settings change, not a page
+    edit. All off until their server side exists.
+    """
+    from db_manager import get_configs_prefix
+    cfg = get_configs_prefix("auth.provider.")
+    on = lambda k: str(cfg.get(k) or "").strip().lower() == "true"
+    return _no_store(jsonify({
+        "google": on("auth.provider.google"),
+        "apple": on("auth.provider.apple"),
+        "email": on("auth.provider.email"),
+    }))
 
 
 @app.route("/login")
@@ -1438,7 +1611,7 @@ def research_stock(symbol):
     """Generate a full research report for a single stock — the unified algorithm."""
     try:
         from research_engine import generate_research, get_cached_report
-        # Check cache first (use cached if < 2 hours old)
+        # Latest batch report unless ?refresh=1 (see research_engine.CACHE_TTL_SECONDS)
         cached = get_cached_report(symbol.upper())
         if cached and request.args.get("refresh") != "1":
             return jsonify(cached)
@@ -1465,11 +1638,16 @@ def research_stock_refresh(symbol):
 def research_leaderboard():
     """Get the ranked leaderboard of all stocks by Alpha Score."""
     try:
-        from research_engine import get_cached_leaderboard
+        from research_engine import get_cached_leaderboard, batch_progress
         lb = get_cached_leaderboard()
+        # `batch` lets the tab say "ranking 12 of 73" instead of a dead end
+        # while Run All works; `generated_at` (UTC, naive) lets it show the
+        # age of what it is looking at.
+        batch = batch_progress()
         if lb:
-            return jsonify({"leaderboard": lb, "cached": True})
-        return jsonify({"leaderboard": [], "cached": False,
+            return jsonify({"leaderboard": lb, "cached": True, "batch": batch,
+                            "generated_at": max((r.get("generated_at") or "") for r in lb) or None})
+        return jsonify({"leaderboard": [], "cached": False, "batch": batch,
                         "message": "No leaderboard yet. Trigger /api/research/all to generate."})
     except Exception as e:
         logger.exception("Leaderboard error")
@@ -2099,6 +2277,46 @@ def fyers_callback():
         return f"<h3>FYERS login failed</h3><pre>{e}</pre>", 500
 
 
+@app.route("/api/fyers/complete-login", methods=["POST"])
+def fyers_complete_login():
+    """
+    Paste-back path for the FYERS login, for devices the redirect cannot reach.
+
+    The redirect_uri registered with FYERS is http://127.0.0.1:8000/fyers_callback.
+    On the Mac that is this server, so /fyers_callback completes the exchange
+    on its own. On a phone the same redirect lands on the *phone's* loopback
+    — a dead page whose address bar still carries the one-time auth_code. The
+    dashboard lets the user paste that address (or just the code) here, and
+    the exchange finishes exactly as the callback would. The code is used
+    once and never logged.
+    """
+    try:
+        import re as _re
+        import fyers_auth
+        body = request.get_json(silent=True) or {}
+        text = str(body.get("code") or "").strip()
+        if not text:
+            return jsonify({"ok": False, "error": "Nothing pasted"}), 400
+        # Accept a full URL, a bare "auth_code=..." fragment, or the raw code.
+        m = _re.search(r"auth_code=([^&\s#]+)", text)
+        code = m.group(1) if m else text
+        if len(code) < 20 or " " in code:
+            return jsonify({"ok": False, "error": "That does not look like a FYERS auth code or redirect address"}), 400
+        fyers_auth.complete_login(code)
+        exp = fyers_auth.token_expiry()
+        logger.info("FYERS token refreshed via paste-back, valid until %s", exp)
+        return jsonify({
+            "ok": True,
+            "expires_at": exp.isoformat() if exp else None,
+            "expires_at_human": exp.strftime("%d %b, %I:%M %p IST") if exp else None,
+        })
+    except Exception as e:
+        # FYERS's own message ("code=-413 message=...") is the useful part;
+        # it never contains the token.
+        logger.warning("FYERS paste-back login failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 @app.route("/api/data-health")
 def data_health():
     """Coverage and completeness across every dataset the dashboard depends on.
@@ -2427,6 +2645,84 @@ def data_health():
                 "hint": "Retrains daily. GBC serves live signals; XGB is evaluation-only "
                         "until its backtest is available.",
             })
+
+        # FYERS live WebSocket — observability only. This feed is INERT with
+        # respect to trading (nothing prices off it yet), so it never reports
+        # "critical": a gap here cannot cost money today, and a red row for a
+        # feed nothing trades on would train the eye to ignore this panel.
+        try:
+            import fyers_ws_client
+            _ws = fyers_ws_client.status()
+            if _ws.get("enabled"):
+                _ws_sub = _ws.get("subscribed_count", 0)
+                _ws_rx = _ws.get("receiving_count", 0)
+                if not _ws.get("connected"):
+                    _ws_status, _ws_detail = "warn", (
+                        _ws.get("token_error") or _ws.get("last_error") or "not connected"
+                    )
+                else:
+                    _ws_status = "ok" if _ws_rx else "info"
+                    _ws_detail = (
+                        f"{_ws_rx}/{_ws_sub} receiving · {_ws.get('stale_count', 0)} stale · "
+                        f"{_ws.get('never_received_count', 0)} never received · "
+                        f"{_ws.get('reconnects', 0)} reconnect(s)"
+                    )
+                checks.append({
+                    "id": "fyers_websocket", "label": "FYERS Live WebSocket",
+                    "value": _ws_rx, "total": _ws_sub or 1,
+                    "pct": round(_ws_rx / _ws_sub * 100, 1) if _ws_sub else 0.0,
+                    "status": _ws_status,
+                    "detail": _ws_detail,
+                    "hint": "Live tick feed. Not used for trading yet — REST still "
+                            "prices every order.",
+                })
+        except Exception as _ws_e:
+            logger.debug("WS health check skipped: %s", _ws_e)
+
+        # Trade-store agreement: a trade closed in the tracker must be closed
+        # in the journal. The two drifted silently for months — the trailing-
+        # stop exit path called close_matching_paper_trade() with the wrong
+        # argument list, every call raised, and a blanket except turned it
+        # into a log line. 25 of 26 tracker closes never reached the journal;
+        # three trades sat OPEN there for weeks. Nothing on the dashboard could
+        # show it, which is exactly what this panel exists to prevent.
+        #
+        # Cheap by construction: one small JSON read, one bounded query keyed
+        # by the closed trade ids. Isolated in its own try so a failure here
+        # can never take the rest of the panel down.
+        try:
+            from paper_trade_reconciliation import load_tracker_trades as _load_tracker
+            from db_manager import TradeJournalEntry as _TJE
+            _closed = {
+                str(t.get("id")): t for t in _load_tracker()
+                if str(t.get("status") or "").upper() != "OPEN" and t.get("id")
+            }
+            if _closed:
+                with db.Session() as _s:
+                    _jrows = _s.query(_TJE.trade_id, _TJE.status).filter(
+                        _TJE.trade_id.in_(list(_closed))).all()
+                _jstatus = {tid: str(st or "").upper() for tid, st in _jrows}
+                _stuck = sorted(str(_closed[t].get("symbol")) for t in _closed if _jstatus.get(t) == "OPEN")
+                _missing = sorted(str(_closed[t].get("symbol")) for t in _closed if t not in _jstatus)
+                _agree = len(_closed) - len(_stuck) - len(_missing)
+                _parts = []
+                if _stuck:
+                    _parts.append(f"{len(_stuck)} still OPEN in the journal database: {', '.join(_stuck[:5])}")
+                if _missing:
+                    _parts.append(f"{len(_missing)} with no journal database row: {', '.join(_missing[:5])}")
+                # "database", deliberately: the Trade Journal TAB merges the
+                # tracker file over these rows, so a trade can be visible there
+                # while having no row here. The row is what carries the
+                # post-trade analysis — without it the tab shows UNVERIFIED.
+                add("journal_sync", "Closed trades recorded in the journal database",
+                    _agree, len(_closed), 100, 90,
+                    "; ".join(_parts) or "Every closed trade has a closed journal database row",
+                    "The Trade Journal tab still shows these (it overlays the tracker "
+                    "file), but without a database row there is no post-trade analysis "
+                    "— they read UNVERIFIED. Exits sync via close_matching_paper_trade(); "
+                    "grep the log for 'journal sync FAILED'.")
+        except Exception as _js_e:
+            logger.debug("journal sync health check skipped: %s", _js_e)
 
         rank = {"ok": 0, "unknown": 1, "warn": 2, "critical": 3}
         worst = max((c["status"] for c in checks), key=lambda s_: rank.get(s_, 0), default="ok")
@@ -3499,17 +3795,29 @@ def get_watchlist():
         # Source: fyers_candles (daily) — now the market-data source. Same
         # response shape as before (field names unchanged) so the frontend
         # needs no changes.
+        # Membership comes from `stocks` (what the scan, the research batch
+        # and Tijori use), candle stats are decoration. Listing from
+        # fyers_candles instead hid every active stock that had no candles —
+        # exactly the ghosts a user needs to see in order to remove them —
+        # and showed index candles (NIFTY, BANKNIFTY) that are not stocks.
         cursor.execute("""
-            SELECT DISTINCT symbol,
-                   COUNT(*) as price_candles,
-                   MIN(ts)::date as earliest_date,
-                   MAX(ts)::date as latest_date,
-                   (SELECT close FROM fyers_candles WHERE symbol = fc.symbol AND resolution = 'D' ORDER BY ts DESC LIMIT 1) as latest_price,
-                   (SELECT ts::date FROM fyers_candles WHERE symbol = fc.symbol AND resolution = 'D' ORDER BY ts DESC LIMIT 1) as latest_price_date
-            FROM fyers_candles fc
-            WHERE resolution = 'D'
-            GROUP BY symbol
-            ORDER BY symbol
+            SELECT s.symbol,
+                   COALESCE(c.price_candles, 0) AS price_candles,
+                   c.earliest_date, c.latest_date, c.latest_price, c.latest_price_date
+            FROM stocks s
+            LEFT JOIN (
+                SELECT symbol,
+                       COUNT(*) AS price_candles,
+                       MIN(ts)::date AS earliest_date,
+                       MAX(ts)::date AS latest_date,
+                       (array_agg(close ORDER BY ts DESC))[1] AS latest_price,
+                       (MAX(ts))::date AS latest_price_date
+                FROM fyers_candles
+                WHERE resolution = 'D'
+                GROUP BY symbol
+            ) c ON c.symbol = s.symbol
+            WHERE s.is_active = true
+            ORDER BY s.symbol
         """)
 
         stocks = cursor.fetchall()
@@ -3724,56 +4032,53 @@ def add_to_watchlist():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/watchlist/<symbol>/footprint")
+def watchlist_footprint(symbol):
+    """
+    What removing `symbol` would delete, keep and leave untouched — the
+    numbers the confirm dialog shows. Read-only; see symbol_purge.footprint.
+    """
+    try:
+        import symbol_purge
+        return jsonify(symbol_purge.footprint(symbol))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Footprint error for %s", symbol)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/watchlist/remove/<symbol>", methods=["DELETE"])
 def remove_from_watchlist(symbol):
-    """Remove a stock from watchlist and delete its price data."""
+    """
+    Remove a stock from the watchlist and erase everything the system holds
+    about it — one transaction, every table, its cached analyses, its model
+    files and the in-process caches (symbol_purge.purge_symbol). Financial
+    records and the user's own theses are kept and reported back.
+
+    This used to delete four tables and leave the `stocks` row active, so a
+    "removed" stock kept being scanned, researched and looked up on FYERS
+    and Tijori as a symbol with no data.
+
+    409 when the stock still has an open paper position: closing it is a
+    money action that belongs to the trade flow, not to this button.
+    """
     try:
-        symbol = symbol.upper()
-        
-        import psycopg2
-        from dotenv import load_dotenv
-        load_dotenv()
-        
-        db_url = os.getenv("DB_URL")
-        if not db_url:
-            return jsonify({"error": "Database not configured"}), 500
-        
-        conn = psycopg2.connect(db_url, connect_timeout=3)
-        cursor = conn.cursor()
-        
-        # Delete all price data for this symbol
-        cursor.execute("DELETE FROM stock_prices WHERE symbol = %s", (symbol,))
-        
-        # Also delete from thesis_analysis
-        cursor.execute("DELETE FROM thesis_analysis WHERE symbol = %s", (symbol,))
-        
-        # Delete peer comparison data
-        cursor.execute("DELETE FROM peer_comparisons WHERE symbol = %s", (symbol,))
-
-        # Delete FYERS historical candles (daily/1-min/5-sec), so removing a
-        # stock cleans up everything watchlist-add wrote for it, not just the
-        # Groww side. Was previously missing here — fyers_candles didn't
-        # exist yet when this endpoint was first written.
-        cursor.execute("DELETE FROM fyers_candles WHERE symbol = %s", (symbol,))
-
-        conn.commit()
-        
-        deleted_count = cursor.rowcount
-        cursor.close()
-        conn.close()
-        
-        # Remove note too
-        _save_watchlist_note(symbol, "")
-        
-        logger.info(f"✓ Removed {symbol} from watchlist and deleted {deleted_count} price records and peer data")
-        
+        import symbol_purge
+        report = symbol_purge.purge_symbol(symbol)
+        deleted_rows = sum(v for k, v in report["deleted"].items() if not k.startswith("analysis_cache:"))
         return jsonify({
             "success": True,
-            "message": f"Removed {symbol} from watchlist and deleted {deleted_count} price records",
-            "symbol": symbol
+            "symbol": report["symbol"],
+            "message": f"Removed {report['symbol']}: {deleted_rows:,} rows and {len(report['files'])} files erased",
+            "report": report,
         })
+    except PermissionError as e:
+        return jsonify({"error": str(e), "symbol": str(symbol).upper()}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.exception("Remove from watchlist error")
+        logger.exception("Remove from watchlist error for %s", symbol)
         return jsonify({"error": str(e)}), 500
 
 
@@ -4665,10 +4970,8 @@ def journal_entry(trade_id):
 @app.route("/api/journal/<trade_id>/close", methods=["POST"])
 @idempotent("journal_close")
 def journal_close(trade_id):
-    """Manually close a trade in the database."""
-    from db_manager import get_db, TradeJournalEntry
-    from datetime import datetime
-    
+    """Manually close a trade: tracker first for paper positions, otherwise
+    the journal's own close — the same path every automatic exit takes."""
     data = request.get_json(force=True)
     exit_price = data.get("exit_price")
     exit_reason = data.get("exit_reason", "manual")
@@ -4707,34 +5010,21 @@ def journal_close(trade_id):
         except Exception as e:
             logger.warning("Tracker-based paper trade close failed for %s: %s", trade_id, e)
 
-    # Update trade in database
+    # Not a tracker position (an "Actual" trade, or one the tracker already
+    # let go of): close it through the journal's own close, the same function
+    # every other exit path ends in — trailing stop, auto-close, Telegram.
+    # This used to write the row directly with exit_time = utcnow() and a bare
+    # percentage: a UTC stamp in a journal that keeps IST, and no charges, no
+    # net P&L, no post-trade report. One exit path, one time convention.
     try:
-        db = get_db()
-        with db.Session() as session:
-            trade = session.query(TradeJournalEntry).filter_by(trade_id=trade_id).first()
-            if not trade:
-                return jsonify({"error": "Trade not found"}), 404
-            
-            # Update exit details
-            trade.exit_price = float(exit_price)
-            trade.exit_time = datetime.utcnow()
-            trade.exit_reason = exit_reason
-            trade.status = "CLOSED"
-            
-            # Calculate P&L if we have quantity and entry price
-            if trade.quantity and trade.entry_price:
-                if (trade.side or "").upper() == "SELL":
-                    pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price) * 100
-                else:
-                    pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price) * 100
-                trade.actual_profit_pct = pnl_pct
-            
-            session.commit()
-            
-            # Return updated trade
-            return jsonify(trade.to_dict())
+        import trade_journal
+        report = trade_journal.close_trade_report(trade_id, float(exit_price), exit_reason)
+        if report is None:
+            return jsonify({"error": "Trade not found or already closed"}), 404
+        updated_entry = _get_canonical_journal_views()["lookup"].get(trade_id)
+        return jsonify(updated_entry if updated_entry is not None else report)
     except Exception as e:
-        logger.error(f"Failed to close trade {trade_id}: {e}")
+        logger.error(f"Failed to close trade {trade_id}: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -5139,14 +5429,12 @@ def get_stock_prices(symbol):
         # ── Daily (default) ───────────────────────────────────────────────
         # Full 5Y chart by default; ?days=N or ?limit=N trims the payload.
         # Newest N rows are selected, then re-sorted oldest-first for charting.
-        try:
-            days = int(request.args.get("days", 0))
-        except (TypeError, ValueError):
-            days = 0
-        try:
-            limit = min(int(request.args.get("limit", 0)), 5000)
-        except (TypeError, ValueError):
-            limit = 0
+        # Both clamped (CLAUDE.md #2). `limit` was capped but `days` beside it
+        # was not, so ?days=999999 read the whole table; and `limit` had no
+        # floor, so ?limit=-5 fell past `elif limit > 0` into the unbounded
+        # default branch below. 0 still means "not supplied" for both.
+        days = clamp_arg("days", 0, 1825, minimum=0)      # 5 years
+        limit = clamp_arg("limit", 0, 5000, minimum=0)
 
         # Source: fyers_candles (daily resolution), not stock_prices — FYERS
         # is now the market-data source. ts::date aliased as "date" so the
@@ -5167,11 +5455,16 @@ def get_stock_prices(symbol):
                 ) t ORDER BY date ASC
             """, (symbol.upper(), limit))
         else:
+            # Default = "full chart", but bounded: newest 5,000 daily rows
+            # (~20 trading years) re-sorted oldest-first, the same shape as
+            # the ?limit= branch. fyers_candles grows every trading day; this
+            # branch had no LIMIT at all.
             cursor.execute("""
-                SELECT ts::date AS date, open, high, low, close, volume
-                FROM fyers_candles
-                WHERE symbol = %s AND resolution = 'D'
-                ORDER BY ts ASC
+                SELECT date, open, high, low, close, volume FROM (
+                    SELECT ts::date AS date, open, high, low, close, volume
+                    FROM fyers_candles WHERE symbol = %s AND resolution = 'D'
+                    ORDER BY ts DESC LIMIT 5000
+                ) t ORDER BY date ASC
             """, (symbol.upper(),))
         
         rows = cursor.fetchall()
@@ -5504,16 +5797,22 @@ def get_closed_trades():
     try:
         from db_manager import get_db, TradeJournalEntry
         
+        # Bounded: trade_journal is append-only and to_dict() parses two JSON
+        # blobs per row, so an unbounded read here grows with every trade
+        # ever taken. Same cap _load_journal_entries_from_db already applies.
+        limit = clamp_arg("limit", _JOURNAL_MAX_ROWS, _JOURNAL_MAX_ROWS)
+
         db = get_db()
         with db.Session() as session:
             trades_orm = session.query(TradeJournalEntry).filter(
                 TradeJournalEntry.is_paper == True,
                 TradeJournalEntry.status.in_(CLOSED_TRADE_STATUSES)
-            ).order_by(TradeJournalEntry.created_at.desc()).all()
+            ).order_by(TradeJournalEntry.created_at.desc()).limit(limit).all()
             
             closed_trades = [t.to_dict() for t in trades_orm]
             logger.info(f"✓ Returned {len(closed_trades)} closed paper trades from database")
-            return jsonify({"trades": closed_trades, "count": len(closed_trades)})
+            return jsonify({"trades": closed_trades, "count": len(closed_trades),
+                            "limit": limit, "truncated": len(closed_trades) >= limit})
     except Exception as e:
         logger.error(f"Error reading closed trades: {e}")
         return jsonify({"error": str(e), "trades": [], "count": 0}), 500
@@ -6923,6 +7222,52 @@ def stream_prices():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/api/events")
+def change_events():
+    """
+    Server-Sent Events stream of "something changed" notifications — see
+    change_feed.py. The dashboard opens one EventSource and refreshes the
+    tab on screen when an event lands, so a trade closed from Telegram or by
+    the monitor after hours shows up without a reload and without polling.
+
+    Events: `trades` (paper_trades.json changed), `journal`
+    (trade_journal.json changed), `config` (a config_settings key changed;
+    `key` says which). Carries no data beyond that on purpose — the client
+    re-reads through the same endpoints it always used, so nothing here can
+    disagree with them.
+
+    A `: ping` comment every 15 s keeps proxies from dropping an idle stream
+    and is how a vanished client gets noticed (the write fails, the finally
+    unsubscribes). GET only, so it needs no device token; it never touches
+    the DB, so it holds no session for the life of the connection.
+    """
+    from flask import Response
+    import json as jsn
+    import queue as _queue
+    import change_feed
+
+    q = change_feed.subscribe()
+    if q is None:
+        return jsonify({"error": "Too many event streams open"}), 503, {"Retry-After": "30"}
+
+    def generate():
+        try:
+            yield "retry: 3000\n\n"
+            yield ": connected\n\n"
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                except _queue.Empty:
+                    yield ": ping\n\n"
+                    continue
+                yield f"id: {ev['id']}\nevent: {ev['topic']}\ndata: {jsn.dumps(ev)}\n\n"
+        finally:
+            change_feed.unsubscribe(q)
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # ENHANCED NLP ENDPOINT
 # ═════════════════════════════════════════════════════════════════════════════
@@ -7676,6 +8021,17 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("⚠️  FYERS boot warm-up failed to start: %s", e)
 
+        # FYERS live market-data WebSocket. Own daemon thread, never blocks
+        # app.run(). INERT: it only maintains state and reports health —
+        # nothing in the trading path reads it. It gates itself on a valid
+        # token, so starting it before the daily login is a no-op rather than
+        # a failed connect loop.
+        try:
+            import fyers_ws_client
+            fyers_ws_client.start_in_background()
+        except Exception as e:
+            logger.warning("⚠️  FYERS WebSocket failed to start: %s", e)
+
         try:
             from scheduler import start_scheduler
             start_scheduler()
@@ -7700,6 +8056,23 @@ if __name__ == "__main__":
         start_commander()
     except Exception as e:
         logger.warning("Telegram commander failed to start: %s", e)
+
+    # Change feed: watches the tracker/journal files so open dashboards hear
+    # about trades closed from Telegram or by the monitor (see /api/events).
+    try:
+        import change_feed
+        change_feed.start()
+    except Exception as e:
+        logger.warning("Change feed failed to start: %s", e)
+
+    # Sessions: make the idle/absolute clocks editable in Settings, drop rows
+    # that have been dead for a week.
+    try:
+        import auth_session
+        auth_session.seed_config()
+        auth_session.purge_expired()
+    except Exception as e:
+        logger.warning("Session housekeeping failed: %s", e)
 
     # Use reloader=False for faster startup; threaded=True to handle concurrent requests
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False, threaded=True)
