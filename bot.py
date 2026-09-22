@@ -2152,6 +2152,14 @@ def auto_trade(skip_new_entries=False):
             "reason": str(e),
         }
 
+    # Highest conviction first. scan_watchlist() returns the list in WATCHLIST
+    # order, so without this the first symbol that merely clears the threshold
+    # takes the slot and a stronger signal further down is never reached once
+    # MAX_POSITIONS fills — 51% ahead of 91% purely by list position. Stable
+    # sort, so GBC still precedes XGB on an exact tie and the incumbent-model
+    # precedence noted above is preserved.
+    predictions.sort(key=lambda p: p.get("confidence", 0) or 0, reverse=True)
+
     for pred in predictions:
         symbol = pred["symbol"]
         signal = pred["signal"]
