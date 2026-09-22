@@ -188,6 +188,7 @@ _PUBLIC_STATIC_FILES = {
     "icon-192.png",
     "icon-512.png",
     "favicon.ico",
+    "deck.pdf",
 }
 
 
