@@ -544,7 +544,7 @@ def _get_xgb_predictor(symbol, allow_train=True):
     return None
 
 
-def get_prediction_xgb(symbol):
+def get_prediction_xgb(symbol, live_price=None):
     """
     Cash XGBoost signal for a symbol — the independent sibling of
     get_prediction(). Same BUY/SELL/HOLD vocabulary and the same
@@ -553,6 +553,10 @@ def get_prediction_xgb(symbol):
 
     Returns HOLD with a reason (never raises) when the model or its data is
     unavailable, matching get_prediction()'s failure convention.
+
+    live_price: optional prefetched last-traded price, forwarded to
+    get_prediction() so a batched scan issues no per-symbol quote. The
+    single-symbol callers (trailing_stop.py) omit it and are unaffected.
 
     Runs through get_prediction() rather than returning the raw model output,
     so XGBoost receives the SAME four-source weighted consensus as
@@ -582,6 +586,7 @@ def get_prediction_xgb(symbol):
         ml_predictor=predictor,
         ml_df=df,
         model_source=xgb_predictor.MODEL_SOURCE_XGB,
+        live_price=live_price,
     )
 
 
@@ -612,9 +617,37 @@ def scan_watchlist_xgb():
     if not symbols:
         return []
 
+    # One batched quote pass for the whole watchlist before any worker starts,
+    # so the scan costs ceil(len(symbols)/50) requests instead of one per
+    # symbol. _get_quotes_cached() underneath already chunks at the documented
+    # 50-symbol cap, so this line is correct at any watchlist size and there is
+    # no chunking to repeat here.
+    #
+    # Deliberately NO per-symbol fallback. A symbol the batch could not price
+    # would otherwise be priced off a stale candle close, and every source of
+    # that staleness (a bad batch, a delisted symbol, a malformed row) is worth
+    # seeing rather than papering over — so the scan refuses as a whole. The
+    # raise lands on auto_trade()'s existing "XGB scan failed" handler; a
+    # failure inside get_ltp_batch() propagates the same way.
+    from fyers_market_data_provider import FYERSMarketDataProvider
+    prices = FYERSMarketDataProvider().get_ltp_batch(symbols) or {}
+    unpriced = [s for s in symbols
+                if not isinstance(prices.get(s), (int, float)) or prices[s] <= 0]
+    if unpriced:
+        logger.error(
+            "XGB scan aborted: batch quote returned no usable price for %d of %d "
+            "symbol(s) — %s%s. Refusing to scan rather than pricing off stale candles.",
+            len(unpriced), len(symbols), ", ".join(unpriced[:10]),
+            "..." if len(unpriced) > 10 else "",
+        )
+        raise RuntimeError(
+            f"live-price batch incomplete: {len(unpriced)}/{len(symbols)} symbols "
+            f"unpriced ({', '.join(unpriced[:10])}{'...' if len(unpriced) > 10 else ''})"
+        )
+
     out = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(get_prediction_xgb, s): s for s in symbols}
+        futures = {pool.submit(get_prediction_xgb, s, live_price=prices[s]): s for s in symbols}
         for fut in as_completed(futures):
             sym = futures[fut]
             try:
@@ -909,7 +942,7 @@ def fetch_intraday_candles_for_today(symbol):
 
 
 def get_prediction(symbol, intraday_candles=None, ml_predictor=None, ml_df=None,
-                   model_source=None):
+                   model_source=None, live_price=None):
     """
     Get a combined prediction using ALL available knowledge:
       1. ML model (technical indicators from historical data or fresh intraday candles)
@@ -929,6 +962,10 @@ def get_prediction(symbol, intraday_candles=None, ml_predictor=None, ml_df=None,
                       GradientBoosting runs on 5-minute.
         model_source: Tag carried onto the result and, from there, onto the
                       trade record ('GradientBoosting' | 'XGBoost').
+        live_price:   Optional prefetched last-traded price. Supplied by
+                      callers that already batched the quote for a whole
+                      watchlist; when given, no per-symbol quote is issued.
+                      Omit it and this fetches per symbol exactly as before.
 
     Final signal is a weighted consensus of all sources.
 
@@ -1026,11 +1063,17 @@ def get_prediction(symbol, intraday_candles=None, ml_predictor=None, ml_df=None,
 
     # ── Source 4: Cost Analysis ─────────────────────────────────────────
     # Override price with live Groww LTP (DB candle may be stale after market close)
+    #
+    # A caller that already holds a batched price passes it in, and no
+    # per-symbol quote is issued for it. scan_watchlist_xgb() validates its
+    # whole batch before any worker starts, so a price arriving here is
+    # already known good — there is nothing to re-check and nothing to fall
+    # back from. Callers that pass nothing fetch per symbol, as before.
     try:
-        live_price = fetch_live_price(symbol)
-        if live_price and live_price > 0:
-            price = live_price
-            ml_prediction.setdefault("indicators", {})["price"] = round(live_price, 2)
+        _lp = live_price if live_price is not None else fetch_live_price(symbol)
+        if _lp and _lp > 0:
+            price = _lp
+            ml_prediction.setdefault("indicators", {})["price"] = round(_lp, 2)
         else:
             price = ml_prediction.get("indicators", {}).get("price") or float(df["close"].iloc[-1])
     except Exception:
