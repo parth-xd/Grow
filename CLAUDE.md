@@ -61,6 +61,54 @@
 
 ---
 
+## 🔒 PROTECTED: Lock-screen intro animation (`index.html`)
+
+**Under no circumstances remove, hide, disable or shorten the lock-screen
+intro — including as a "quick fix" for some other bug.** If it glitches,
+fix the cause. This rule overrides "simplify" and "remove dead code"
+instincts. Changing it at all needs the user's explicit approval.
+
+**What it is:** on load (and on re-lock after logout) the "OHLCV" wordmark
+drops in letter by letter over a coloured backdrop (navy/olive/wine,
+cycling per load); a card fades in at ~46% size in the centre, then expands
+to fill the screen; the ink flips to suit the card; the keypad appears.
+The card **alternates black `#111014` / off-white `#f4f2ee` on each load**.
+
+**Why this rule exists:** the card was once silently switched off
+(`display:none`) to fix an iPhone grey-box glitch. The glitch was caused by
+the card being an `<img>` of an SVG data URI that iOS WebKit refused to
+load — not by the animation. Removing it fixed the symptom and destroyed
+the feature.
+
+**Invariants — each one prevents a real, observed failure:**
+1. **`.pin-shot` is a plain `<div>` with a background colour, never an
+   image.** Images can fail to load on iOS; a coloured block cannot.
+2. **The card colour is picked in the `<head>` script before first paint**
+   (`window.__lockShot`, localStorage key `lock_shot_n`) and the root is
+   painted that colour there. iOS samples the status-bar strip colour at
+   first paint and never re-samples it. `_lockShotColour()` reuses that pick
+   — never step the alternation a second time per load.
+3. **All intro timers live in the shared `_lockIntroTimers` list, cleared at
+   the start of every run.** A per-run list let an earlier run's timers
+   fire into a restarted one (card early, keypad revealed mid-animation).
+4. **The keypad is only revealed by `finish()`.** Anything that can stop
+   `finish()` from running locks the user out of PIN entry. Reduced motion
+   goes through `jump()` → `finish()`; keep it that way.
+5. **Every run first snaps the card to its hidden state with `no-anim`.**
+   Otherwise a re-lock plays the previous card's transitions in reverse.
+6. **Timings are coupled:** `shot-full` at 2550ms + the 1.2s `.pin-shot`
+   transform transition = `finish` at 3750ms. Change one, change the other.
+7. The wordmark's `nth-child` kerning rules are tied to the letters of
+   "OHLCV". Re-measure (split vs unsplit advance) if the name changes.
+
+**Verify after any change** (phone-size viewport, e.g. 390×844): black and
+off-white each on consecutive loads; card hidden → fades in at 2.15s →
+expands at 2.55s → keypad at 3.75s; light ink on black, dark on off-white;
+a restart mid-intro follows only the new run's timing; reduced motion lands
+instantly on a usable keypad.
+
+---
+
 ## Current State (As of 2026-07-31)
 
 - **Database**: PostgreSQL with 13 tables, full historical data

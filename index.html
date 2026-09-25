@@ -18,6 +18,43 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Parth S." />
 <meta name="theme-color" content="#1e1d20" />
+<script>
+/* Lock-screen ground, painted BEFORE first paint — deliberately here in
+   <head> rather than in runLockIntro().
+
+   iOS fills the strip behind the status bar from the document background as
+   sampled at FIRST PAINT, and never re-samples it when JS changes it later.
+   runLockIntro() runs at DOMContentLoaded, which is already too late: the
+   strip had frozen the light default, so a pale band sat across the top of
+   the coloured lock screen and read as a colour distortion.
+
+   Picking the colour here also means the cycle advances exactly once per
+   load — _lockColour() reuses this value rather than stepping it again. */
+(function () {
+  var FALLBACK = ['#1f2b3a', '#4a4f36', '#5c2230'];   // navy, olive, wine
+  var palette = FALLBACK, n = 0;
+  try {
+    var raw = JSON.parse(localStorage.getItem('lock_palette') || 'null');
+    if (Array.isArray(raw) && raw.length === 3 &&
+        raw.every(function (v) { return /^#[0-9a-f]{6}$/i.test(String(v)); })) palette = raw;
+    n = (Number(localStorage.getItem('lock_col_n') || 0) + 1) % palette.length;
+    localStorage.setItem('lock_col_n', String(n));
+  } catch (e) { /* storage blocked: still paint, just without cycling */ }
+  window.__lockColour = palette[n];
+  // The intro card alternates black / off-white per load (same key the old
+  // image version used, so the sequence carries on). The root takes the
+  // CARD's colour, not the backdrop's: the card ends full-screen and stays
+  // there while the PIN is typed, so that is the colour the edges must match.
+  var shot = '#111014';
+  try {
+    var m = (Number(localStorage.getItem('lock_shot_n') || 0) + 1) % 2;
+    localStorage.setItem('lock_shot_n', String(m));
+    shot = m ? '#111014' : '#f4f2ee';
+  } catch (e) { /* storage blocked: black every time */ }
+  window.__lockShot = shot;
+  document.documentElement.style.backgroundColor = shot;
+})();
+</script>
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
 <link rel="manifest" href="/manifest.json" />
@@ -308,9 +345,17 @@
     background: var(--lock-ground);
   }
   .pin-shot {
+    /* PROTECTED — never remove, hide or disable. See CLAUDE.md
+       "Lock-screen intro animation" for the invariants.
+
+       A plain coloured block, not an image. It used to be an <img> of a
+       one-colour SVG data URI, which iOS WebKit refused to load — a grey box
+       instead of the card, and a status-bar strip that fell back to the wrong
+       colour — so the whole layer had been switched off. A block can't fail
+       to load, and its colour is chosen up front in <head>, so nothing has to
+       wait for a decode or sample pixels. Background set in runLockIntro(). */
     position: absolute; left: 50%; top: 50%; z-index: 1;
     width: 100%; height: 100%;
-    object-fit: cover;
     opacity: 0;
     transform: translate(-50%,-50%) scale(.46);
     transition: opacity .7s cubic-bezier(.215,.61,.355,1),
@@ -3016,7 +3061,7 @@ window.fetch = function(...args) {
   <!-- Intro layers: the colour walk, then the image that expands over it.
        Both are decorative and sit behind .pin-box. -->
   <div class="pin-canvas" aria-hidden="true"></div>
-  <img class="pin-shot" alt="" aria-hidden="true">
+  <div class="pin-shot" aria-hidden="true"></div>
 
   <div class="pin-box">
     <div class="pin-logo" aria-hidden="true">
@@ -4334,6 +4379,12 @@ function _setLocked() {
     if (d && d.authenticated) {
       if (lock) lock.classList.add('hidden');
       document.body.classList.remove('locked');
+      // The <head> script painted the root the lock colour before first paint
+      // (so iOS samples it for the status-bar strip). This session is already
+      // unlocked and the lock never shows, so release it — otherwise the
+      // dashboard overscrolls against a navy/olive/wine edge all session.
+      // Mirrors the same release on the PIN-success path.
+      _lockPaintRoot('');
       _setUnlocked();
     } else {
       relock();
@@ -4356,25 +4407,19 @@ function _setLocked() {
 
 const LOCK_COLOURS = ['#1f2b3a', '#4a4f36', '#5c2230'];   // navy, olive, wine
 
-// Placeholder artwork until real images exist. Alternates light/dark on each
-// load so the contrast-adaptive ink is actually observable rather than
-// something you have to take on faith.
-function _lockDemoShot() {
-  const n = (Number(localStorage.getItem('lock_shot_n') || 0) + 1) % 2;
-  localStorage.setItem('lock_shot_n', String(n));
-  const fill = n ? '#111014' : '#f4f2ee';
-  return 'data:image/svg+xml;utf8,' + encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="16">` +
-    `<rect width="8" height="16" fill="${fill}"/></svg>`);
-}
-
 // Steps to the next colour per load. Deliberately not random: cycling makes
 // each reload visibly different, where random repeats itself often enough to
 // look broken.
 function _lockColour() {
-  // Read synchronously from localStorage, not the server: this runs before the
-  // first paint of the lock screen, and awaiting a fetch here would either flash
-  // a default colour first or delay the intro. The cache is refreshed in the
+  // Already chosen and painted by the <head> script, which has to run before
+  // first paint so iOS samples the right ground for the status-bar strip.
+  // Reuse it — stepping the cycle again here would advance it twice per load
+  // and, worse, hand the intro a different colour than the one already on the
+  // root, putting a mismatched band back across the top.
+  if (window.__lockColour) return window.__lockColour;
+  // Fallback for when that script could not run. Read synchronously from
+  // localStorage, not the server: awaiting a fetch here would either flash a
+  // default colour first or delay the intro. The cache is refreshed in the
   // background after unlock (refreshLockPaletteCache), so an edit made on
   // another device lands on the next load. Falls back to the built-in triple
   // when nothing is cached or the cached value is malformed.
@@ -4382,6 +4427,20 @@ function _lockColour() {
   const n = (Number(localStorage.getItem('lock_col_n') || 0) + 1) % palette.length;
   localStorage.setItem('lock_col_n', String(n));
   return palette[n];
+}
+
+// The intro card's colour, chosen by the <head> script before first paint so
+// the root already matches it. Reused, never re-stepped here (that would
+// advance the alternation twice per load). Fallback only if that script
+// could not run.
+function _lockShotColour() {
+  if (window.__lockShot) return window.__lockShot;
+  let m = 1;
+  try {
+    m = (Number(localStorage.getItem('lock_shot_n') || 0) + 1) % 2;
+    localStorage.setItem('lock_shot_n', String(m));
+  } catch (e) {}
+  return (window.__lockShot = m ? '#111014' : '#f4f2ee');
 }
 
 // Mean colour of the image: its luminance picks the ink, and the colour
@@ -4414,13 +4473,33 @@ function _lockPaintRoot(colour) {
   document.documentElement.style.backgroundColor = colour || '';
 }
 
+// PROTECTED — the lock-screen intro must never be removed, hidden or
+// disabled. See CLAUDE.md "Lock-screen intro animation" for why and for the
+// invariants below.
+//
+// One timer list shared by every run. A re-lock can restart the intro while
+// an earlier run is still pending (logout within ~4s of opening); with a
+// per-run list the old run's timers kept firing into the new one, bringing
+// the card in early and revealing the keypad mid-animation.
+const _lockIntroTimers = [];
+
 function runLockIntro() {
+  _lockIntroTimers.splice(0).forEach(clearTimeout);
   const lock   = document.getElementById('pin-lock');
   const title  = document.querySelector('.pin-title');
   const shot   = document.querySelector('.pin-shot');
   const canvas = document.querySelector('.pin-canvas');
   if (!lock || !title || !shot || !canvas) return;
   if (lock.classList.contains('hidden')) return;
+
+  // A replay (re-lock after logout) arrives with the card still full-screen
+  // from the last run. Just dropping its classes lets the transitions play in
+  // reverse — the card visibly fading and shrinking for ~1s while the new
+  // intro starts. Snap it to its hidden start state for one frame instead.
+  lock.classList.add('no-anim');
+  lock.classList.remove('shot-in', 'shot-full');
+  void lock.offsetWidth;
+  lock.classList.remove('no-anim');
 
   // Split the wordmark into per-character spans. Spaces get their own span
   // (white-space:pre in the CSS) so the cascade stays evenly timed.
@@ -4435,52 +4514,32 @@ function runLockIntro() {
   });
   // Both are chosen before the first paint and never change during the visit.
   const colour = _lockColour();
+  const shotColour = _lockShotColour();
+  const shotDark = shotColour === '#111014';
   canvas.style.backgroundColor = colour;
-  // Deliberately NOT the staging colour. In standalone/iOS the strip behind
-  // the status bar is filled from the document background sampled at first
-  // paint, and it is not re-sampled when JS changes it later — so seeding the
-  // root with the throwaway staging colour froze a navy/olive/wine bar at the
-  // top for the whole session, while the screen underneath settled to the
-  // photo. The resting ground is the colour that strip should end up as, so
-  // start there; applyGround() still refines it to the photo's own colour.
-  _lockPaintRoot(getComputedStyle(lock).getPropertyValue('--lock-ground').trim());
-  shot.src = _lockDemoShot();
+  shot.style.backgroundColor = shotColour;
+  // Root = the card's colour, matching the <head> paint (the resting screen
+  // is the card, full-bleed, for as long as the PIN is being typed).
+  _lockPaintRoot(shotColour);
 
-  const timers = [];
+  const timers = _lockIntroTimers;
 
   // Two halves, deliberately on different beats.
   //
-  // The ink runs *with* the zoom: --lock-ink flips as the photo expands, and
+  // The ink runs *with* the zoom: --lock-ink flips as the card expands, and
   // .pin-title carries a colour transition matched to the zoom's duration, so
-  // the wordmark turns while the photo moves rather than after it stops.
-  const applyInk = () => {
-    const mean = _lockShotMean(shot);
-    if (!mean) return;
-    lock.classList.toggle('on-dark', mean.dark);
-  };
+  // the wordmark turns while the card moves rather than after it stops.
+  // Light ink on the black card, dark ink on the off-white one.
+  const landInk = () => lock.classList.toggle('on-dark', shotDark);
   // The backdrop does not. Repainting .pin-canvas mid-zoom is visible — the
-  // photo is still smaller than the screen, so the colour change shows around
+  // card is still smaller than the screen, so the colour change shows around
   // it and reads as a bug. This runs at the end, behind the fully-expanded
-  // photo, purely so the compositing seam at the safe-area edges (notch /
-  // Dynamic Island) reveals a matching colour rather than the stale staging one.
-  const applyGround = () => {
-    const mean = _lockShotMean(shot);
-    // Fall back to the resting ground rather than returning early. WebKit
-    // taints the canvas for some image sources, and _lockShotMean() then
-    // returns null — the old early return left the staging colour on the
-    // root, which is what showed as a mismatched strip behind the status bar.
-    const css = mean ? mean.css
-      : getComputedStyle(lock).getPropertyValue('--lock-ground').trim();
-    _lockPaintRoot(css);
-    canvas.style.backgroundColor = css;
+  // card, so the compositing seam at the safe-area edges (notch / Dynamic
+  // Island) reveals a matching colour rather than the staging one.
+  const landGround = () => {
+    _lockPaintRoot(shotColour);
+    canvas.style.backgroundColor = shotColour;
   };
-  // Reading pixels before decode returns an empty canvas, so both wait for it.
-  const afterDecode = fn => {
-    if (shot.complete && shot.naturalWidth) fn();
-    else shot.addEventListener('load', fn, { once: true });
-  };
-  const landInk    = () => afterDecode(applyInk);
-  const landGround = () => afterDecode(applyGround);
 
   // End of the choreography. Must not run before the zoom has finished: it
   // reveals the controls, so firing it mid-zoom pops them in while the image
@@ -4521,8 +4580,8 @@ function runLockIntro() {
   // One colour for the whole visit, chosen before anything is painted. It
   // steps to the next on each load rather than cycling on screen — a backdrop
   // that changes while you are looking at it reads as a glitch, not a design.
-  // All three are dark, so the ink starts light and only re-evaluates once
-  // the image lands on top.
+  // All three are dark, so the ink starts light and only changes when the
+  // card expands — to dark ink if this load's card is the off-white one.
   lock.classList.add('staging', 'on-dark');
 
   const at = (ms, fn) => timers.push(setTimeout(fn, ms));
@@ -8668,6 +8727,18 @@ function toggleDataHealthPanel() {
     _dataHealthFastPoll = null;
   }
 }
+
+// A tap anywhere outside the panel closes it. pointerdown rather than click:
+// iOS Safari doesn't fire click on non-interactive areas, so a tap on empty
+// page would never register. The chip is excluded because it toggles the
+// panel itself — counting it as "outside" would close here and reopen in
+// its own handler.
+document.addEventListener('pointerdown', e => {
+  const p = document.getElementById('data-health-panel');
+  if (!p || p.style.display === 'none') return;
+  if (p.contains(e.target) || e.target.closest('#data-health-chip')) return;
+  toggleDataHealthPanel();
+});
 
 /** Coverage % for a named check, or null. Used to show progress on rows whose
  *  data hasn't arrived yet, instead of a dead-end "not collected" message. */
