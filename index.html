@@ -6,7 +6,7 @@
      areas, which the safe-area-inset padding in the mobile CSS already
      accounts for. Without it, standalone mode leaves grey bars there. -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<title>Parth S.</title>
+<title>OHLCV</title>
 
 <!-- ── Home-screen install ──────────────────────────────────────────────
      These are what make iOS treat this as an app rather than a bookmark:
@@ -341,23 +341,17 @@
     animation-delay: calc(var(--i) * 45ms);
   }
 
-  /* Optical kerning for "Parth". Two reasons letter-spacing alone cannot even
-     these out: it adds the same amount to every pair, and splitting the
-     wordmark into per-character spans (for the drop animation) disables the
-     font's own kerning — so the rendered gaps are both unequal and different
-     from what the same string measures as unsplit text.
+  /* Splitting the wordmark into per-character spans (for the drop animation)
+     disables the font's pair kerning. Measured split-vs-unsplit advance at
+     150px/700/.02em for "OHLCV": O|H 0, H|L 0, L|C +4.4px, C|V +1.5px — so
+     only those two pairs lose anything. These restore the font's own
+     spacing; in em so they hold across the clamp() range.
 
-     Measured on the real spans at 150px/700/.02em: P-a 19.9, a-r 15.2,
-     r-t 11.5, t-h 15.3 — "Pa" gaping while "rt" pinched. These bring all four
-     to ~15px. In em so they hold across the clamp() range.
-
-     Indices are 1-based over "Parth S." — P(1) a(2) r(3) t(4) h(5) ␣(6) S(7)
-     .(8) — so they are tied to this exact wordmark. Retune if the name
-     changes; a wrong index only shifts spacing, it cannot break the layout. */
-  .pin-title .ch:nth-child(2) { margin-left: -.006em; }   /* a: tighten P|a */
-  .pin-title .ch:nth-child(3) { margin-left: -.014em; }   /* r: tighten a|r */
-  .pin-title .ch:nth-child(4) { margin-left:  .056em; }   /* t: widen r|t */
-  .pin-title .ch:nth-child(5) { margin-left: -.002em; }   /* h: tighten t|h */
+     Indices are 1-based over "OHLCV" — O(1) H(2) L(3) C(4) V(5) — so they
+     are tied to this exact wordmark. Re-measure if the name changes; a wrong
+     index only shifts spacing, it cannot break the layout. */
+  .pin-title .ch:nth-child(4) { margin-left: -.029em; }   /* C: restore L|C */
+  .pin-title .ch:nth-child(5) { margin-left: -.010em; }   /* V: restore C|V */
 
   /* The wordmark does not travel. Its resting position already sits at the
      vertical centre, so an earlier attempt to lift it to centre during the
@@ -3032,7 +3026,7 @@ window.fetch = function(...args) {
         <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
       </svg>
     </div>
-    <div class="pin-title">Parth S.</div>
+    <div class="pin-title">OHLCV</div>
     <div class="pin-subtitle">Enter your 4-digit PIN to continue</div>
     <div class="pin-dots">
       <div class="pin-dot" id="pd0"></div>
@@ -3058,7 +3052,7 @@ window.fetch = function(...args) {
 </div>
 
 <header>
-  <h1>Parth S.</h1>
+  <h1>OHLCV</h1>
   <div class="header-actions">
     <span id="connection-status" style="font-size:12px;color:var(--muted)"><span class="status-dot dot-red"></span>Disconnected</span>
     <button class="btn btn-secondary" id="reconnect-btn" onclick="reconnectGroww()" style="font-size:12px" title="Re-authenticate with the Groww API and refresh the access token">Reconnect</button>
